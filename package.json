@@ -1,0 +1,51 @@
+{
+  "name": "cortex",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "web:dev": "vite",
+    "web:build": "vite build",
+    "server": "tsx src/server/index.ts",
+    "server:prod": "node dist/server/index.js",
+    "web": "npm run web:build && npm run server:prod"
+  },
+  "bin": {
+    "cortex": "./dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.7.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.5.0",
+    "postcss": "^8.5.14",
+    "tailwindcss": "^4.3.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.12"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.2",
+    "@types/js-yaml": "^4.0.9",
+    "cors": "^2.8.6",
+    "execa": "^9.6.1",
+    "express": "^5.2.1",
+    "js-yaml": "^4.1.1",
+    "openai": "^6.37.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "zod": "^4.4.3"
+  }
+}
