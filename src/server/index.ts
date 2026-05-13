@@ -443,6 +443,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         const task = run.tasks.find((t) => t.taskId === taskId);
         if (task) { task.status = 'running'; task.startedAt = new Date().toISOString(); }
         taskStartTimes.set(taskId, Date.now());
+        saveRun(run);
       },
       onTaskProgress: (taskId, workerIndex, event) => {
         emit('task:tool_event', { taskId, workerIndex, event });
@@ -451,6 +452,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
           if (!task.toolEvents) task.toolEvents = [];
           if (!task.toolEvents[workerIndex]) task.toolEvents[workerIndex] = [];
           task.toolEvents[workerIndex].push(event);
+          saveRun(run);
         }
       },
       onTaskComplete: (taskId, taskName, result: TaskResult) => {
@@ -465,6 +467,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
           if (result.error) task.error = result.error;
           if (result.toolEvents) task.toolEvents = result.toolEvents;
           run.toolCallCount = countToolCalls(run.tasks);
+          saveRun(run);
         }
       },
       onDecisionStart: (decisionId, evaluates) => emit('decision:start', { decisionId, evaluates }),

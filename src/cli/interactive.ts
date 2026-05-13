@@ -247,6 +247,7 @@ async function runPipeline(
           rec.taskName = taskName;
           rec.agents = agents;
         }
+        saveRun(run);
         printTaskStart(taskName, agents, taskId);
       },
       onTaskProgress: (taskId, workerIndex, event) => {
@@ -261,6 +262,14 @@ async function runPipeline(
           if (text.length > 100) text = text.substring(0, 100) + '...';
           console.log(`     ${dim('│')}  ${dim(text)}`);
         }
+        
+        const task = run.tasks.find(t => t.taskId === taskId);
+        if (task) {
+          if (!task.toolEvents) task.toolEvents = [];
+          if (!task.toolEvents[workerIndex]) task.toolEvents[workerIndex] = [];
+          task.toolEvents[workerIndex].push(event);
+          saveRun(run);
+        }
       },
       onTaskComplete: (taskId, taskName, result) => {
         const rec = taskById.get(taskId);
@@ -273,6 +282,7 @@ async function runPipeline(
           rec.error = result.error;
           rec.toolEvents = result.toolEvents;
         }
+        saveRun(run);
         printTaskDone(taskName, result.output || result.error || '', !!result.error, taskId);
       },
       onDecisionStart: (decisionId, evaluates) => {

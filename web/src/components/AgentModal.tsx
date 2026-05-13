@@ -172,7 +172,7 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
     : (kind === 'model' ? 'agent.addModelTitle'  : 'agent.addRoleTitle');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
       <div className="relative w-full max-w-lg rounded-2xl border border-zinc-200 bg-white shadow-2xl shadow-zinc-200/80">
 

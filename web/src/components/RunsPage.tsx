@@ -319,9 +319,9 @@ export function RunsPage() {
   const [selectedRun, setSelectedRun] = useState<RunRecord | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const data = await api.getRuns();
       setRuns(data);
       // Auto-select most recent run
@@ -329,11 +329,35 @@ export function RunsPage() {
         setSelectedId(data[0].id);
       }
     } catch { /* silent */ } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [selectedId]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  // Handle polling for the selected run and the overall list
+  useEffect(() => {
+    let interval: number;
+
+    const poll = async () => {
+      // Refresh the list silently
+      await load(true);
+      
+      // If a run is selected, refresh its details
+      if (selectedId) {
+        try {
+          const detail = await api.getRun(selectedId);
+          setSelectedRun(detail);
+        } catch { /* silent */ }
+      }
+    };
+
+    // Only poll constantly, or poll if something is running.
+    // For simplicity, we just poll every 2.5s since it's a local dev tool
+    interval = window.setInterval(poll, 2500);
+
+    return () => clearInterval(interval);
+  }, [selectedId, load]);
 
   useEffect(() => {
     if (!selectedId) return;
