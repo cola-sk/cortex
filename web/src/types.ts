@@ -1,4 +1,4 @@
-export type ProviderType = 'claude' | 'openai-compat';
+export type ProviderType = 'claude' | 'openai-compat' | 'cli';
 
 export type AgentRole = 'orchestrator' | 'worker' | 'reviewer' | 'decider';
 
@@ -16,7 +16,13 @@ export interface OpenAICompatProvider {
   model: string;
 }
 
-export type Provider = ClaudeProvider | OpenAICompatProvider;
+export interface CliProvider {
+  type: 'cli';
+  command: string;
+  args: string[];
+}
+
+export type Provider = ClaudeProvider | OpenAICompatProvider | CliProvider;
 
 export interface Agent {
   id: string;
@@ -24,6 +30,48 @@ export interface Agent {
   description?: string;
   system: string;
   provider: Provider;
+}
+
+// ---- Pipeline types ----
+
+export interface PipelineTask {
+  id: string;
+  name: string;
+  /** Single agent key, or array for parallel workers */
+  agent: string | string[];
+  input: string;
+  dependsOn: string[];
+}
+
+export interface PipelineDecision {
+  id: string;
+  name?: string;
+  agent: string;
+  evaluates: string[];
+  maxRetries: number;
+}
+
+export interface Pipeline {
+  id: string;
+  name: string;
+  description?: string;
+  tasks: PipelineTask[];
+  decisions: PipelineDecision[];
+}
+
+// ---- Run event types ----
+
+export type RunEventType =
+  | 'task:start'
+  | 'task:complete'
+  | 'decision:start'
+  | 'decision:complete'
+  | 'complete'
+  | 'error';
+
+export interface RunEvent {
+  type: RunEventType;
+  data: unknown;
 }
 
 export interface ApiError {

@@ -6,6 +6,7 @@ import { Orchestrator, ORCHESTRATOR_SYSTEM } from './core/orchestrator.js';
 import { Runner } from './core/runner.js';
 import type { AgentConfig } from './config/schema.js';
 import { readAppConfig, writeAppConfig, VALID_KEYS, DEFAULT_CONFIG } from './config/appConfig.js';
+import { runInteractive, runDirect, listPipelines } from './cli/interactive.js';
 
 // ---- config subcommand ----
 
@@ -65,17 +66,42 @@ function handleConfigCommand(args: string[]): void {
 async function main() {
   const args = process.argv.slice(2);
 
-  // Handle config subcommand before anything else
+  const agentsPath  = path.resolve(process.env.AGENTS_CONFIG    ?? 'agents.yaml');
+  const pipelinesPath = path.resolve(process.env.PIPELINES_CONFIG ?? 'pipelines.yaml');
+
+  // ── cortex config ... ─────────────────────────────────────────────────────
   if (args[0] === 'config') {
     handleConfigCommand(args.slice(1));
     return;
   }
 
+  // ── cortex run [pipeline-id] ["goal"] ────────────────────────────────────
+  if (args[0] === 'run' || args.length === 0) {
+    const subArgs = args.slice(args[0] === 'run' ? 1 : 0);
+
+    if (subArgs.length === 0) {
+      // No pipeline id → interactive picker
+      await runInteractive(agentsPath, pipelinesPath);
+      return;
+    }
+
+    if (subArgs[0] === '--list' || subArgs[0] === '-l') {
+      listPipelines(pipelinesPath);
+      return;
+    }
+
+    const [pipelineId, goal] = subArgs;
+    if (!goal) {
+      console.error('Usage: cortex run <pipeline-id> "<goal>"');
+      process.exit(1);
+    }
+    await runDirect(agentsPath, pipelinesPath, pipelineId, goal);
+    return;
+  }
+
+  // ── Legacy: cortex <config.yaml> "<goal>" [orchestrator-key] ─────────────
   if (args.length < 2) {
-    console.error('Usage:');
-    console.error('  cortex <config.yaml> "<goal>" [orchestrator-key]');
-    console.error('  cortex config set <key> <value>');
-    console.error('  cortex config get [key]');
+    printHelp();
     process.exit(1);
   }
 
@@ -159,5 +185,17 @@ async function main() {
 main().catch((err) => {
   console.error('Fatal:', err instanceof Error ? err.message : err);
   process.exit(1);
-
 });
+
+function printHelp() {
+  console.log('');
+  console.log('  cortex                                  Interactive pipeline picker');
+  console.log('  cortex run                              Interactive pipeline picker');
+  console.log('  cortex run <pipeline-id> "<goal>"       Run pipeline directly');
+  console.log('  cortex run --list                       List available pipelines');
+  console.log('  cortex config set <key> <value>         Set config value');
+  console.log('  cortex config get [key]                 Show config value(s)');
+  console.log('  cortex config reset                     Reset config to defaults');
+  console.log('  cortex <agents.yaml> "<goal>"           Legacy: plan & run via orchestrator');
+  console.log('');
+}

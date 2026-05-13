@@ -1,64 +1,52 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { execSync } from 'child_process';
 import type { DetectedTool } from './types.js';
 
+function which(cmd: string): string | null {
+  try { return execSync(`which ${cmd}`, { stdio: 'pipe' }).toString().trim(); } catch { return null; }
+}
+
 /**
- * Gemini CLI stores config in ~/.gemini/settings.json
- * Uses OAuth by default (no static API key).
- * Gemini exposes an OpenAI-compatible endpoint at:
- *   https://generativelanguage.googleapis.com/v1beta/openai/
+ * Gemini CLI: invokes `gemini` as a subprocess.
+ * System prompt is folded into the prompt (no dedicated system flag).
  */
 export function detectGemini(): DetectedTool {
   const settingsPath = path.join(os.homedir(), '.gemini', 'settings.json');
+  const cliPath = which('gemini');
 
-  if (!fs.existsSync(settingsPath)) {
+  if (!fs.existsSync(settingsPath) && !cliPath) {
     return { id: 'gemini', name: 'Gemini CLI', detected: false };
   }
 
-  try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as {
-      apiKey?: string;
-      model?: string;
-      security?: { auth?: { selectedType?: string; apiKey?: string } };
-    };
-
-    const apiKey =
-      settings.apiKey ||
-      settings.security?.auth?.apiKey ||
-      process.env['GEMINI_API_KEY'] ||
-      process.env['GOOGLE_API_KEY'] ||
-      undefined;
-
-    const model = settings.model ?? 'gemini-2.5-pro';
-    const authType = settings.security?.auth?.selectedType ?? 'unknown';
-    const isOAuth = authType.includes('oauth') || authType.includes('personal');
-
-    const provider = {
-      type: 'openai-compat' as const,
-      baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
-      model,
-      ...(apiKey ? { apiKey } : {}),
-    };
-
+  if (!cliPath) {
     return {
       id: 'gemini',
       name: 'Gemini CLI',
       detected: true,
-      provider,
-      model,
-      note: isOAuth
-        ? 'OAuth login detected — set GEMINI_API_KEY env var for API key auth'
-        : apiKey
-          ? 'API key found'
-          : 'No API key found',
-    };
-  } catch (e) {
-    return {
-      id: 'gemini',
-      name: 'Gemini CLI',
-      detected: true,
-      note: `Parse error: ${(e as Error).message}`,
+      note: '`gemini` binary not found in PATH. Install Gemini CLI first.',
     };
   }
+
+  let model = 'gemini-2.5-pro';
+  try {
+    if (fs.existsSync(settingsPath)) {
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as { model?: string };
+      model = settings.model ?? model;
+    }
+  } catch { /* ignore */ }
+
+  return {
+    id: 'gemini',
+    name: 'Gemini CLI',
+    detected: true,
+    model,
+    note: `CLI: ${cliPath}`,
+    provider: {
+      type: 'cli' as const,
+      command: 'gemini',
+      args: ['-p', '{{PROMPT}}'],
+    },
+  };
 }

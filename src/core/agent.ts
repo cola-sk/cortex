@@ -1,6 +1,7 @@
 import type { LLMProvider, Message, ChatOptions } from '../providers/index.js';
 import { ClaudeProvider } from '../providers/claude.js';
 import { OpenAICompatProvider } from '../providers/openai-compat.js';
+import { CliProvider } from '../providers/cli.js';
 import type { AgentConfig } from '../config/schema.js';
 
 export class Agent {
@@ -36,6 +37,11 @@ export class Agent {
           baseURL: config.provider.baseURL,
           apiKey: config.provider.apiKey,
           model: config.provider.model,
+        });
+      case 'cli':
+        return new CliProvider({
+          command: config.provider.command,
+          args: config.provider.args,
         });
     }
   }

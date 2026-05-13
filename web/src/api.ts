@@ -1,4 +1,4 @@
-import type { Agent } from './types';
+import type { Agent, Pipeline, RunEventType } from './types';
 
 export interface DetectedTool {
   id: string;
@@ -22,6 +22,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  // ---- Agents ----
   getAgents: () => request<Agent[]>('/api/agents'),
 
   createAgent: (agent: Agent) =>
@@ -41,6 +42,7 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // ---- Importers ----
   getImporters: () => request<DetectedTool[]>('/api/importers'),
 
   importTool: (toolId: string, agentId?: string) =>
@@ -48,4 +50,69 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ agentId }),
     }),
+
+  // ---- Pipelines ----
+  getPipelines: () => request<Pipeline[]>('/api/pipelines'),
+
+  createPipeline: (pipeline: Pipeline) =>
+    request<Pipeline>('/api/pipelines', {
+      method: 'POST',
+      body: JSON.stringify(pipeline),
+    }),
+
+  updatePipeline: (id: string, pipeline: Omit<Pipeline, 'id'>) =>
+    request<Pipeline>(`/api/pipelines/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(pipeline),
+    }),
+
+  deletePipeline: (id: string) =>
+    request<{ success: boolean }>(`/api/pipelines/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+
+  /** Run a pipeline via SSE. Calls onEvent for each event; resolves when stream ends. */
+  async runPipeline(
+    id: string,
+    goal: string,
+    onEvent: (type: RunEventType, data: unknown) => void,
+  ): Promise<void> {
+    const res = await fetch(`/api/pipelines/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal }),
+    });
+
+    if (!res.body) throw new Error('No response body from run endpoint');
+    if (!res.ok) {
+      const data = await res.json() as { error?: string };
+      throw new Error(data.error ?? `HTTP ${res.status}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() ?? '';
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        let eventType: RunEventType = 'task:start';
+        let dataStr = '';
+        for (const line of part.split('\n')) {
+          if (line.startsWith('event: ')) eventType = line.slice(7) as RunEventType;
+          else if (line.startsWith('data: ')) dataStr = line.slice(6);
+        }
+        if (dataStr) {
+          try { onEvent(eventType, JSON.parse(dataStr)); } catch { /* ignore */ }
+        }
+      }
+    }
+  },
 };
+

@@ -1,0 +1,30 @@
+pipelines:
+  chain_mp3j1cgn:
+    name: Code Pipeline
+    description: 'Sequential: plan → implement → review with quality gate'
+    tasks:
+      - id: plan
+        name: Planning
+        agent: orchestrator
+        input: Analyse the goal and produce a detailed implementation plan.
+        dependsOn: []
+      - id: implement
+        name: Implementation
+        agent: claude-code
+        input: Implement the solution according to the plan.
+        dependsOn:
+          - plan
+      - id: review
+        name: Code Review
+        agent: codex
+        input: Review the implementation for correctness, security, and code quality.
+        dependsOn:
+          - implement
+    decisions:
+      - id: final_review_gate
+        name: Final Review Gate
+        agent: decider
+        evaluates:
+          - implement
+          - review
+        maxRetries: 1

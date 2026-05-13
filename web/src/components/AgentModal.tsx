@@ -36,9 +36,9 @@ function agentToForm(agent: Agent): FormState {
     description: agent.description ?? '',
     system: agent.system,
     providerType: agent.provider.type,
-    model: agent.provider.model ?? '',
-    baseURL: agent.provider.baseURL ?? '',
-    apiKey: agent.provider.apiKey ?? '',
+    model: agent.provider.type === 'cli' ? agent.provider.command : (agent.provider.model ?? ''),
+    baseURL: agent.provider.type !== 'cli' ? (agent.provider.baseURL ?? '') : '',
+    apiKey: agent.provider.type !== 'cli' ? (agent.provider.apiKey ?? '') : '',
   };
 }
 
@@ -58,6 +58,13 @@ function formToAgent(form: FormState): Agent {
         ...(form.baseURL.trim() ? { baseURL: form.baseURL.trim() } : {}),
         ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}),
       },
+    };
+  }
+  if (form.providerType === 'cli') {
+    // CLI agents are imported; command is stored in model field
+    return {
+      ...base,
+      provider: { type: 'cli', command: form.model.trim() || 'claude', args: [] },
     };
   }
   return {
@@ -202,6 +209,7 @@ export function AgentModal({ agent, onSave, onClose }: Props) {
               >
                 <option value="claude">Claude (Anthropic SDK)</option>
                 <option value="openai-compat">OpenAI Compatible (HTTP)</option>
+                <option value="cli" disabled>CLI (set by importer)</option>
               </select>
             </Field>
 

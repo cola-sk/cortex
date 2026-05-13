@@ -16,9 +16,20 @@ const OpenAICompatProviderConfigSchema = z.object({
   model: z.string(),
 });
 
+// CLI provider — invokes a local binary as a subprocess
+// Args may contain {{SYSTEM}} and {{PROMPT}} placeholders.
+// If {{SYSTEM}} is absent, the system prompt is prepended to {{PROMPT}}.
+// If {{PROMPT}} is absent entirely, the prompt is appended as the last arg.
+const CliProviderConfigSchema = z.object({
+  type: z.literal('cli'),
+  command: z.string(),
+  args: z.array(z.string()).default([]),
+});
+
 export const ProviderConfigSchema = z.discriminatedUnion('type', [
   ClaudeProviderConfigSchema,
   OpenAICompatProviderConfigSchema,
+  CliProviderConfigSchema,
 ]);
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;

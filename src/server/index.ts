@@ -4,13 +4,18 @@ import path from 'path';
 import fs from 'fs';
 import yaml from 'js-yaml';
 import { ConfigFileSchema, AgentConfigSchema, type ConfigFile } from '../config/schema.js';
+import { PipelineConfigSchema, PipelineFileSchema, type PipelineFile } from '../config/pipelineSchema.js';
 import { detectAllTools, detectTool } from '../importers/index.js';
 import { readAppConfig, portFromUrl, DEFAULT_CONFIG } from '../config/appConfig.js';
+import { Agent } from '../core/agent.js';
+import { Runner } from '../core/runner.js';
+import type { Plan } from '../core/plan.js';
 
 const app = express();
 const appConfig = readAppConfig();
 const PORT = Number(process.env.PORT ?? portFromUrl(appConfig.server_url, portFromUrl(DEFAULT_CONFIG.server_url, 47821)));
 const CONFIG_PATH = path.resolve(process.env.AGENTS_CONFIG ?? 'agents.yaml');
+const PIPELINES_PATH = path.resolve(process.env.PIPELINES_CONFIG ?? 'pipelines.yaml');
 
 app.use(cors());
 app.use(express.json());
@@ -156,6 +161,148 @@ app.post('/api/importers/:toolId', (req, res) => {
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
+});
+
+// ---- Pipeline helpers ----
+
+function readPipelineFile(): PipelineFile {
+  if (!fs.existsSync(PIPELINES_PATH)) return { pipelines: {} };
+  const raw = fs.readFileSync(PIPELINES_PATH, 'utf-8');
+  const parsed = yaml.load(raw);
+  return PipelineFileSchema.parse(parsed ?? { pipelines: {} });
+}
+
+function writePipelineFile(pf: PipelineFile): void {
+  fs.writeFileSync(PIPELINES_PATH, yaml.dump(pf, { indent: 2, lineWidth: -1 }), 'utf-8');
+}
+
+// GET /api/pipelines
+app.get('/api/pipelines', (_req, res) => {
+  try {
+    const pf = readPipelineFile();
+    const list = Object.entries(pf.pipelines).map(([id, p]) => ({ id, ...p }));
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/pipelines
+app.post('/api/pipelines', (req, res) => {
+  try {
+    const { id, ...rest } = req.body as { id?: string } & Record<string, unknown>;
+    if (!id || typeof id !== 'string' || !/^[a-z0-9_-]+$/.test(id)) {
+      res.status(400).json({ error: 'Pipeline id is required (lowercase alphanumeric/dash/underscore)' });
+      return;
+    }
+    const pf = readPipelineFile();
+    if (pf.pipelines[id]) {
+      res.status(409).json({ error: `Pipeline "${id}" already exists` });
+      return;
+    }
+    const pipeline = PipelineConfigSchema.parse(rest);
+    pf.pipelines[id] = pipeline;
+    writePipelineFile(pf);
+    res.status(201).json({ id, ...pipeline });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// PUT /api/pipelines/:id
+app.put('/api/pipelines/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const pf = readPipelineFile();
+    const pipeline = PipelineConfigSchema.parse(req.body);
+    pf.pipelines[id] = pipeline;
+    writePipelineFile(pf);
+    res.json({ id, ...pipeline });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// DELETE /api/pipelines/:id
+app.delete('/api/pipelines/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const pf = readPipelineFile();
+    if (!pf.pipelines[id]) {
+      res.status(404).json({ error: `Pipeline "${id}" not found` });
+      return;
+    }
+    delete pf.pipelines[id];
+    writePipelineFile(pf);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/pipelines/:id/run  — SSE stream
+app.post('/api/pipelines/:id/run', async (req, res) => {
+  const { id } = req.params;
+  const { goal } = req.body as { goal?: string };
+
+  if (!goal?.trim()) {
+    res.status(400).json({ error: 'goal is required' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const emit = (event: string, data: unknown) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const pf = readPipelineFile();
+    const pipelineCfg = pf.pipelines[id];
+    if (!pipelineCfg) {
+      emit('error', { message: `Pipeline "${id}" not found` });
+      res.end();
+      return;
+    }
+
+    const agentsCfg = readConfig();
+    const agentMap = new Map<string, Agent>();
+    for (const [agentId, agentConfig] of Object.entries(agentsCfg.agents)) {
+      agentMap.set(agentId, new Agent(agentId, agentConfig));
+    }
+
+    const plan: Plan = {
+      goal: goal.trim(),
+      tasks: pipelineCfg.tasks,
+      decisions: pipelineCfg.decisions,
+    };
+
+    const runner = new Runner(agentMap, {
+      onTaskStart: (taskId, taskName, agents) => emit('task:start', { taskId, taskName, agents }),
+      onTaskComplete: (taskId, taskName, result) =>
+        emit('task:complete', { taskId, taskName, output: result.output, error: result.error }),
+      onDecisionStart: (decisionId, evaluates) => emit('decision:start', { decisionId, evaluates }),
+      onDecisionComplete: (decisionId, decision, retrying) =>
+        emit('decision:complete', { decisionId, action: decision.action, reason: decision.reason, retrying }),
+    });
+
+    const results = await runner.run(plan);
+
+    const summary: Record<string, { output: string; error?: string }> = {};
+    for (const [key, r] of results) {
+      if (!key.startsWith('__decision_')) {
+        summary[key] = { output: r.output, ...(r.error ? { error: r.error } : {}) };
+      }
+    }
+    emit('complete', { taskCount: plan.tasks.length, results: summary });
+  } catch (err) {
+    emit('error', { message: (err as Error).message });
+  }
+
+  res.end();
 });
 
 // SPA fallback
