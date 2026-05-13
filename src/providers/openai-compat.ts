@@ -22,14 +22,56 @@ export class OpenAICompatProvider implements LLMProvider {
   }
 
   async chat(messages: Message[], options: ChatOptions = {}): Promise<string> {
+    const mappedMessages = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    // Use streaming when onStreamEvent callback is provided
+    if (options.onStreamEvent) {
+      const stream = await this.client.chat.completions.create({
+        model: this.model,
+        max_tokens: options.maxTokens ?? 8096,
+        temperature: options.temperature,
+        messages: mappedMessages,
+        stream: true,
+      });
+
+      let fullContent = '';
+      let eventIdx = 0;
+      let pendingChunks = '';
+
+      for await (const chunk of stream) {
+        const delta = chunk.choices?.[0]?.delta?.content;
+        if (delta) {
+          fullContent += delta;
+          pendingChunks += delta;
+
+          // Emit text events in reasonable batches (on sentence/line boundaries or after accumulating enough)
+          if (pendingChunks.includes('\n') || pendingChunks.length >= 80) {
+            options.onStreamEvent({ index: eventIdx++, type: 'text', content: pendingChunks });
+            pendingChunks = '';
+          }
+        }
+      }
+
+      // Flush remaining text
+      if (pendingChunks) {
+        options.onStreamEvent({ index: eventIdx++, type: 'text', content: pendingChunks });
+      }
+
+      if (!fullContent) {
+        throw new Error('Empty response from OpenAI-compatible provider');
+      }
+      return fullContent;
+    }
+
+    // Non-streaming fallback
     const response = await this.client.chat.completions.create({
       model: this.model,
       max_tokens: options.maxTokens ?? 8096,
       temperature: options.temperature,
-      messages: messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
+      messages: mappedMessages,
     });
 
     const choice = response.choices[0];

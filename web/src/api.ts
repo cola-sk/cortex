@@ -99,22 +99,26 @@ export const api = {
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split('\n\n');
-      buffer = parts.pop() ?? '';
+      if (value) {
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() ?? '';
 
-      for (const part of parts) {
-        if (!part.trim()) continue;
-        let eventType: RunEventType = 'task:start';
-        let dataStr = '';
-        for (const line of part.split('\n')) {
-          if (line.startsWith('event: ')) eventType = line.slice(7) as RunEventType;
-          else if (line.startsWith('data: ')) dataStr = line.slice(6);
+        for (const part of parts) {
+          if (!part.trim()) continue;
+          let eventType: RunEventType = 'task:start';
+          let dataStr = '';
+          for (const line of part.split('\n')) {
+            if (line.startsWith('event: ')) eventType = line.slice(7) as RunEventType;
+            else if (line.startsWith('data: ')) dataStr = line.slice(6);
+          }
+          if (dataStr) {
+            try { onEvent(eventType, JSON.parse(dataStr)); } catch { /* ignore */ }
+          }
         }
-        if (dataStr) {
-          try { onEvent(eventType, JSON.parse(dataStr)); } catch { /* ignore */ }
-        }
+      }
+      if (done) {
+        break;
       }
     }
   },

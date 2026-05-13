@@ -377,6 +377,25 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
+  let run: RunRecord | null = null;
+  let aborted = false;
+
+  req.on('close', () => {
+    if (!aborted && run && run.status === 'running') {
+      aborted = true;
+      run.status = 'error';
+      run.finishedAt = new Date().toISOString();
+      run.durationMs = Date.now() - new Date(run.startedAt).getTime();
+      for (const task of run.tasks) {
+        if (task.status === 'running' || task.status === 'pending') {
+          task.status = 'error';
+          task.error = 'Interrupted';
+        }
+      }
+      saveRun(run);
+    }
+  });
+
   try {
     const pf = readPipelineFile();
     const pipelineCfg = pf.pipelines[id];
@@ -418,7 +437,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     // ---- Create run record ----
     const runId = generateRunId();
     const runStartedAt = new Date().toISOString();
-    const run: RunRecord = {
+    run = {
       id: runId,
       pipelineId: id,
       pipelineName: pipelineCfg.name ?? id,
@@ -434,30 +453,30 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         status: 'pending' as const,
       })),
     };
+    saveRun(run);
 
     const taskStartTimes = new Map<string, number>();
 
     const runner = new Runner(agentMap, {
       onTaskStart: (taskId, taskName, agents) => {
         emit('task:start', { taskId, taskName, agents });
-        const task = run.tasks.find((t) => t.taskId === taskId);
+        const task = run!.tasks.find((t) => t.taskId === taskId);
         if (task) { task.status = 'running'; task.startedAt = new Date().toISOString(); }
         taskStartTimes.set(taskId, Date.now());
-        saveRun(run);
+        saveRun(run!);
       },
       onTaskProgress: (taskId, workerIndex, event) => {
         emit('task:tool_event', { taskId, workerIndex, event });
-        const task = run.tasks.find((t) => t.taskId === taskId);
+        const task = run!.tasks.find((t) => t.taskId === taskId);
         if (task) {
           if (!task.toolEvents) task.toolEvents = [];
           if (!task.toolEvents[workerIndex]) task.toolEvents[workerIndex] = [];
           task.toolEvents[workerIndex].push(event);
-          saveRun(run);
         }
       },
       onTaskComplete: (taskId, taskName, result: TaskResult) => {
         emit('task:complete', { taskId, taskName, output: result.output, error: result.error });
-        const task = run.tasks.find((t) => t.taskId === taskId);
+        const task = run!.tasks.find((t) => t.taskId === taskId);
         if (task) {
           task.status = result.error ? 'error' : 'done';
           task.finishedAt = new Date().toISOString();
@@ -466,8 +485,8 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
           task.output = result.output;
           if (result.error) task.error = result.error;
           if (result.toolEvents) task.toolEvents = result.toolEvents;
-          run.toolCallCount = countToolCalls(run.tasks);
-          saveRun(run);
+          run!.toolCallCount = countToolCalls(run!.tasks);
+          saveRun(run!);
         }
       },
       onDecisionStart: (decisionId, evaluates) => emit('decision:start', { decisionId, evaluates }),
@@ -477,21 +496,31 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
 
     const results = await runner.run(plan);
 
-    run.status = 'done';
-    run.finishedAt = new Date().toISOString();
-    run.durationMs = Date.now() - new Date(runStartedAt).getTime();
-    run.toolCallCount = countToolCalls(run.tasks);
-    saveRun(run);
+    if (!aborted) {
+      run.status = 'done';
+      run.finishedAt = new Date().toISOString();
+      run.durationMs = Date.now() - new Date(runStartedAt).getTime();
+      run.toolCallCount = countToolCalls(run.tasks);
+      saveRun(run);
 
-    const summary: Record<string, { output: string; error?: string }> = {};
-    for (const [key, r] of results) {
-      if (!key.startsWith('__decision_')) {
-        summary[key] = { output: r.output, ...(r.error ? { error: r.error } : {}) };
+      const summary: Record<string, { output: string; error?: string }> = {};
+      for (const [key, r] of results) {
+        if (!key.startsWith('__decision_')) {
+          summary[key] = { output: r.output, ...(r.error ? { error: r.error } : {}) };
+        }
+      }
+      emit('complete', { taskCount: plan.tasks.length, results: summary, runId });
+    }
+  } catch (err) {
+    if (!aborted) {
+      emit('error', { message: (err as Error).message });
+      if (run && run.status === 'running') {
+        run.status = 'error';
+        run.finishedAt = new Date().toISOString();
+        run.durationMs = Date.now() - new Date(run.startedAt).getTime();
+        saveRun(run);
       }
     }
-    emit('complete', { taskCount: plan.tasks.length, results: summary, runId });
-  } catch (err) {
-    emit('error', { message: (err as Error).message });
   }
 
   res.end();

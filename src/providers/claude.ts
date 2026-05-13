@@ -27,7 +27,7 @@ export class ClaudeProvider implements LLMProvider {
     const systemMessage = messages.find((m) => m.role === 'system');
     const userMessages = messages.filter((m) => m.role !== 'system');
 
-    const response = await this.client.messages.create({
+    const createParams = {
       model: this.model,
       max_tokens: options.maxTokens ?? 8096,
       ...(systemMessage ? { system: systemMessage.content } : {}),
@@ -35,7 +35,41 @@ export class ClaudeProvider implements LLMProvider {
         role: m.role as 'user' | 'assistant',
         content: m.content,
       })),
-    });
+    };
+
+    // Use streaming when onStreamEvent callback is provided
+    if (options.onStreamEvent) {
+      const stream = this.client.messages.stream(createParams);
+
+      let fullContent = '';
+      let eventIdx = 0;
+      let pendingChunks = '';
+
+      stream.on('text', (text) => {
+        fullContent += text;
+        pendingChunks += text;
+
+        if (pendingChunks.includes('\n') || pendingChunks.length >= 80) {
+          options.onStreamEvent!({ index: eventIdx++, type: 'text', content: pendingChunks });
+          pendingChunks = '';
+        }
+      });
+
+      await stream.finalMessage();
+
+      // Flush remaining text
+      if (pendingChunks) {
+        options.onStreamEvent({ index: eventIdx++, type: 'text', content: pendingChunks });
+      }
+
+      if (!fullContent) {
+        throw new Error('Empty response from Claude');
+      }
+      return fullContent;
+    }
+
+    // Non-streaming fallback
+    const response = await this.client.messages.create(createParams);
 
     const block = response.content[0];
     if (block.type !== 'text') {

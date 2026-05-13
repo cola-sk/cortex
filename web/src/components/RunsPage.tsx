@@ -123,29 +123,36 @@ function ToolEventPair({ use, result, index }: {
 }
 
 function ToolEventList({ events }: { events: ToolEvent[] }) {
-  // Pair up tool_use with their tool_result
-  const pairs: Array<{ use: ToolEvent; result?: ToolEvent }> = [];
-  let callIndex = 0;
+  const items: Array<{ type: 'tool', use: ToolEvent, result?: ToolEvent } | { type: 'text', content: string }> = [];
 
-  for (let i = 0; i < events.length; i++) {
-    const ev = events[i];
+  for (const ev of events) {
     if (ev.type === 'tool_use') {
       const result = events.find((e) => e.type === 'tool_result' && e.toolUseId === ev.toolUseId);
-      pairs.push({ use: ev, result });
-      callIndex++;
+      items.push({ type: 'tool', use: ev, result });
+    } else if (ev.type === 'text') {
+      const last = items[items.length - 1];
+      if (last && last.type === 'text') {
+        last.content += '\\n' + (ev.content ?? '');
+      } else {
+        items.push({ type: 'text', content: ev.content ?? '' });
+      }
     }
   }
 
-  if (pairs.length === 0) return null;
+  if (items.length === 0) return null;
 
   return (
-    <div className="mt-3 space-y-1.5">
-      <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
-        {pairs.length} tool call{pairs.length !== 1 ? 's' : ''}
-      </p>
-      {pairs.map((pair, idx) => (
-        <ToolEventPair key={pair.use.toolUseId ?? idx} use={pair.use} result={pair.result} index={idx} />
-      ))}
+    <div className="mt-3 space-y-2">
+      {items.map((item, idx) => {
+        if (item.type === 'tool') {
+          return <ToolEventPair key={`tool-${item.use.toolUseId ?? idx}`} use={item.use} result={item.result} index={idx} />;
+        }
+        return (
+          <div key={`text-${idx}`} className="px-3 py-2 bg-zinc-50 rounded text-xs font-mono text-zinc-600 whitespace-pre-wrap max-h-64 overflow-y-auto">
+            {item.content}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { api } from './api';
 import type { Agent } from './types';
 import { AgentCard } from './components/AgentCard';
@@ -11,10 +11,28 @@ import { useTranslation } from 'react-i18next';
 import i18n from './i18n';
 
 type Page = 'models' | 'roles' | 'pipelines' | 'runs';
+const VALID_PAGES = ['models', 'roles', 'pipelines', 'runs'] as const;
+
+function readPageFromHash(): Page {
+  const hash = window.location.hash.replace('#', '');
+  if (VALID_PAGES.includes(hash as Page)) return hash as Page;
+  return 'models';
+}
 
 export default function App() {
   const { t } = useTranslation();
-  const [page, setPage] = useState<Page>('models');
+  const [page, setPageState] = useState<Page>(readPageFromHash);
+
+  const setPage = useCallback((p: Page) => {
+    window.location.hash = '#' + p;
+    setPageState(p);
+  }, []);
+
+  useEffect(() => {
+    const handler = () => setPageState(readPageFromHash());
+    window.addEventListener('hashchange', handler);
+    return () => window.removeEventListener('hashchange', handler);
+  }, []);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
