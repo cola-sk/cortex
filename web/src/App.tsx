@@ -107,7 +107,7 @@ export default function App() {
               className="px-2 py-1 text-xs text-zinc-500 hover:text-zinc-800 bg-zinc-100 rounded"
               onClick={() => i18n.changeLanguage(i18n.language.startsWith('zh') ? 'en' : 'zh')}
             >
-              {i18n.language.startsWith('zh') ? 'English' : '中文'}
+              {i18n.language.startsWith('zh') ? '中文' : 'English'}
             </button>
             {page === 'models' && (
               <button onClick={() => handleAdd('model')}
@@ -151,6 +151,7 @@ export default function App() {
         <AgentPage
           loading={loading} error={error}
           agents={agents.filter((a) => !!a.role)}
+          allAgents={agents}
           emptyTitle={t('app.noRoles', 'No role agents')}
           emptyDesc={t('app.noRolesDesc', 'Add a role agent and assign it a model connection.')}
           onAdd={() => handleAdd('role')}
@@ -195,7 +196,7 @@ const ROLE_ORDER: Array<AgentRole | undefined> = ['orchestrator', 'worker', 'rev
 
 function AgentPage({
   loading, error, agents, emptyTitle, emptyDesc,
-  onAdd, onEdit, onDelete, onRefresh, header,
+  onAdd, onEdit, onDelete, onRefresh, header, allAgents,
 }: {
   loading: boolean;
   error: string | null;
@@ -207,8 +208,22 @@ function AgentPage({
   onDelete: (id: string) => void;
   onRefresh: () => void;
   header?: React.ReactNode;
+  allAgents?: import('./types').Agent[];
 }) {
   const { t } = useTranslation();
+  const lookupAgents = allAgents ?? agents;
+  const modelLabelFor = (agent: import('./types').Agent): string | undefined => {
+    if (agent.provider) {
+      if (agent.provider.type === 'cli') return agent.provider.command;
+      if (agent.provider.type === 'claude') return agent.provider.model ?? 'default';
+      return agent.provider.model;
+    }
+    if (!agent.baseAgent) return undefined;
+    const base = lookupAgents.find((a) => a.id === agent.baseAgent);
+    if (!base) return agent.baseAgent;
+    return base.name ? `${base.name} (#${base.id})` : base.id;
+  };
+
   const sorted = [...agents].sort(
     (a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role),
   );
@@ -245,7 +260,14 @@ function AgentPage({
               </div>
               <div className="flex flex-col gap-1">
                 {sorted.map((a) => (
-                  <AgentCard key={a.id} agent={a} imported={isImported(a)} onEdit={onEdit} onDelete={onDelete} />
+                  <AgentCard
+                    key={a.id}
+                    agent={a}
+                    modelLabel={modelLabelFor(a)}
+                    imported={isImported(a)}
+                    onEdit={onEdit}
+                    onDelete={onDelete}
+                  />
                 ))}
               </div>
             </div>

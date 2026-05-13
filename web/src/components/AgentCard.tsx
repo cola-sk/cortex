@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 interface Props {
   agent: Agent;
+  modelLabel?: string;
   imported?: boolean;
   onEdit: (agent: Agent) => void;
   onDelete: (id: string) => void;
@@ -15,17 +16,18 @@ const ROLE_COLOR: Record<AgentRole, string> = {
   decider:      'bg-purple-50 text-purple-600 border-purple-200',
 };
 
-export function AgentCard({ agent, imported, onEdit, onDelete }: Props) {
+export function AgentCard({ agent, modelLabel, imported, onEdit, onDelete }: Props) {
   const { t } = useTranslation();
   const roleColor = agent.role ? ROLE_COLOR[agent.role] : null;
   const isCli = agent.provider?.type === 'cli';
-  const model = !agent.provider
+  const fallbackModel = !agent.provider
     ? agent.baseAgent ?? ''
     : isCli
     ? (agent.provider as import('../types').CliProvider).command
     : agent.provider.type === 'claude'
       ? ((agent.provider as import('../types').ClaudeProvider).model ?? 'default')
       : (agent.provider as import('../types').OpenAICompatProvider).model;
+  const model = modelLabel ?? fallbackModel;
 
   return (
     <div className="group flex items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-2.5 hover:border-zinc-300 hover:bg-zinc-50 transition-all duration-100">

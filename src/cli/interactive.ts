@@ -6,6 +6,7 @@ import { PipelineFileSchema } from '../config/pipelineSchema.js';
 import { loadConfig } from '../config/loader.js';
 import { Agent } from '../core/agent.js';
 import { Runner } from '../core/runner.js';
+import type { ToolEvent } from '../core/events.js';
 
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 const R = '\x1b[0m';
@@ -18,6 +19,51 @@ const red   = (s: string) => `\x1b[31m${s}${R}`;
 const blue  = (s: string) => `\x1b[34m${s}${R}`;
 
 const hr = (char = '─', w = 54) => dim(char.repeat(w));
+const RUNS_DIR = path.resolve(process.env.RUNS_DIR ?? 'runs');
+
+interface RunTaskRecord {
+  taskId: string;
+  taskName: string;
+  agents: string[];
+  status: 'pending' | 'running' | 'done' | 'error';
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  output?: string;
+  error?: string;
+  toolEvents?: ToolEvent[][];
+}
+
+interface RunRecord {
+  id: string;
+  pipelineId: string;
+  pipelineName: string;
+  goal: string;
+  status: 'running' | 'done' | 'error';
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  taskCount: number;
+  toolCallCount: number;
+  tasks: RunTaskRecord[];
+}
+
+function generateRunId(): string {
+  return `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function ensureRunsDir(): void {
+  if (!fs.existsSync(RUNS_DIR)) fs.mkdirSync(RUNS_DIR, { recursive: true });
+}
+
+function countToolCalls(tasks: RunTaskRecord[]): number {
+  return tasks.reduce((sum, t) => sum + (t.toolEvents ?? []).flat().filter((e) => e.type === 'tool_use').length, 0);
+}
+
+function saveRun(run: RunRecord): void {
+  ensureRunsDir();
+  fs.writeFileSync(path.join(RUNS_DIR, `${run.id}.json`), JSON.stringify(run, null, 2), 'utf-8');
+}
 
 // ── Pipeline loader ───────────────────────────────────────────────────────────
 function readPipelines(p: string) {
@@ -98,6 +144,25 @@ async function runPipeline(
   const plan = { goal, tasks: pipeline.tasks, decisions: pipeline.decisions ?? [] };
   const t0 = Date.now();
 
+  const run: RunRecord = {
+    id: generateRunId(),
+    pipelineId,
+    pipelineName: pipeline.name,
+    goal,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    taskCount: pipeline.tasks.length,
+    toolCallCount: 0,
+    tasks: pipeline.tasks.map((t) => ({
+      taskId: t.id,
+      taskName: t.name,
+      agents: Array.isArray(t.agent) ? t.agent : [t.agent],
+      status: 'pending',
+    })),
+  };
+
+  const taskById = new Map<string, RunTaskRecord>(run.tasks.map((t) => [t.taskId, t]));
+
   // Track live timers per task so we can cancel & overwrite on completion
   const activeTimers = new Map<string, { interval: NodeJS.Timeout; start: number; prefix: string }>();
   const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -175,9 +240,26 @@ async function runPipeline(
   try {
     const runner = new Runner(agentMap, {
       onTaskStart: (taskId, taskName, agents) => {
+        const rec = taskById.get(taskId);
+        if (rec) {
+          rec.status = 'running';
+          rec.startedAt = new Date().toISOString();
+          rec.taskName = taskName;
+          rec.agents = agents;
+        }
         printTaskStart(taskName, agents, taskId);
       },
       onTaskComplete: (taskId, taskName, result) => {
+        const rec = taskById.get(taskId);
+        if (rec) {
+          rec.taskName = taskName;
+          rec.status = result.error ? 'error' : 'done';
+          rec.finishedAt = new Date().toISOString();
+          rec.durationMs = rec.startedAt ? Math.max(0, Date.parse(rec.finishedAt) - Date.parse(rec.startedAt)) : undefined;
+          rec.output = result.output;
+          rec.error = result.error;
+          rec.toolEvents = result.toolEvents;
+        }
         printTaskDone(taskName, result.output || result.error || '', !!result.error, taskId);
       },
       onDecisionStart: (decisionId, evaluates) => {
@@ -213,12 +295,35 @@ async function runPipeline(
     const results = await runner.run(plan);
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 
+    for (const [taskId, result] of results) {
+      if (taskId.startsWith('__decision_')) continue;
+      const rec = taskById.get(taskId);
+      if (!rec) continue;
+      rec.status = result.error ? 'error' : (rec.status === 'done' ? 'done' : 'running');
+      rec.output = result.output ?? rec.output;
+      rec.error = result.error ?? rec.error;
+      rec.toolEvents = result.toolEvents ?? rec.toolEvents;
+    }
+
+    run.status = run.tasks.some((t) => t.status === 'error') ? 'error' : 'done';
+    run.finishedAt = new Date().toISOString();
+    run.durationMs = Math.max(0, Date.parse(run.finishedAt) - Date.parse(run.startedAt));
+    run.toolCallCount = countToolCalls(run.tasks);
+    saveRun(run);
+
     console.log(`  ${hr('═')}`);
     console.log(`  ${green('✓')}  All tasks completed in ${elapsed}s`);
     console.log(`  ${hr('═')}`);
     console.log('');
   } catch (e) {
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+
+    run.status = 'error';
+    run.finishedAt = new Date().toISOString();
+    run.durationMs = Math.max(0, Date.parse(run.finishedAt) - Date.parse(run.startedAt));
+    run.toolCallCount = countToolCalls(run.tasks);
+    saveRun(run);
+
     console.log('');
     console.log(`  ${hr('═')}`);
     console.log(`  ${red('✗')}  Failed after ${elapsed}s: ${(e as Error).message}`);
