@@ -80,3 +80,48 @@ export interface RunEvent {
 export interface ApiError {
   error: string;
 }
+
+// ---- Run history types ----
+
+export type ToolEventType = 'tool_use' | 'tool_result' | 'text';
+
+export interface ToolEvent {
+  index: number;
+  type: ToolEventType;
+  name?: string;
+  input?: Record<string, unknown>;
+  content?: string;
+  toolUseId?: string;
+  isError?: boolean;
+}
+
+export interface RunTaskRecord {
+  taskId: string;
+  taskName: string;
+  agents: string[];
+  status: 'pending' | 'running' | 'done' | 'error';
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  output?: string;
+  error?: string;
+  /** Per-worker tool events (only for CLI agents using stream-json output) */
+  toolEvents?: ToolEvent[][];
+}
+
+export interface RunSummary {
+  id: string;
+  pipelineId: string;
+  pipelineName: string;
+  goal: string;
+  status: 'running' | 'done' | 'error';
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  taskCount: number;
+  toolCallCount: number;
+}
+
+export interface RunRecord extends RunSummary {
+  tasks: RunTaskRecord[];
+}

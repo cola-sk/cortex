@@ -6,10 +6,11 @@ import { AgentModal } from './components/AgentModal';
 import { ImportPanel } from './components/ImportPanel';
 import type { AgentRole } from './types';
 import { PipelinePage } from './components/PipelinePage';
+import { RunsPage } from './components/RunsPage';
 import { useTranslation } from 'react-i18next';
 import i18n from './i18n';
 
-type Page = 'models' | 'roles' | 'pipelines';
+type Page = 'models' | 'roles' | 'pipelines' | 'runs';
 
 export default function App() {
   const { t } = useTranslation();
@@ -91,7 +92,7 @@ export default function App() {
             </div>
             {/* Tab nav */}
             <nav className="flex items-center gap-1 rounded-lg bg-zinc-100 p-0.5">
-              {(['models', 'roles', 'pipelines'] as Page[]).map((p) => (
+              {(['models', 'roles', 'pipelines', 'runs'] as Page[]).map((p) => (
                 <button key={p} onClick={() => setPage(p)}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                     page === p ? 'bg-white text-zinc-800 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
@@ -128,6 +129,9 @@ export default function App() {
       {page === 'pipelines' && (
         <PipelinePage agents={agents.filter((a) => !!a.role)} />
       )}
+
+      {/* Runs page */}
+      {page === 'runs' && <RunsPage />}
 
       {/* Models page */}
       {page === 'models' && (

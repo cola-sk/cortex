@@ -9,13 +9,63 @@ import { detectAllTools, detectTool } from '../importers/index.js';
 import { readAppConfig, portFromUrl, DEFAULT_CONFIG } from '../config/appConfig.js';
 import { Agent } from '../core/agent.js';
 import { Runner } from '../core/runner.js';
-import type { Plan } from '../core/plan.js';
+import type { Plan, TaskResult } from '../core/plan.js';
+import type { ToolEvent } from '../core/events.js';
 
 const app = express();
 const appConfig = readAppConfig();
 const PORT = Number(process.env.PORT ?? portFromUrl(appConfig.server_url, portFromUrl(DEFAULT_CONFIG.server_url, 47821)));
 const CONFIG_PATH = path.resolve(process.env.AGENTS_CONFIG ?? 'agents.yaml');
 const PIPELINES_PATH = path.resolve(process.env.PIPELINES_CONFIG ?? 'pipelines.yaml');
+const RUNS_DIR = path.resolve(process.env.RUNS_DIR ?? 'runs');
+
+// ---- Run record types ----
+
+interface RunTaskRecord {
+  taskId: string;
+  taskName: string;
+  agents: string[];
+  status: 'pending' | 'running' | 'done' | 'error';
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  output?: string;
+  error?: string;
+  toolEvents?: ToolEvent[][];
+}
+
+interface RunRecord {
+  id: string;
+  pipelineId: string;
+  pipelineName: string;
+  goal: string;
+  status: 'running' | 'done' | 'error';
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  taskCount: number;
+  toolCallCount: number;
+  tasks: RunTaskRecord[];
+}
+
+function generateRunId(): string {
+  return `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function ensureRunsDir(): void {
+  if (!fs.existsSync(RUNS_DIR)) fs.mkdirSync(RUNS_DIR, { recursive: true });
+}
+
+function saveRun(run: RunRecord): void {
+  ensureRunsDir();
+  fs.writeFileSync(path.join(RUNS_DIR, `${run.id}.json`), JSON.stringify(run, null, 2), 'utf-8');
+}
+
+function countToolCalls(tasks: RunTaskRecord[]): number {
+  return tasks.reduce((sum, t) => {
+    return sum + (t.toolEvents ?? []).flat().filter((e) => e.type === 'tool_use').length;
+  }, 0);
+}
 
 app.use(cors());
 app.use(express.json());
@@ -115,6 +165,58 @@ app.delete('/api/agents/:id', (req, res) => {
 });
 
 // ---- Importer routes ----
+
+// ---- Runs routes ----
+
+// GET /api/runs — list recent runs (summary, no full output)
+app.get('/api/runs', (_req, res) => {
+  try {
+    ensureRunsDir();
+    const files = fs.readdirSync(RUNS_DIR)
+      .filter((f) => f.endsWith('.json'))
+      .sort()
+      .reverse()
+      .slice(0, 100);
+
+    const runs = files.flatMap((f) => {
+      try {
+        const run = JSON.parse(fs.readFileSync(path.join(RUNS_DIR, f), 'utf-8')) as RunRecord;
+        // Return summary without full task outputs
+        return [{
+          id: run.id,
+          pipelineId: run.pipelineId,
+          pipelineName: run.pipelineName,
+          goal: run.goal,
+          status: run.status,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          durationMs: run.durationMs,
+          taskCount: run.taskCount,
+          toolCallCount: run.toolCallCount,
+        }];
+      } catch { return []; }
+    });
+
+    res.json(runs);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /api/runs/:id — full run detail
+app.get('/api/runs/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const filePath = path.join(RUNS_DIR, `${id}.json`);
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({ error: `Run "${id}" not found` });
+      return;
+    }
+    res.json(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
 
 // GET /api/importers  — detect all local CLI tools
 app.get('/api/importers', (_req, res) => {
@@ -298,10 +400,49 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
       decisions: pipelineCfg.decisions,
     };
 
+    // ---- Create run record ----
+    const runId = generateRunId();
+    const runStartedAt = new Date().toISOString();
+    const run: RunRecord = {
+      id: runId,
+      pipelineId: id,
+      pipelineName: pipelineCfg.name ?? id,
+      goal: goal.trim(),
+      status: 'running',
+      startedAt: runStartedAt,
+      taskCount: pipelineCfg.tasks.length,
+      toolCallCount: 0,
+      tasks: pipelineCfg.tasks.map((t) => ({
+        taskId: t.id,
+        taskName: t.name,
+        agents: Array.isArray(t.agent) ? t.agent : [t.agent],
+        status: 'pending' as const,
+      })),
+    };
+
+    const taskStartTimes = new Map<string, number>();
+
     const runner = new Runner(agentMap, {
-      onTaskStart: (taskId, taskName, agents) => emit('task:start', { taskId, taskName, agents }),
-      onTaskComplete: (taskId, taskName, result) =>
-        emit('task:complete', { taskId, taskName, output: result.output, error: result.error }),
+      onTaskStart: (taskId, taskName, agents) => {
+        emit('task:start', { taskId, taskName, agents });
+        const task = run.tasks.find((t) => t.taskId === taskId);
+        if (task) { task.status = 'running'; task.startedAt = new Date().toISOString(); }
+        taskStartTimes.set(taskId, Date.now());
+      },
+      onTaskComplete: (taskId, taskName, result: TaskResult) => {
+        emit('task:complete', { taskId, taskName, output: result.output, error: result.error });
+        const task = run.tasks.find((t) => t.taskId === taskId);
+        if (task) {
+          task.status = result.error ? 'error' : 'done';
+          task.finishedAt = new Date().toISOString();
+          const started = taskStartTimes.get(taskId);
+          if (started) task.durationMs = Date.now() - started;
+          task.output = result.output;
+          if (result.error) task.error = result.error;
+          if (result.toolEvents) task.toolEvents = result.toolEvents;
+          run.toolCallCount = countToolCalls(run.tasks);
+        }
+      },
       onDecisionStart: (decisionId, evaluates) => emit('decision:start', { decisionId, evaluates }),
       onDecisionComplete: (decisionId, decision, retrying) =>
         emit('decision:complete', { decisionId, action: decision.action, reason: decision.reason, retrying }),
@@ -309,13 +450,19 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
 
     const results = await runner.run(plan);
 
+    run.status = 'done';
+    run.finishedAt = new Date().toISOString();
+    run.durationMs = Date.now() - new Date(runStartedAt).getTime();
+    run.toolCallCount = countToolCalls(run.tasks);
+    saveRun(run);
+
     const summary: Record<string, { output: string; error?: string }> = {};
     for (const [key, r] of results) {
       if (!key.startsWith('__decision_')) {
         summary[key] = { output: r.output, ...(r.error ? { error: r.error } : {}) };
       }
     }
-    emit('complete', { taskCount: plan.tasks.length, results: summary });
+    emit('complete', { taskCount: plan.tasks.length, results: summary, runId });
   } catch (err) {
     emit('error', { message: (err as Error).message });
   }

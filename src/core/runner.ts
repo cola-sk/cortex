@@ -99,12 +99,13 @@ export class Runner {
               if (!this.silent) console.log(`  ⚙ [${label}] ${task.name} → ${key}`);
               try {
                 const output = await agent.chat(fullInput);
-                if (!this.silent) console.log(`  ✓ [${label}] ${output.length} chars`);
-                return { output };
+                const toolEvents = agent.getLastToolEvents();
+                if (!this.silent) console.log(`  ✓ [${label}] ${output.length} chars${toolEvents.length ? ` | ${toolEvents.filter(e => e.type === 'tool_use').length} tool calls` : ''}`);
+                return { output, toolEvents };
               } catch (err) {
                 const error = err instanceof Error ? err.message : String(err);
                 if (!this.silent) console.error(`  ✗ [${label}] ${error}`);
-                return { output: '', error };
+                return { output: '', error, toolEvents: [] };
               }
             }),
           );
@@ -115,11 +116,15 @@ export class Runner {
             ? outputs.map((o, i) => `[Worker ${i + 1} — ${agentKeys[i]}]\n${o}`).join('\n\n')
             : outputs[0] ?? '';
 
+          const allToolEvents = workerResults.map((r) => r.toolEvents ?? []);
+          const hasToolEvents = allToolEvents.some((te) => te.length > 0);
+
           const taskResult: TaskResult = {
             taskId: task.id,
             outputs,
             output: combinedOutput,
             ...(errors.length ? { error: errors.join('; ') } : {}),
+            ...(hasToolEvents ? { toolEvents: allToolEvents } : {}),
           };
           results.set(task.id, taskResult);
           completed.add(task.id);

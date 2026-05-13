@@ -1,4 +1,4 @@
-import type { Agent, Pipeline, RunEventType } from './types';
+import type { Agent, Pipeline, RunEventType, RunSummary, RunRecord } from './types';
 
 export interface DetectedTool {
   id: string;
@@ -70,6 +70,10 @@ export const api = {
     request<{ success: boolean }>(`/api/pipelines/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
+
+  // ---- Runs ----
+  getRuns: () => request<RunSummary[]>('/api/runs'),
+  getRun: (id: string) => request<RunRecord>(`/api/runs/${encodeURIComponent(id)}`),
 
   /** Run a pipeline via SSE. Calls onEvent for each event; resolves when stream ends. */
   async runPipeline(

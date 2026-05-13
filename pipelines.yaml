@@ -18,15 +18,8 @@ pipelines:
           - plan
       - id: review
         name: Code Review
-        agent: reviewer
-        input: Review the implementation for correctness, security, and code quality.
+        agent: decider
+        input: 综合多个worker的输出，然后总结给出最佳方案
         dependsOn:
           - implement
-    decisions:
-      - id: final_review_gate
-        name: Final Review Gate
-        agent: decider
-        evaluates:
-          - implement
-          - review
-        maxRetries: 1
+    decisions: []

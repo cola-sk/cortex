@@ -2,8 +2,7 @@ import type { LLMProvider, Message, ChatOptions } from '../providers/index.js';
 import { ClaudeProvider } from '../providers/claude.js';
 import { OpenAICompatProvider } from '../providers/openai-compat.js';
 import { CliProvider } from '../providers/cli.js';
-import type { AgentConfig, ProviderConfig } from '../config/schema.js';
-
+import type { AgentConfig, ProviderConfig } from '../config/schema.js';import type { ToolEvent } from './events.js';
 export class Agent {
   readonly id: string;
   readonly systemPrompt: string;
@@ -22,6 +21,14 @@ export class Agent {
       { role: 'user', content: userMessage },
     ];
     return this.provider.chat(messages, options);
+  }
+
+  /** Returns tool events from the most recent chat() call. Only populated for CLI providers using stream-json output format. */
+  getLastToolEvents(): ToolEvent[] {
+    if (this.provider instanceof CliProvider) {
+      return this.provider.getLastToolEvents();
+    }
+    return [];
   }
 
   private static createProvider(provider: ProviderConfig): LLMProvider {

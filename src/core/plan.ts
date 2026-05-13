@@ -55,6 +55,8 @@ export interface TaskResult {
   /** Convenience: first output (or joined for parallel) */
   output: string;
   error?: string;
+  /** Per-worker tool events — populated when the agent uses CLI provider with stream-json output */
+  toolEvents?: import('./events.js').ToolEvent[][];
 }
 
 export type DecisionAction = 'continue' | 'retry';
