@@ -6,6 +6,8 @@ A multi-agent CI engine that composes AI models into visual pipelines with paral
 ![TypeScript](https://img.shields.io/badge/language-TypeScript-blue.svg)
 ![React](https://img.shields.io/badge/frontend-React%20%2B%20Vite-61dafb?logo=react)
 
+[中文文档](README.zh-CN.md)
+
 <p align="center">
   <img src="public/screenshot-pipeline.png" alt="Pipeline editor with plan → implement → review workflow" width="780">
 </p>
