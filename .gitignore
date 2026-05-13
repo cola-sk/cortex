@@ -9,6 +9,8 @@ web-dist/
 .env
 .env.local
 .env.*.local
+agents.yaml
+agents.yml
 
 # Logs
 *.log
