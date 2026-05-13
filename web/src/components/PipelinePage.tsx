@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { Agent, Pipeline, PipelineTask, PipelineDecision, RunEventType, ToolEvent } from '../types';
 import { api } from '../api';
 import { useTranslation } from 'react-i18next';
@@ -221,7 +223,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
 
   return (
     <div className="min-h-screen bg-zinc-50">
-      <div className="mx-auto max-w-6xl px-5 py-8">
+      <div className="mx-auto px-5 py-8">
         {/* Header */}
         <div className="mb-8 flex items-center justify-between">
           <div>
@@ -464,7 +466,7 @@ function PipelineEditor({
     <div className="flex flex-col min-h-screen bg-zinc-50">
       {/* Toolbar */}
       <div className="sticky top-0 z-30 bg-white border-b border-zinc-200">
-        <div className="mx-auto max-w-7xl px-4 py-3 flex items-center gap-3">
+        <div className="mx-auto px-4 py-3 flex items-center gap-3">
           <button onClick={onBack} className="text-zinc-400 hover:text-zinc-700 flex items-center gap-1.5 text-xs transition-colors shrink-0">
             <ChevronLeftIcon /> {t('common.back')}
           </button>
@@ -515,7 +517,7 @@ function PipelineEditor({
           className="flex-1 overflow-auto p-6"
           onClick={(e) => { if (e.target === e.currentTarget) setSelectedId(null); }}
         >
-          <div className="max-w-3xl mx-auto">
+          <div className="mx-auto">
             {/* Description row */}
             <div className="mb-6">
               <input
@@ -966,11 +968,17 @@ function DecisionInspector({
 // RunView — live SSE log
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface LogEntry {
+export interface LogEntry {
   id: string;
   type: RunEventType;
   label: string;
   detail?: string;
+  streamContent?: string;
+  agents?: string[];
+  toolEvents?: ToolEvent[];          // flat merged (all workers)
+  workerEvents?: ToolEvent[][];      // per-worker
+  startedAt?: number;
+  finishedAt?: number;
   status: 'running' | 'done' | 'error' | 'decision';
 }
 
@@ -983,7 +991,8 @@ function RunView({
   const [log, setLog] = useState<LogEntry[]>([]);
   const [results, setResults] = useState<Record<string, { output: string; error?: string }>>({});
   const [fatalError, setFatalError] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [modalTaskId, setModalTaskId] = useState<string | null>(null);
+  const [modalOutput, setModalOutput] = useState<{ title: string; content: string } | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   const addEntry = (entry: LogEntry) => {
@@ -999,7 +1008,11 @@ function RunView({
   };
 
   useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+    const el = logRef.current;
+    if (!el) return;
+    // Only auto-scroll if user is already near the bottom (within 120px)
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (isNearBottom) el.scrollTop = el.scrollHeight;
   }, [log]);
 
   const handleRun = async () => {
@@ -1019,33 +1032,44 @@ function RunView({
             type,
             label: `${d.taskName as string}`,
             detail: `Running via ${(d.agents as string[]).join(', ')}`,
+            agents: d.agents as string[],
+            toolEvents: [],
+            workerEvents: (d.agents as string[]).map(() => []),
+            startedAt: Date.now(),
             status: 'running',
           });
+          setModalTaskId(d.taskId as string);
         } else if (type === 'task:tool_event') {
           const event = d.event as ToolEvent;
-          if (event && event.type === 'tool_use') {
-            const summary = event.input && typeof event.input === 'object'
-              ? Object.values(event.input).find(v => typeof v === 'string') || JSON.stringify(event.input)
-              : '';
-            updateEntry(d.taskId as string, {
-              detail: `🔧 [${event.name}] ${summary}`,
-            });
-          } else if (event && event.type === 'tool_result') {
-            updateEntry(d.taskId as string, {
-              detail: `✓ [Result] ${event.content ? (event.content.slice(0, 50) + (event.content.length > 50 ? '...' : '')) : '(empty)'}`
-            });
-          } else if (event && event.type === 'text') {
-            if (event.content && event.content.trim()) {
-              updateEntry(d.taskId as string, {
-                detail: `  📝 ${event.content.trim().slice(0, 50)}...`
-              });
-            }
+          const taskId = d.taskId as string;
+          const workerIndex = (d.workerIndex as number) ?? 0;
+          if (event) {
+            setLog((prev) => prev.map((e) => {
+              if (e.id !== taskId) return e;
+              const newEvents = [...(e.toolEvents ?? []), event];
+              // Per-worker tracking
+              const newWorkerEvents = e.workerEvents ? e.workerEvents.map((w, i) => i === workerIndex ? [...w, event] : w) : [[event]];
+              let newStream = e.streamContent ?? '';
+              let newDetail = e.detail;
+              if (event.type === 'tool_use') {
+                const summary = event.input && typeof event.input === 'object'
+                  ? Object.values(event.input).find(v => typeof v === 'string') || JSON.stringify(event.input)
+                  : '';
+                newDetail = `🔧 [${event.name}] ${String(summary).slice(0, 60)}`;
+              } else if (event.type === 'tool_result') {
+                newDetail = `✓ [Result] ${event.content ? event.content.slice(0, 50) + (event.content.length > 50 ? '...' : '') : '(empty)'}`;
+              } else if (event.type === 'text' && event.content) {
+                newStream += event.content;
+                newDetail = '● streaming...';
+              }
+              return { ...e, toolEvents: newEvents, workerEvents: newWorkerEvents, streamContent: newStream, detail: newDetail };
+            }));
           }
         } else if (type === 'task:complete') {
-          updateEntry(d.taskId as string, {
-            status: d.error ? 'error' : 'done',
-            detail: d.error ? (d.error as string) : (d.output as string),
-          });
+          setLog((prev) => prev.map((e) => e.id === (d.taskId as string)
+            ? { ...e, status: d.error ? 'error' as const : 'done' as const, detail: d.error ? (d.error as string) : (d.output as string), finishedAt: Date.now() }
+            : e
+          ));
         } else if (type === 'decision:start') {
           addEntry({
             id: d.decisionId as string,
@@ -1076,11 +1100,13 @@ function RunView({
     }
   };
 
+  const modalEntry = modalTaskId ? log.find((e) => e.id === modalTaskId) : null;
+
   return (
     <div className="flex flex-col min-h-screen bg-zinc-50">
       {/* Toolbar */}
       <div className="sticky top-0 z-30 bg-white border-b border-zinc-200">
-        <div className="mx-auto max-w-3xl px-4 py-3 flex items-center gap-3">
+        <div className="mx-auto px-4 py-3 flex items-center gap-3">
           <button onClick={onBack} className="text-zinc-400 hover:text-zinc-700 flex items-center gap-1.5 text-xs transition-colors shrink-0">
             <ChevronLeftIcon /> Back
           </button>
@@ -1090,7 +1116,7 @@ function RunView({
         </div>
       </div>
 
-      <div className="mx-auto max-w-3xl w-full px-4 py-6 flex flex-col gap-6">
+      <div className="mx-auto w-full px-4 py-6 flex flex-col gap-6">
         {/* Goal input */}
         {!started && (
           <div className="bg-white rounded-xl border border-zinc-200 p-5">
@@ -1135,13 +1161,12 @@ function RunView({
               </span>
               {!done && <Spinner />}
             </div>
-            <div ref={logRef} className="divide-y divide-zinc-50 max-h-[60vh] overflow-y-auto">
+            <div ref={logRef} className="divide-y divide-zinc-50 overflow-y-auto">
               {log.map((entry) => (
                 <LogRow
                   key={entry.id}
                   entry={entry}
-                  isExpanded={expandedId === entry.id}
-                  onToggle={() => setExpandedId(expandedId === entry.id ? null : entry.id)}
+                  onOpenDetail={() => setModalTaskId(entry.id)}
                 />
               ))}
               {log.length === 0 && (
@@ -1166,22 +1191,23 @@ function RunView({
             </div>
             <div className="divide-y divide-zinc-50">
               {Object.entries(results).map(([taskId, r]) => (
-                <div key={taskId}>
-                  <button
-                    onClick={() => setExpandedId(expandedId === `result_${taskId}` ? null : `result_${taskId}`)}
-                    className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-zinc-50 transition-colors"
-                  >
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${r.error ? 'bg-red-400' : 'bg-emerald-400'}`} />
-                    <span className="flex-1 text-xs font-mono-custom text-zinc-700">{taskId}</span>
-                    <ChevronRightIcon className={`w-3 h-3 text-zinc-300 transition-transform ${expandedId === `result_${taskId}` ? 'rotate-90' : ''}`} />
-                  </button>
-                  {expandedId === `result_${taskId}` && (
-                    <div className="px-4 pb-4">
-                      <pre className="text-xs text-zinc-600 whitespace-pre-wrap bg-zinc-50 rounded-lg p-3 max-h-64 overflow-y-auto leading-relaxed">
-                        {r.error ? `ERROR: ${r.error}` : r.output}
-                      </pre>
+                <div key={taskId} className="px-4 py-3 flex items-start gap-3">
+                  <span className={`w-1.5 h-1.5 rounded-full mt-1 shrink-0 ${r.error ? 'bg-red-400' : 'bg-emerald-400'}`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-mono-custom text-zinc-700 font-semibold">{taskId}</span>
+                      <span className="text-[10px] text-zinc-400">{(r.error ? r.error : r.output).length} chars</span>
                     </div>
-                  )}
+                    <div className="max-h-24 overflow-hidden text-xs text-zinc-500 leading-relaxed">
+                      <Markdown content={r.error ? `**Error:** ${r.error}` : r.output} />
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setModalOutput({ title: taskId, content: r.error ? `**Error:**\n\n\`\`\`\n${r.error}\`\`\`` : r.output })}
+                    className="shrink-0 text-xs text-indigo-600 font-medium hover:text-indigo-800 transition-colors"
+                  >
+                    Full ↗
+                  </button>
                 </div>
               ))}
             </div>
@@ -1200,54 +1226,393 @@ function RunView({
           </div>
         )}
       </div>
+
+      {/* Task detail modal */}
+      {modalEntry && (
+        <TaskDetailModal
+          entry={modalEntry}
+          onClose={() => setModalTaskId(null)}
+        />
+      )}
+
+      {/* Output modal */}
+      {modalOutput && (
+        <OutputModal
+          title={modalOutput.title}
+          content={modalOutput.content}
+          onClose={() => setModalOutput(null)}
+        />
+      )}
     </div>
   );
 }
 
-function LogRow({ entry, isExpanded, onToggle }: {
+// ─────────────────────────────────────────────────────────────────────────────
+// Markdown renderer (shared)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Markdown({ content, className }: { content: string; className?: string }) {
+  return (
+    <div className={`prose prose-xs max-w-none text-zinc-700 leading-relaxed
+      prose-headings:text-zinc-800 prose-headings:font-semibold
+      prose-code:bg-zinc-100 prose-code:text-zinc-700 prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:text-[11px]
+      prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:rounded-lg prose-pre:text-xs prose-pre:overflow-x-auto
+      prose-a:text-indigo-600 prose-blockquote:border-l-indigo-300 prose-blockquote:text-zinc-500
+      prose-table:text-xs prose-th:bg-zinc-50 prose-td:py-1
+      ${className ?? ''}`}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LogRow
+// ─────────────────────────────────────────────────────────────────────────────
+
+function LogRow({ entry, onOpenDetail }: {
   entry: LogEntry;
-  isExpanded: boolean;
-  onToggle: () => void;
+  onOpenDetail: () => void;
 }) {
-  const icons: Record<LogEntry['status'], string> = {
-    running: '◌',
-    done: '✓',
-    error: '✗',
-    decision: '⬡',
-  };
-  const colors: Record<LogEntry['status'], string> = {
-    running: 'text-zinc-400',
-    done: 'text-emerald-500',
-    error: 'text-red-500',
-    decision: 'text-amber-500',
-  };
+  const toolCallCount = (entry.toolEvents ?? []).filter((e) => e.type === 'tool_use').length;
+  const icons: Record<LogEntry['status'], string> = { running: '◌', done: '✓', error: '✗', decision: '⬡' };
+  const colors: Record<LogEntry['status'], string> = { running: 'text-zinc-400', done: 'text-emerald-500', error: 'text-red-500', decision: 'text-amber-500' };
+  const durationMs = entry.startedAt ? (entry.finishedAt ?? Date.now()) - entry.startedAt : undefined;
+  const previewText = entry.status === 'running' ? '● streaming...' : entry.detail?.split('\n')[0];
 
   return (
     <div>
-      <button
-        onClick={onToggle}
-        className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-zinc-50 transition-colors"
-      >
+      <button onClick={onOpenDetail} className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-zinc-50 transition-colors">
         <span className={`shrink-0 mt-0.5 text-sm ${colors[entry.status]} ${entry.status === 'running' ? 'animate-pulse' : ''}`}>
           {icons[entry.status]}
         </span>
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-medium text-zinc-700">{entry.label}</p>
-          {entry.detail && !isExpanded && (
-            <p className="text-xs text-zinc-400 truncate mt-0.5">{entry.detail}</p>
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-semibold text-zinc-800">{entry.label}</p>
+            {entry.agents && entry.agents.length > 0 && (
+              <span className="text-[10px] text-zinc-400 font-mono">{entry.agents.join(', ')}</span>
+            )}
+          </div>
+          {previewText && (
+            <p className="text-xs text-zinc-400 truncate mt-0.5">{previewText}</p>
           )}
         </div>
-        {entry.detail && (
-          <ChevronRightIcon className={`shrink-0 w-3 h-3 text-zinc-300 transition-transform mt-0.5 ${isExpanded ? 'rotate-90' : ''}`} />
-        )}
-      </button>
-      {isExpanded && entry.detail && (
-        <div className="px-10 pb-3">
-          <pre className="text-xs text-zinc-600 whitespace-pre-wrap bg-zinc-50 rounded-lg p-3 max-h-48 overflow-y-auto leading-relaxed">
-            {entry.detail}
-          </pre>
+        <div className="flex items-center gap-1.5 shrink-0 mt-0.5">
+          {toolCallCount > 0 && (
+            <span className="rounded-md bg-indigo-50 text-indigo-600 px-1.5 py-0.5 text-[10px] font-semibold">🔧 {toolCallCount}</span>
+          )}
+          {durationMs != null && durationMs > 0 && (
+            <span className="text-[10px] text-zinc-400">{formatDurationShort(durationMs)}</span>
+          )}
+          <span className="text-xs text-indigo-600 font-medium ml-2">Detail ↗</span>
         </div>
+      </button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TaskDetailModal — modal overlay with tabs for parallel workers + timeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TOOL_ICONS: Record<string, string> = {
+  Bash: '⬛', bash: '⬛', Read: '📄', ReadFile: '📄', read_file: '📄',
+  Write: '✏️', WriteFile: '✏️', write_file: '✏️',
+  WebSearch: '🔍', Search: '🔍', search: '🔍',
+  Edit: '✏️', MultiEdit: '✏️', edit_file: '✏️',
+  Glob: '📁', LS: '📁', list_dir: '📁',
+  Grep: '🔎', grep_search: '🔎',
+};
+
+function getToolBadgeColor(name?: string): string {
+  if (!name) return 'bg-zinc-100 text-zinc-600';
+  const n = name.toLowerCase();
+  if (n.includes('bash') || n.includes('shell') || n.includes('run')) return 'bg-zinc-800 text-white';
+  if (n.includes('read') || n.includes('glob') || n.includes('ls') || n.includes('list') || n.includes('search') || n.includes('grep')) return 'bg-blue-100 text-blue-700';
+  if (n.includes('write') || n.includes('edit') || n.includes('multi')) return 'bg-amber-100 text-amber-700';
+  if (n.includes('web')) return 'bg-purple-100 text-purple-700';
+  return 'bg-zinc-100 text-zinc-600';
+}
+
+function getToolSummaryText(event: ToolEvent): string {
+  if (!event.input) return '';
+  const inp = event.input;
+  if (inp.command) return String(inp.command);
+  if (inp.path) return String(inp.path);
+  if (inp.file_path) return String(inp.file_path);
+  if (inp.query) return String(inp.query);
+  if (inp.pattern) return String(inp.pattern);
+  return JSON.stringify(inp).slice(0, 120);
+}
+
+function formatDurationShort(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
+}
+
+type TimelineItem = { type: 'tool'; use: ToolEvent; result?: ToolEvent; index: number }
+  | { type: 'text'; content: string; index: number };
+
+function buildTimeline(events: ToolEvent[]): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  let idx = 0;
+  for (const ev of events) {
+    if (ev.type === 'tool_use') {
+      const result = events.find((e) => e.type === 'tool_result' && e.toolUseId === ev.toolUseId);
+      items.push({ type: 'tool', use: ev, result, index: idx++ });
+    } else if (ev.type === 'text') {
+      const last = items[items.length - 1];
+      if (last && last.type === 'text') { last.content += ev.content ?? ''; }
+      else { items.push({ type: 'text', content: ev.content ?? '', index: idx++ }); }
+    }
+  }
+  return items;
+}
+
+function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }; idx: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const summary = getToolSummaryText(item.use);
+  return (
+    <div className="flex gap-3">
+      <div className="flex flex-col items-center w-5 shrink-0">
+        <div className="w-2 h-2 rounded-full bg-zinc-300 mt-2" />
+        <div className="w-px flex-1 bg-zinc-100 mt-1" />
+      </div>
+      <div className="flex-1 min-w-0 pb-2">
+        <button onClick={() => setExpanded(e => !e)} className="w-full flex items-center gap-2 py-1 text-left group">
+          <span className={`shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold ${getToolBadgeColor(item.use.name)}`}>
+            {item.use.name ?? 'Tool'}
+          </span>
+          <span className="text-xs font-mono text-zinc-500 truncate flex-1">{summary}</span>
+          {item.result?.isError && <span className="shrink-0 rounded px-1 py-0.5 text-[10px] bg-red-100 text-red-600">error</span>}
+          <span className="text-zinc-300 text-[10px] opacity-0 group-hover:opacity-100">#{idx + 1}</span>
+          <ChevronRightIcon className={`shrink-0 w-3 h-3 text-zinc-300 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        </button>
+        {expanded && (
+          <div className="mt-1 space-y-2 pl-1">
+            <div>
+              <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider mb-1">Input</p>
+              <pre className="text-xs text-zinc-600 whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto bg-zinc-50 rounded p-2">
+                {summary || JSON.stringify(item.use.input, null, 2)}
+              </pre>
+            </div>
+            {item.result && (
+              <div>
+                <p className={`text-[10px] font-medium uppercase tracking-wider mb-1 ${item.result.isError ? 'text-red-400' : 'text-zinc-400'}`}>
+                  Output{item.result.isError ? ' (error)' : ''}
+                </p>
+                <pre className={`text-xs whitespace-pre-wrap font-mono leading-relaxed max-h-52 overflow-y-auto rounded p-2 ${item.result.isError ? 'bg-red-50 text-red-700' : 'bg-zinc-50 text-zinc-600'}`}>
+                  {item.result.content || '(empty)'}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
+  const [expanded, setExpanded] = useState(true);
+  const preview = item.content.replace(/```[a-z]*\n?/ig, '').trim().split('\n')[0]?.slice(0, 80) ?? '';
+  return (
+    <div className="flex gap-3">
+      <div className="flex flex-col items-center w-5 shrink-0">
+        <div className="w-2 h-2 rounded-full bg-indigo-200 mt-2" />
+        <div className="w-px flex-1 bg-zinc-100 mt-1" />
+      </div>
+      <div className="flex-1 min-w-0 pb-2">
+        <button onClick={() => setExpanded(e => !e)} className="w-full flex items-center gap-2 py-1 text-left">
+          <span className="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold bg-indigo-100 text-indigo-700">Agent</span>
+          <span className="text-xs text-zinc-500 truncate flex-1">{preview}{item.content.length > 80 ? '...' : ''}</span>
+          <ChevronRightIcon className={`shrink-0 w-3 h-3 text-zinc-300 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        </button>
+        {expanded && (
+          <div className="mt-2 pl-1">
+            <Markdown content={item.content} className="text-xs" />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WorkerTimeline({ events, status }: { events: ToolEvent[]; status: LogEntry['status'] }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const timeline = buildTimeline(events);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || status !== 'running') return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+    if (near) el.scrollTop = el.scrollHeight;
+  }, [events.length, status]);
+
+  if (timeline.length === 0) {
+    return <div className="py-10 text-center text-xs text-zinc-300">Waiting for events...</div>;
+  }
+
+  return (
+    <div ref={scrollRef} className="overflow-y-auto max-h-[55vh] pr-1">
+      {timeline.map((item, i) =>
+        item.type === 'tool'
+          ? <TimelineToolItem key={`t-${item.use.toolUseId ?? i}`} item={item} idx={i} />
+          : <TimelineTextItem key={`x-${i}`} item={item} />
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OutputModal — fullscreen dialog for viewing task output as markdown
+// ─────────────────────────────────────────────────────────────────────────────
+
+function OutputModal({ title, content, onClose }: { title: string; content: string; onClose: () => void }) {
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', fn);
+    return () => window.removeEventListener('keydown', fn);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-12 bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Modal header */}
+        <div className="border-b border-zinc-100 px-5 py-4 flex items-center justify-between shrink-0">
+          <h2 className="text-sm font-semibold text-zinc-800 truncate">{title}</h2>
+          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 transition-colors shrink-0 p-1">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        {/* Markdown content */}
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          <Markdown content={content} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TaskDetailModal — modal overlay with tabs for parallel workers + timeline
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function TaskDetailModal({ entry, onClose }: { entry: LogEntry; onClose: () => void }) {
+  const [activeTab, setActiveTab] = useState(0);
+  const workers = entry.workerEvents && entry.workerEvents.length > 1
+    ? entry.workerEvents
+    : [entry.toolEvents ?? []];
+  const agents = entry.agents ?? ['worker'];
+  const toolCallCount = (entry.toolEvents ?? []).filter(e => e.type === 'tool_use').length;
+  const durationMs = entry.startedAt ? (entry.finishedAt ?? Date.now()) - entry.startedAt : undefined;
+  const isMultiWorker = workers.length > 1;
+
+  // Close on Escape
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', fn);
+    return () => window.removeEventListener('keydown', fn);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-12 bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className={`bg-white rounded-2xl shadow-2xl w-full ${isMultiWorker ? 'max-w-6xl' : 'max-w-3xl'} max-h-[88vh] flex flex-col overflow-hidden`}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Modal header */}
+        <div className="border-b border-zinc-100 px-5 py-4 flex items-start gap-3 shrink-0">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-zinc-800">{entry.label}</span>
+              {entry.status === 'running' && <Spinner />}
+              {entry.status === 'done' && <span className="text-emerald-500 text-xs">✓ Done</span>}
+              {entry.status === 'error' && <span className="text-red-500 text-xs">✗ Error</span>}
+            </div>
+            <div className="flex items-center gap-3 mt-1">
+              {durationMs != null && durationMs > 0 && <span className="text-[11px] text-zinc-400">⏱ {formatDurationShort(durationMs)}</span>}
+              {toolCallCount > 0 && <span className="text-[11px] text-zinc-400">🔧 {toolCallCount} tool calls</span>}
+              <span className="text-[11px] text-zinc-400">{(entry.toolEvents ?? []).length} events</span>
+              {isMultiWorker && <span className="text-[11px] text-zinc-400">👥 {workers.length} workers</span>}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 transition-colors shrink-0 p-1">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        {/* Multi-worker: side-by-side panes */}
+        {isMultiWorker ? (
+          <>
+            {/* Tab switcher for narrow screens / fallback */}
+            <div className="border-b border-zinc-100 px-5 flex gap-0 shrink-0 overflow-x-auto md:hidden">
+              {workers.map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => setActiveTab(i)}
+                  className={`px-4 py-2.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
+                    activeTab === i
+                      ? 'border-indigo-500 text-indigo-600'
+                      : 'border-transparent text-zinc-400 hover:text-zinc-600'
+                  }`}
+                >
+                  {agents[i] ? `Worker ${i + 1} · ${agents[i]}` : `Worker ${i + 1}`}
+                  {workers[i].filter(e => e.type === 'tool_use').length > 0 && (
+                    <span className="ml-1.5 rounded bg-zinc-100 px-1.5 text-[10px] text-zinc-500">
+                      🔧 {workers[i].filter(e => e.type === 'tool_use').length}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+            {/* Narrow: single pane */}
+            <div className="flex-1 overflow-hidden px-5 py-4 md:hidden">
+              <WorkerTimeline
+                key={activeTab}
+                events={workers[activeTab] ?? []}
+                status={entry.status}
+              />
+            </div>
+            {/* Wide: side-by-side */}
+            <div className="flex-1 overflow-hidden hidden md:flex">
+              {workers.map((wEvents, i) => (
+                <div key={i} className={`flex-1 flex flex-col min-w-0 ${i > 0 ? 'border-l border-zinc-100' : ''}`}>
+                  <div className="px-4 py-2 border-b border-zinc-50 bg-zinc-50/50 shrink-0 flex items-center gap-2">
+                    <span className="text-xs font-semibold text-zinc-600">Worker {i + 1}</span>
+                    <span className="text-[11px] text-zinc-400">{agents[i] ?? ''}</span>
+                    {wEvents.filter(e => e.type === 'tool_use').length > 0 && (
+                      <span className="rounded bg-zinc-100 px-1.5 text-[10px] text-zinc-500">
+                        🔧 {wEvents.filter(e => e.type === 'tool_use').length}
+                      </span>
+                    )}
+                    {entry.status === 'running' && wEvents.length > 0 && <Spinner />}
+                  </div>
+                  <div className="flex-1 overflow-hidden px-4 py-3">
+                    <WorkerTimeline events={wEvents} status={entry.status} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          /* Single worker: full-width timeline */
+          <div className="flex-1 overflow-hidden px-5 py-4">
+            <WorkerTimeline
+              events={workers[0] ?? []}
+              status={entry.status}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

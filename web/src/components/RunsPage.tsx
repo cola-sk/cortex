@@ -1,7 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { RunSummary, RunRecord, RunTaskRecord, ToolEvent } from '../types';
 import { api } from '../api';
 import { useTranslation } from 'react-i18next';
+import { TaskDetailModal, type LogEntry } from './PipelinePage';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -148,8 +151,8 @@ function ToolEventList({ events }: { events: ToolEvent[] }) {
           return <ToolEventPair key={`tool-${item.use.toolUseId ?? idx}`} use={item.use} result={item.result} index={idx} />;
         }
         return (
-          <div key={`text-${idx}`} className="px-3 py-2 bg-zinc-50 rounded text-xs font-mono text-zinc-600 whitespace-pre-wrap max-h-64 overflow-y-auto">
-            {item.content}
+          <div key={`text-${idx}`} className="px-3 py-3 bg-zinc-50 rounded-lg max-h-64 overflow-y-auto">
+            <Markdown content={item.content} />
           </div>
         );
       })}
@@ -161,13 +164,30 @@ function ToolEventList({ events }: { events: ToolEvent[] }) {
 // Task record row
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskRow({ task }: { task: RunTaskRecord }) {
+function TaskRow({ task, run }: { task: RunTaskRecord; run: RunRecord }) {
   const [expanded, setExpanded] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+  
   const allToolEvents = (task.toolEvents ?? []).flat();
   const toolCallCount = allToolEvents.filter((e) => e.type === 'tool_use').length;
   const hasMultiWorker = (task.toolEvents ?? []).length > 1;
 
+  // Adapt RunTaskRecord into what TaskDetailModal expects
+  const modalEntry: LogEntry = {
+    id: task.taskId,
+    type: 'task:complete' as any,
+    label: task.taskName,
+    status: task.status === 'error' ? 'error' : 'done',
+    agents: task.agents,
+    detail: task.error || task.output,
+    toolEvents: allToolEvents,
+    workerEvents: task.toolEvents,
+    startedAt: new Date(run.startedAt).getTime(), // Approximated
+    finishedAt: task.durationMs ? new Date(run.startedAt).getTime() + task.durationMs : undefined
+  };
+
   return (
+    <>
     <div className={`rounded-xl border overflow-hidden transition-all ${
       task.status === 'error' ? 'border-red-200' : 'border-zinc-200'
     }`}>
@@ -178,8 +198,8 @@ function TaskRow({ task }: { task: RunTaskRecord }) {
         <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot(task.status)}`} />
         <span className="flex-1 text-sm font-semibold text-zinc-800">{task.taskName}</span>
         <div className="flex items-center gap-2 shrink-0">
-          {task.agents.map((a) => (
-            <span key={a} className="text-xs text-zinc-400 font-mono">{a}</span>
+          {task.agents.map((a, i) => (
+            <span key={i} className="text-xs text-zinc-400 font-mono">{a}</span>
           ))}
           {toolCallCount > 0 && (
             <span className="rounded-md bg-indigo-50 text-indigo-600 px-1.5 py-0.5 text-[10px] font-semibold">
@@ -195,6 +215,15 @@ function TaskRow({ task }: { task: RunTaskRecord }) {
 
       {expanded && (
         <div className="border-t border-zinc-100 px-4 py-3 bg-white space-y-3">
+          <div className="flex justify-between items-center mb-2">
+             <span className="text-xs font-semibold text-zinc-500">Details</span>
+             <button 
+               onClick={(e) => { e.stopPropagation(); setShowModal(true); }}
+               className="text-xs text-indigo-600 font-medium hover:text-indigo-800 hover:underline"
+             >
+               ↗ Open detail
+             </button>
+          </div>
           {/* Multi-worker breakdown */}
           {hasMultiWorker ? (
             (task.toolEvents ?? []).map((workerEvents, wi) => (
@@ -211,11 +240,11 @@ function TaskRow({ task }: { task: RunTaskRecord }) {
           {task.output && (
             <div>
               <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Output</p>
-              <pre className={`text-xs whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto rounded-lg p-3 font-mono ${
-                task.status === 'error' ? 'bg-red-50 text-red-700' : 'bg-zinc-50 text-zinc-700'
+              <div className={`text-xs whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto rounded-lg p-3 ${
+                task.status === 'error' ? 'bg-red-50 text-red-700' : 'bg-zinc-50'
               }`}>
-                {task.error ? `ERROR: ${task.error}\n\n${task.output}` : task.output}
-              </pre>
+                {task.error ? <pre className="font-mono text-red-700">{task.error}\n\n{task.output}</pre> : <Markdown content={task.output} />}
+              </div>
             </div>
           )}
           {task.error && !task.output && (
@@ -225,6 +254,26 @@ function TaskRow({ task }: { task: RunTaskRecord }) {
           )}
         </div>
       )}
+    </div>
+    {showModal && <TaskDetailModal entry={modalEntry} onClose={() => setShowModal(false)} />}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Markdown renderer (shared)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Markdown({ content, className }: { content: string; className?: string }) {
+  return (
+    <div className={`prose prose-xs max-w-none text-zinc-700 leading-relaxed
+      prose-headings:text-zinc-800 prose-headings:font-semibold
+      prose-code:bg-zinc-100 prose-code:text-zinc-700 prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:text-[11px]
+      prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:rounded-lg prose-pre:text-xs prose-pre:overflow-x-auto
+      prose-a:text-indigo-600 prose-blockquote:border-l-indigo-300 prose-blockquote:text-zinc-500
+      prose-table:text-xs prose-th:bg-zinc-50 prose-td:py-1
+      ${className ?? ''}`}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
     </div>
   );
 }
@@ -269,7 +318,7 @@ function RunDetail({ run }: { run: RunRecord }) {
       {/* Tasks */}
       <div className="px-5 py-4 space-y-3">
         {run.tasks.map((task) => (
-          <TaskRow key={task.taskId} task={task} />
+          <TaskRow key={task.taskId} task={task} run={run} />
         ))}
       </div>
     </div>

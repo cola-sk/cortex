@@ -379,10 +379,15 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
 
   let run: RunRecord | null = null;
   let aborted = false;
+  let pipelineFinished = false;
+  const abortController = new AbortController();
 
-  req.on('close', () => {
+  const doAbort = () => {
+    // Guard: don't abort if pipeline already completed normally
+    if (pipelineFinished) return;
     if (!aborted && run && run.status === 'running') {
       aborted = true;
+      abortController.abort();
       run.status = 'error';
       run.finishedAt = new Date().toISOString();
       run.durationMs = Date.now() - new Date(run.startedAt).getTime();
@@ -394,7 +399,21 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
       }
       saveRun(run);
     }
+  };
+
+  // Use res.on('close') instead of req.on('close') — the response stream closing
+  // is a more reliable indicator that the client disconnected.
+  // Also guard against premature close events by verifying res.writableFinished.
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      // Client disconnected before we finished writing
+      doAbort();
+    }
   });
+
+  // Forward SIGTERM to running child processes
+  const sigtermHandler = () => doAbort();
+  process.once('SIGTERM', sigtermHandler);
 
   try {
     const pf = readPipelineFile();
@@ -494,9 +513,10 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         emit('decision:complete', { decisionId, action: decision.action, reason: decision.reason, retrying }),
     });
 
-    const results = await runner.run(plan);
+    const results = await runner.run(plan, abortController.signal);
 
     if (!aborted) {
+      pipelineFinished = true;
       run.status = 'done';
       run.finishedAt = new Date().toISOString();
       run.durationMs = Date.now() - new Date(runStartedAt).getTime();
@@ -521,6 +541,8 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         saveRun(run);
       }
     }
+  } finally {
+    process.off('SIGTERM', sigtermHandler);
   }
 
   res.end();

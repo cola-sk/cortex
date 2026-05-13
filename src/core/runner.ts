@@ -29,7 +29,7 @@ export class Runner {
    *  - Multi-worker parallel execution when task.agent is an array
    *  - Decision point evaluation with retry loops
    */
-  async run(plan: Plan): Promise<Map<string, TaskResult>> {
+  async run(plan: Plan, signal?: AbortSignal): Promise<Map<string, TaskResult>> {
     const results = new Map<string, TaskResult>();
     const retryCount = new Map<string, number>();
 
@@ -102,7 +102,8 @@ export class Runner {
                 const output = await agent.chat(fullInput, [], {
                   onStreamEvent: (event) => {
                     this.callbacks.onTaskProgress?.(task.id, idx, event);
-                  }
+                  },
+                  signal,
                 });
                 const toolEvents = agent.getLastToolEvents();
                 if (!this.silent) console.log(`  ✓ [${label}] ${output.length} chars${toolEvents.length ? ` | ${toolEvents.filter(e => e.type === 'tool_use').length} tool calls` : ''}`);

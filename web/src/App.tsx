@@ -102,7 +102,7 @@ export default function App() {
     <div className="min-h-screen bg-zinc-100">
       {/* Header */}
       <header className="sticky top-0 z-40 border-b border-zinc-200 bg-white/90 backdrop-blur-md">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-3.5">
+        <div className="mx-auto flex items-center justify-between px-5 py-3.5">
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2.5">
               <span className="text-lg text-indigo-600">◈</span>
@@ -246,7 +246,7 @@ function AgentPage({
     (a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role),
   );
   return (
-    <main className="mx-auto max-w-6xl px-5 py-8">
+    <main className="mx-auto px-5 py-8">
       {loading && <div className="flex items-center justify-center py-24"><Spinner /></div>}
       {!loading && error && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-600">

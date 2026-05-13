@@ -33,6 +33,17 @@ export default defineConfig({
       '/api': {
         target: serverUrl,
         changeOrigin: true,
+        // Required for SSE streaming: prevent proxy from buffering responses
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            const ct = proxyRes.headers['content-type'] || '';
+            if (ct.includes('text/event-stream')) {
+              // Disable any response buffering for SSE
+              proxyRes.headers['x-accel-buffering'] = 'no';
+              proxyRes.headers['cache-control'] = 'no-cache, no-transform';
+            }
+          });
+        },
       },
     },
   },

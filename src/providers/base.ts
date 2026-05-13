@@ -10,6 +10,7 @@ export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
   onStreamEvent?: (event: ToolEvent) => void;
+  signal?: AbortSignal;
 }
 
 // Unified LLM provider interface

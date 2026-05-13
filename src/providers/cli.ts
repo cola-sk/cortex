@@ -117,8 +117,24 @@ export class CliProvider implements LLMProvider {
       a.replace('{{SYSTEM}}', systemContent).replace('{{PROMPT}}', effectivePrompt),
     );
 
+    // When no {{PROMPT}} placeholder exists, build appropriate flags for the CLI.
+    // stdin pipe is unreliable with some CLIs (e.g. claude), so we construct
+    // explicit flags based on the command name.
     if (!hasPromptPlaceholder) {
-      resolvedArgs.push(effectivePrompt);
+      const cmd = this.command.toLowerCase();
+      if (cmd === 'claude') {
+        // Claude CLI: use -p for prompt, --system-prompt for system, --output-format stream-json --verbose for structured streaming
+        if (systemContent) {
+          resolvedArgs.push('--system-prompt', systemContent);
+        }
+        resolvedArgs.push('-p', userContent, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions');
+      } else if (cmd === 'codex') {
+        // Codex CLI: use exec subcommand with positional prompt
+        resolvedArgs.push('exec', effectivePrompt);
+      } else {
+        // Generic: append prompt as positional arg
+        resolvedArgs.push(effectivePrompt);
+      }
     }
 
     return new Promise((resolve, reject) => {
@@ -203,7 +219,27 @@ export class CliProvider implements LLMProvider {
 
       child.on('error', (err) => reject(new Error(`CLI "${this.command}" failed to start: ${err.message}`)));
 
-      child.on('close', (code) => {
+      // Abort support: kill child when signal fires
+      if (options?.signal) {
+        const signal = options.signal;
+        if (signal.aborted) {
+          // Signal already aborted before spawn — but don't reject immediately.
+          // The process may still complete quickly. Kill it and let the 'close'
+          // handler produce the proper error.
+          child.kill('SIGTERM');
+        } else {
+          signal.addEventListener('abort', () => {
+            child.kill('SIGTERM');
+          }, { once: true });
+        }
+      }
+
+      child.on('close', (code, signal) => {
+        // SIGTERM (exit 143) means the process was intentionally killed — treat as abort
+        if (signal === 'SIGTERM' || code === 143) {
+          reject(new Error('Aborted'));
+          return;
+        }
         if (code !== 0) {
           const errText = stripAnsi(Buffer.concat(stderr).toString().trim()) || `exit code ${code}`;
           this._lastToolEvents = [];
