@@ -146,8 +146,11 @@ export class CliProvider implements LLMProvider {
           TERM: 'dumb',
         },
         timeout: 15 * 60 * 1000,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
+
+      // Close stdin immediately so CLIs don't wait for input
+      child.stdin?.end();
 
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
@@ -215,7 +218,16 @@ export class CliProvider implements LLMProvider {
           }
         }
       });
-      child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderr.push(chunk);
+        // Stream stderr as text events too — tools like codex write progress to stderr
+        if (options?.onStreamEvent) {
+          const text = stripAnsi(chunk.toString('utf-8')).trim();
+          if (text) {
+            options.onStreamEvent({ index: streamIdx++, type: 'text', content: text });
+          }
+        }
+      });
 
       child.on('error', (err) => reject(new Error(`CLI "${this.command}" failed to start: ${err.message}`)));
 
@@ -253,7 +265,10 @@ export class CliProvider implements LLMProvider {
           resolve(parsed.output);
         } else {
           this._lastToolEvents = [];
-          resolve(rawOutput);
+          // Some CLIs (e.g. codex) write progress to stderr and only a brief result to stdout.
+          // If stdout is empty, fall back to stderr content.
+          const output = rawOutput || stripAnsi(Buffer.concat(stderr).toString().trim());
+          resolve(output);
         }
       });
     });
