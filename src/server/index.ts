@@ -67,6 +67,21 @@ function countToolCalls(tasks: RunTaskRecord[]): number {
   }, 0);
 }
 
+// ---- Auto-init config files from templates if they don't exist ----
+
+function initConfigIfMissing(configPath: string, exampleName: string): void {
+  if (!fs.existsSync(configPath)) {
+    const templatePath = path.resolve(exampleName);
+    if (fs.existsSync(templatePath)) {
+      fs.copyFileSync(templatePath, configPath);
+      console.log(`  Created ${path.basename(configPath)} from ${exampleName}`);
+    }
+  }
+}
+
+initConfigIfMissing(CONFIG_PATH, 'agents.example.yaml');
+initConfigIfMissing(PIPELINES_PATH, 'pipelines.example.yaml');
+
 app.use(cors());
 app.use(express.json());
 

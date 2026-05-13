@@ -1,0 +1,131 @@
+# Cortex Pipelines Configuration Template
+# Copy this file to pipelines.yaml and customise the pipelines.
+#
+# Pipeline structure:
+#   Each pipeline has a list of tasks executed by agents.
+#   Tasks can run in parallel or sequentially (via dependsOn).
+#   Decisions are optional quality gates that can trigger retries.
+#
+# Agent keys must match entries in your agents.yaml.
+
+pipelines:
+
+  # ── Simple Chain: plan → implement → review ─────────────────────────────────
+  code_pipeline:
+    name: Code Pipeline
+    description: "Sequential: plan → implement → review with quality gate"
+    tasks:
+      - id: plan
+        name: Planning
+        agent: orchestrator
+        input: Analyse the goal and produce a detailed implementation plan.
+        dependsOn: []
+
+      - id: implement
+        name: Implementation
+        agent: coder          # Use [coder, coder] for two parallel workers
+        input: Implement the solution according to the plan.
+        dependsOn:
+          - plan
+
+      - id: review
+        name: Code Review
+        agent: decider
+        input: Review all worker outputs and summarise the best solution.
+        dependsOn:
+          - implement
+    decisions: []
+
+  # ── Research & Write pipeline ────────────────────────────────────────────────
+  research_pipeline:
+    name: Research Pipeline
+    description: "Research a topic, analyse findings, write a report"
+    tasks:
+      - id: research
+        name: Research
+        agent: analyst
+        input: Research the topic thoroughly and collect key facts and data.
+        dependsOn: []
+
+      - id: analyse
+        name: Analysis
+        agent: analyst
+        input: Analyse the research findings and identify key insights.
+        dependsOn:
+          - research
+
+      - id: write
+        name: Write Report
+        agent: writer
+        input: Write a clear, structured report based on the analysis.
+        dependsOn:
+          - analyse
+
+      - id: review
+        name: Quality Check
+        agent: decider
+        input: Verify the report is accurate, complete, and well-structured.
+        dependsOn:
+          - write
+    decisions: []
+
+  # ── Parallel workers with quality gate ──────────────────────────────────────
+  parallel_pipeline:
+    name: Parallel Pipeline
+    description: "Multiple workers tackle a task simultaneously, decider picks the best"
+    tasks:
+      - id: execute
+        name: Parallel Execution
+        agent:
+          - coder
+          - coder         # Two instances of the same agent for different approaches
+        input: Solve the problem using your preferred approach.
+        dependsOn: []
+
+      - id: evaluate
+        name: Evaluation
+        agent: decider
+        input: Compare all solutions and select the most correct and efficient one.
+        dependsOn:
+          - execute
+    decisions: []
+
+  # ── Full cycle with retry decisions ─────────────────────────────────────────
+  full_pipeline:
+    name: Full Pipeline
+    description: "Plan → implement → test, with automatic retry on quality failure"
+    tasks:
+      - id: plan
+        name: Planning
+        agent: orchestrator
+        input: Break down the goal into implementation and testing tasks.
+        dependsOn: []
+
+      - id: implement
+        name: Implementation
+        agent: coder
+        input: Write the implementation according to the plan.
+        dependsOn:
+          - plan
+
+      - id: test
+        name: Testing
+        agent: coder
+        input: Write tests for the implementation and verify correctness.
+        dependsOn:
+          - implement
+
+      - id: document
+        name: Documentation
+        agent: writer
+        input: Write clear documentation for the implementation.
+        dependsOn:
+          - implement
+    decisions:
+      - id: quality_check
+        name: Quality Gate
+        agent: decider
+        evaluates:
+          - implement
+          - test
+        maxRetries: 2

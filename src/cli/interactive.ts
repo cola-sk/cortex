@@ -333,8 +333,23 @@ async function runPipeline(
   }
 }
 
+// ── Auto-init config files from templates ─────────────────────────────────────
+function initConfigIfMissing(configPath: string, exampleName: string): void {
+  if (!fs.existsSync(configPath)) {
+    const templatePath = path.resolve(path.dirname(configPath), exampleName);
+    if (fs.existsSync(templatePath)) {
+      fs.copyFileSync(templatePath, configPath);
+      console.log(`  Created ${path.basename(configPath)} from ${exampleName}`);
+    }
+  }
+}
+
 // ── Interactive picker ────────────────────────────────────────────────────────
 export async function runInteractive(agentsPath: string, pipelinesPath: string) {
+  // Auto-init config files from templates if they don't exist
+  initConfigIfMissing(agentsPath, 'agents.example.yaml');
+  initConfigIfMissing(pipelinesPath, 'pipelines.example.yaml');
+
   // Banner
   console.log('');
   console.log(`  ${blue('◈')}  ${bold('CORTEX')}  — Pipeline Runner`);
