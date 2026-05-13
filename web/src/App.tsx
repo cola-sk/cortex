@@ -3,6 +3,7 @@ import { api } from './api';
 import type { Agent } from './types';
 import { AgentCard } from './components/AgentCard';
 import { AgentModal } from './components/AgentModal';
+import { ImportPanel } from './components/ImportPanel';
 
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -106,23 +107,27 @@ export default function App() {
         )}
 
         {!loading && !error && agents.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-24 text-center">
-            <div className="text-4xl mb-4 opacity-20">◈</div>
-            <h2 className="text-sm font-semibold text-zinc-600 mb-1">No agents configured</h2>
-            <p className="text-xs text-zinc-400 mb-5">
-              Add your first agent to get started.
-            </p>
-            <button
-              onClick={handleAdd}
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors"
-            >
-              Add Agent
-            </button>
-          </div>
+          <>
+            <ImportPanel onImported={loadAgents} />
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="text-4xl mb-4 opacity-20">◈</div>
+              <h2 className="text-sm font-semibold text-zinc-600 mb-1">No agents configured</h2>
+              <p className="text-xs text-zinc-400 mb-5">
+                Add your first agent to get started.
+              </p>
+              <button
+                onClick={handleAdd}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors"
+              >
+                Add Agent
+              </button>
+            </div>
+          </>
         )}
 
         {!loading && !error && agents.length > 0 && (
           <>
+            <ImportPanel onImported={loadAgents} />
             <div className="mb-5 flex items-center justify-between">
               <h1 className="text-xs font-medium text-zinc-400">
                 {agents.length} agent{agents.length !== 1 ? 's' : ''} configured

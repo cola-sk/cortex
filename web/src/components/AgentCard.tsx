@@ -1,4 +1,4 @@
-import type { Agent } from '../types';
+import type { Agent, AgentRole } from '../types';
 
 interface Props {
   agent: Agent;
@@ -10,6 +10,13 @@ const PROVIDER_META = {
   claude: { label: 'Claude', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   'openai-compat': { label: 'OpenAI Compat', color: 'bg-blue-50 text-blue-700 border-blue-200' },
 } as const;
+
+const ROLE_META: Record<AgentRole, { label: string; color: string }> = {
+  orchestrator: { label: 'Orchestrator', color: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  worker:       { label: 'Worker',       color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  reviewer:     { label: 'Reviewer',     color: 'bg-orange-50 text-orange-700 border-orange-200' },
+  decider:      { label: 'Decider',      color: 'bg-purple-50 text-purple-700 border-purple-200' },
+};
 
 function maskKey(key?: string): string {
   if (!key) return '—';
@@ -23,20 +30,14 @@ function truncate(s: string, n: number) {
 
 export function AgentCard({ agent, onEdit, onDelete }: Props) {
   const meta = PROVIDER_META[agent.provider.type];
+  const roleMeta = agent.role ? ROLE_META[agent.role] : null;
   const model =
     agent.provider.type === 'claude'
       ? (agent.provider.model ?? 'default')
       : agent.provider.model;
 
-  const baseURL =
-    agent.provider.type === 'claude'
-      ? agent.provider.baseURL
-      : agent.provider.baseURL;
-
-  const apiKey =
-    agent.provider.type === 'claude'
-      ? agent.provider.apiKey
-      : agent.provider.apiKey;
+  const baseURL = agent.provider.baseURL;
+  const apiKey = agent.provider.apiKey;
 
   return (
     <div className="flex flex-col rounded-xl border border-zinc-200 bg-white hover:border-zinc-300 hover:shadow-sm transition-all duration-150">
@@ -48,11 +49,16 @@ export function AgentCard({ agent, onEdit, onDelete }: Props) {
             <p className="mt-0.5 text-xs text-zinc-400 truncate">{agent.description}</p>
           )}
         </div>
-        <span
-          className={`shrink-0 inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium ${meta.color}`}
-        >
-          {meta.label}
-        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {roleMeta && (
+            <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium ${roleMeta.color}`}>
+              {roleMeta.label}
+            </span>
+          )}
+          <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium ${meta.color}`}>
+            {meta.label}
+          </span>
+        </div>
       </div>
 
       {/* Model info */}
@@ -100,3 +106,4 @@ function InfoRow({ label, value, mono }: { label: string; value: string; mono?: 
     </div>
   );
 }
+

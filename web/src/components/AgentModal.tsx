@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Agent, ProviderType } from '../types';
+import type { Agent, AgentRole, ProviderType } from '../types';
 
 interface Props {
   agent: Agent | null; // null = add mode
@@ -9,6 +9,7 @@ interface Props {
 
 interface FormState {
   id: string;
+  role: AgentRole | '';
   description: string;
   system: string;
   providerType: ProviderType;
@@ -19,6 +20,7 @@ interface FormState {
 
 const DEFAULT_FORM: FormState = {
   id: '',
+  role: '',
   description: '',
   system: '',
   providerType: 'claude',
@@ -30,6 +32,7 @@ const DEFAULT_FORM: FormState = {
 function agentToForm(agent: Agent): FormState {
   return {
     id: agent.id,
+    role: agent.role ?? '',
     description: agent.description ?? '',
     system: agent.system,
     providerType: agent.provider.type,
@@ -42,6 +45,7 @@ function agentToForm(agent: Agent): FormState {
 function formToAgent(form: FormState): Agent {
   const base = {
     id: form.id.trim(),
+    ...(form.role ? { role: form.role as AgentRole } : {}),
     description: form.description.trim() || undefined,
     system: form.system.trim(),
   };
@@ -149,6 +153,21 @@ export function AgentModal({ agent, onSave, onClose }: Props) {
                 title="Lowercase letters, numbers, dash or underscore"
                 required
               />
+            </Field>
+
+            {/* Role */}
+            <Field label="Role" hint="Helps the orchestrator assign tasks appropriately">
+              <select
+                value={form.role}
+                onChange={set('role')}
+                className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 transition-colors cursor-pointer"
+              >
+                <option value="">— None —</option>
+                <option value="orchestrator">Orchestrator — plans and assigns tasks</option>
+                <option value="worker">Worker — executes assigned tasks</option>
+                <option value="reviewer">Reviewer — checks quality and correctness</option>
+                <option value="decider">Decider — evaluates results and decides retry/continue</option>
+              </select>
             </Field>
 
             {/* Description */}

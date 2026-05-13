@@ -1,5 +1,7 @@
 export type ProviderType = 'claude' | 'openai-compat';
 
+export type AgentRole = 'orchestrator' | 'worker' | 'reviewer' | 'decider';
+
 export interface ClaudeProvider {
   type: 'claude';
   apiKey?: string;
@@ -18,6 +20,7 @@ export type Provider = ClaudeProvider | OpenAICompatProvider;
 
 export interface Agent {
   id: string;
+  role?: AgentRole;
   description?: string;
   system: string;
   provider: Provider;

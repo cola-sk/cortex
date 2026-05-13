@@ -25,8 +25,13 @@ export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 
 // ---- Agent config schema ----
 
+export const AGENT_ROLES = ['orchestrator', 'worker', 'reviewer', 'decider'] as const;
+export type AgentRole = (typeof AGENT_ROLES)[number];
+
 export const AgentConfigSchema = z.object({
-  /** Role description shown in logs */
+  /** Role of this agent in the system */
+  role: z.enum(AGENT_ROLES).optional(),
+  /** Short description shown in logs and UI */
   description: z.string().optional(),
   /** System prompt for this agent */
   system: z.string(),

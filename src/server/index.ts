@@ -4,9 +4,12 @@ import path from 'path';
 import fs from 'fs';
 import yaml from 'js-yaml';
 import { ConfigFileSchema, AgentConfigSchema, type ConfigFile } from '../config/schema.js';
+import { detectAllTools, detectTool } from '../importers/index.js';
+import { readAppConfig, portFromUrl, DEFAULT_CONFIG } from '../config/appConfig.js';
 
 const app = express();
-const PORT = Number(process.env.PORT ?? 3000);
+const appConfig = readAppConfig();
+const PORT = Number(process.env.PORT ?? portFromUrl(appConfig.server_url, portFromUrl(DEFAULT_CONFIG.server_url, 47821)));
 const CONFIG_PATH = path.resolve(process.env.AGENTS_CONFIG ?? 'agents.yaml');
 
 app.use(cors());
@@ -105,9 +108,58 @@ app.delete('/api/agents/:id', (req, res) => {
   }
 });
 
+// ---- Importer routes ----
+
+// GET /api/importers  — detect all local CLI tools
+app.get('/api/importers', (_req, res) => {
+  try {
+    res.json(detectAllTools());
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/importers/:toolId  — import a detected tool as an agent
+app.post('/api/importers/:toolId', (req, res) => {
+  try {
+    const { toolId } = req.params;
+    const tool = detectTool(toolId);
+
+    if (!tool) {
+      res.status(404).json({ error: `Unknown tool "${toolId}"` });
+      return;
+    }
+    if (!tool.detected || !tool.provider) {
+      res.status(422).json({ error: `Tool "${toolId}" detected but could not extract provider config: ${tool.note ?? 'unknown reason'}` });
+      return;
+    }
+
+    // Agent id = tool.id, overridable via body { agentId }
+    const body = req.body as { agentId?: string; system?: string; description?: string };
+    const agentId = (body.agentId ?? tool.id).replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
+
+    const config = readConfig();
+    if (config.agents[agentId]) {
+      res.status(409).json({ error: `Agent "${agentId}" already exists. Delete it first or use a different agentId.` });
+      return;
+    }
+
+    const agent = AgentConfigSchema.parse({
+      description: body.description ?? `Imported from ${tool.name}`,
+      system: body.system ?? `You are a helpful AI assistant using ${tool.name}.`,
+      provider: tool.provider,
+    });
+
+    config.agents[agentId] = agent;
+    writeConfig(config);
+    res.status(201).json({ id: agentId, ...agent });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
 // SPA fallback
-app.get('/{*path}', (_req, res) => {
-  const indexPath = path.join(webDist, 'index.html');
+app.get('/{*path}', (_req, res) => {  const indexPath = path.join(webDist, 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
@@ -116,6 +168,8 @@ app.get('/{*path}', (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\nCortex UI  →  http://localhost:${PORT}`);
-  console.log(`Config     →  ${CONFIG_PATH}\n`);
+  console.log(`\nCortex API →  http://localhost:${PORT}`);
+  console.log(`Cortex UI  →  ${appConfig.app_url}`);
+  console.log(`Config     →  ${CONFIG_PATH}`);
+  console.log(`App config →  ~/.cortex/config.json\n`);
 });

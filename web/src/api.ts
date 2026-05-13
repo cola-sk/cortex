@@ -1,5 +1,14 @@
 import type { Agent } from './types';
 
+export interface DetectedTool {
+  id: string;
+  name: string;
+  detected: boolean;
+  provider?: unknown;
+  model?: string;
+  note?: string;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json' },
@@ -30,5 +39,13 @@ export const api = {
   deleteAgent: (id: string) =>
     request<{ success: boolean }>(`/api/agents/${encodeURIComponent(id)}`, {
       method: 'DELETE',
+    }),
+
+  getImporters: () => request<DetectedTool[]>('/api/importers'),
+
+  importTool: (toolId: string, agentId?: string) =>
+    request<Agent>(`/api/importers/${encodeURIComponent(toolId)}`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
     }),
 };
