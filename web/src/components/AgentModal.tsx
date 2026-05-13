@@ -18,6 +18,56 @@ interface RoleForm  { id: string; name: string; role: AgentRole | ''; descriptio
 const DEFAULT_MODEL_FORM: ModelForm = { id: '', name: '', description: '', providerType: 'claude', model: '', baseURL: '', apiKey: '' };
 const DEFAULT_ROLE_FORM:  RoleForm  = { id: '', name: '', role: '', description: '', system: '', baseAgent: '' };
 
+const ROLE_TEMPLATES: Record<string, string> = {
+  orchestrator: `You are a technical planning expert. Given a goal and available agents, decompose it into an optimised execution plan.
+
+Respond with a single valid JSON object (no markdown fences):
+{
+  "goal": "<goal>",
+  "tasks": [
+    {
+      "id": "task_1",
+      "name": "<short name>",
+      "agent": "<agent key> OR [\\"agent_a\\",\\"agent_b\\"] for parallel workers",
+      "input": "<self-contained instruction>",
+      "dependsOn": []
+    }
+  ],
+  "decisions": [
+    {
+      "id": "decide_1",
+      "name": "<checkpoint name>",
+      "agent": "<decider agent key>",
+      "evaluates": ["task_id"],
+      "maxRetries": 2
+    }
+  ]
+}
+
+Rules:
+- Tasks without dependsOn run IN PARALLEL automatically
+- Use dependsOn[] for sequential dependencies
+- agent as array runs multiple workers simultaneously on the same input
+- decisions[] adds quality checkpoints — the decider can retry tasks
+- Do NOT include tasks for yourself`,
+  worker: `You are a specialized worker agent. You receive a task and produce clean, well-structured output.
+Include brief inline comments where helpful. Output directly without unnecessary preamble.`,
+  reviewer: `You are an expert reviewer. Given outputs, identify bugs, logical flaws, and improvements.
+Be concise. Use bullet points. Separate issues by severity: Critical / Warning / Suggestion.`,
+  decider: `You are a quality-control evaluator. Review task outputs and decide if they are satisfactory.
+
+Analyse the provided results against the stated goal. Respond with ONLY valid JSON (no markdown fences):
+{
+  "action": "continue" | "retry",
+  "retryTaskIds": ["task_id"],
+  "reason": "<one-sentence explanation>"
+}
+
+Use "retry" only when there is a clear, fixable quality issue.
+Always include retryTaskIds when action is "retry".
+Default to "continue" when in doubt.`
+};
+
 function generateId(): string {
   return Math.random().toString(36).slice(2, 8);
 }
@@ -83,6 +133,20 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
 
   const setM = (k: keyof ModelForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setModelForm((f) => ({ ...f, [k]: e.target.value }));
   const setR = (k: keyof RoleForm)  => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => setRoleForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const handleRoleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newRole = e.target.value as AgentRole | '';
+    setRoleForm((f) => {
+      let nextSystem = f.system;
+      const isCurrentEmptyOrTemplate = !f.system.trim() || Object.values(ROLE_TEMPLATES).includes(f.system);
+      
+      if (newRole && ROLE_TEMPLATES[newRole] && isCurrentEmptyOrTemplate) {
+        nextSystem = ROLE_TEMPLATES[newRole];
+      }
+      
+      return { ...f, role: newRole, system: nextSystem };
+    });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault(); setError(null);
@@ -165,7 +229,7 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
                   <Input ref={nameRef} placeholder={t('agent.namePlaceholder')} value={roleForm.name} onChange={setR('name')} />
                 </Field>
                 <Field label={t('agent.fieldRole')} hint={t('agent.roleHint')} required>
-                  <select value={roleForm.role} onChange={setR('role')} className={selectCls} required>
+                  <select value={roleForm.role} onChange={handleRoleChange} className={selectCls} required>
                     <option value="">{t('agent.roleNone')}</option>
                     <option value="orchestrator">{t('agent.roleOrchestrator')}</option>
                     <option value="worker">{t('agent.roleWorker')}</option>

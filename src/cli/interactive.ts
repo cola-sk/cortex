@@ -249,6 +249,19 @@ async function runPipeline(
         }
         printTaskStart(taskName, agents, taskId);
       },
+      onTaskProgress: (taskId, workerIndex, event) => {
+        process.stdout.write('\r\x1b[K');
+        if (event.type === 'tool_use') {
+          console.log(`     ${cyan('🔧')} ${dim(`[${event.name}] tool call`)}`);
+        } else if (event.type === 'tool_result') {
+          console.log(`     ${green('✓')} ${dim(`[${event.name}] result received`)}`);
+        } else if (event.type === 'text' && event.content?.trim()) {
+          // Log CLI textual execution details
+          let text = event.content.trim();
+          if (text.length > 100) text = text.substring(0, 100) + '...';
+          console.log(`     ${dim('│')}  ${dim(text)}`);
+        }
+      },
       onTaskComplete: (taskId, taskName, result) => {
         const rec = taskById.get(taskId);
         if (rec) {

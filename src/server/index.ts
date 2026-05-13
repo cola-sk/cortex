@@ -444,6 +444,15 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         if (task) { task.status = 'running'; task.startedAt = new Date().toISOString(); }
         taskStartTimes.set(taskId, Date.now());
       },
+      onTaskProgress: (taskId, workerIndex, event) => {
+        emit('task:tool_event', { taskId, workerIndex, event });
+        const task = run.tasks.find((t) => t.taskId === taskId);
+        if (task) {
+          if (!task.toolEvents) task.toolEvents = [];
+          if (!task.toolEvents[workerIndex]) task.toolEvents[workerIndex] = [];
+          task.toolEvents[workerIndex].push(event);
+        }
+      },
       onTaskComplete: (taskId, taskName, result: TaskResult) => {
         emit('task:complete', { taskId, taskName, output: result.output, error: result.error });
         const task = run.tasks.find((t) => t.taskId === taskId);

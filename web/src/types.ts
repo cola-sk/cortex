@@ -66,6 +66,7 @@ export interface Pipeline {
 
 export type RunEventType =
   | 'task:start'
+  | 'task:tool_event'
   | 'task:complete'
   | 'decision:start'
   | 'decision:complete'

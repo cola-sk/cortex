@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { Agent, Pipeline, PipelineTask, PipelineDecision, RunEventType } from '../types';
+import type { Agent, Pipeline, PipelineTask, PipelineDecision, RunEventType, ToolEvent } from '../types';
 import { api } from '../api';
 import { useTranslation } from 'react-i18next';
 
@@ -1021,6 +1021,26 @@ function RunView({
             detail: `Running via ${(d.agents as string[]).join(', ')}`,
             status: 'running',
           });
+        } else if (type === 'task:tool_event') {
+          const event = d.event as ToolEvent;
+          if (event && event.type === 'tool_use') {
+            const summary = event.input && typeof event.input === 'object'
+              ? Object.values(event.input).find(v => typeof v === 'string') || JSON.stringify(event.input)
+              : '';
+            updateEntry(d.taskId as string, {
+              detail: `🔧 [${event.name}] ${summary}`,
+            });
+          } else if (event && event.type === 'tool_result') {
+            updateEntry(d.taskId as string, {
+              detail: `✓ [Result] ${event.content ? (event.content.slice(0, 50) + (event.content.length > 50 ? '...' : '')) : '(empty)'}`
+            });
+          } else if (event && event.type === 'text') {
+            if (event.content && event.content.trim()) {
+              updateEntry(d.taskId as string, {
+                detail: `  📝 ${event.content.trim().slice(0, 50)}...`
+              });
+            }
+          }
         } else if (type === 'task:complete') {
           updateEntry(d.taskId as string, {
             status: d.error ? 'error' : 'done',

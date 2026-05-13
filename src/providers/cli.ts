@@ -98,7 +98,7 @@ export class CliProvider implements LLMProvider {
     return { output: finalOutput || raw, toolEvents };
   }
 
-  async chat(messages: Message[], _options?: ChatOptions): Promise<string> {
+  async chat(messages: Message[], options?: ChatOptions): Promise<string> {
     const systemContent = messages.find((m) => m.role === 'system')?.content ?? '';
     const userContent = messages
       .filter((m) => m.role === 'user')
@@ -135,8 +135,70 @@ export class CliProvider implements LLMProvider {
 
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
+      let bufferStr = '';
+      let streamIdx = 0;
 
-      child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
+      child.stdout?.on('data', (chunk: Buffer) => {
+        stdout.push(chunk);
+        
+        if (options?.onStreamEvent) {
+          bufferStr += chunk.toString('utf-8');
+          const lines = bufferStr.split('\n');
+          // Keep the last incomplete line in the buffer
+          bufferStr = lines.pop() ?? ''; 
+
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line) continue;
+            
+            let handledAsJson = false;
+            if (line.startsWith('{')) {
+              try {
+                const ev = JSON.parse(line) as Record<string, unknown>;
+                let streamEvent: ToolEvent | null = null;
+
+                if (ev.type === 'assistant') {
+                  const msg = ev.message as { content?: Array<Record<string, unknown>> };
+                  for (const block of msg?.content ?? []) {
+                    if (block.type === 'text' && block.text) {
+                      streamEvent = { index: streamIdx++, type: 'text', content: block.text as string };
+                    } else if (block.type === 'tool_use') {
+                      streamEvent = {
+                        index: streamIdx++,
+                        type: 'tool_use',
+                        name: block.name as string,
+                        input: block.input as Record<string, unknown>,
+                        toolUseId: block.id as string,
+                      };
+                    }
+                    if (streamEvent) {
+                      options.onStreamEvent(streamEvent);
+                      handledAsJson = true;
+                    }
+                  }
+                } else if (ev.type === 'tool') {
+                  const content = ev.content as Array<{ type: string; text?: string }> | undefined;
+                  const text = content?.map((c) => c.text ?? '').join('') ?? String(ev.content ?? '');
+                  streamEvent = {
+                    index: streamIdx++,
+                    type: 'tool_result',
+                    content: text,
+                    toolUseId: ev.tool_use_id as string,
+                    isError: ev.is_error as boolean | undefined,
+                  };
+                  options.onStreamEvent(streamEvent);
+                  handledAsJson = true;
+                }
+              } catch { /* ignore parsing errors and fallback to text */ }
+            }
+            
+            if (!handledAsJson) {
+              // Raw text output from CLI
+              options.onStreamEvent({ index: streamIdx++, type: 'text', content: stripAnsi(rawLine) });
+            }
+          }
+        }
+      });
       child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
 
       child.on('error', (err) => reject(new Error(`CLI "${this.command}" failed to start: ${err.message}`)));

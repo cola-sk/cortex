@@ -5,6 +5,7 @@ const DECISION_PREFIX = '__decision_';
 
 export interface RunnerCallbacks {
   onTaskStart?: (taskId: string, taskName: string, agents: string[]) => void;
+  onTaskProgress?: (taskId: string, workerIndex: number, event: import('./events.js').ToolEvent) => void;
   onTaskComplete?: (taskId: string, taskName: string, result: TaskResult) => void;
   onDecisionStart?: (decisionId: string, evaluates: string[]) => void;
   onDecisionComplete?: (decisionId: string, decision: DecisionResult, retrying?: string[]) => void;
@@ -98,7 +99,11 @@ export class Runner {
               const label = agentKeys.length > 1 ? `${task.id}[worker${idx + 1}]` : task.id;
               if (!this.silent) console.log(`  ⚙ [${label}] ${task.name} → ${key}`);
               try {
-                const output = await agent.chat(fullInput);
+                const output = await agent.chat(fullInput, [], {
+                  onStreamEvent: (event) => {
+                    this.callbacks.onTaskProgress?.(task.id, idx, event);
+                  }
+                });
                 const toolEvents = agent.getLastToolEvents();
                 if (!this.silent) console.log(`  ✓ [${label}] ${output.length} chars${toolEvents.length ? ` | ${toolEvents.filter(e => e.type === 'tool_use').length} tool calls` : ''}`);
                 return { output, toolEvents };

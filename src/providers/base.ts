@@ -1,3 +1,5 @@
+import type { ToolEvent } from '../core/events.js';
+
 // Core message types
 export interface Message {
   role: 'system' | 'user' | 'assistant';
@@ -7,6 +9,7 @@ export interface Message {
 export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
+  onStreamEvent?: (event: ToolEvent) => void;
 }
 
 // Unified LLM provider interface
