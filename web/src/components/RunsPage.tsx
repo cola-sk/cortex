@@ -1,10 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { RunSummary, RunRecord, RunTaskRecord, ToolEvent } from '../types';
 import { api } from '../api';
 import { useTranslation } from 'react-i18next';
-import { TaskDetailModal, type LogEntry } from './PipelinePage';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -135,7 +134,7 @@ function ToolEventList({ events }: { events: ToolEvent[] }) {
     } else if (ev.type === 'text') {
       const last = items[items.length - 1];
       if (last && last.type === 'text') {
-        last.content += '\\n' + (ev.content ?? '');
+        last.content += '\n' + (ev.content ?? '');
       } else {
         items.push({ type: 'text', content: ev.content ?? '' });
       }
@@ -160,44 +159,180 @@ function ToolEventList({ events }: { events: ToolEvent[] }) {
   );
 }
 
+type DetailTab = 'detail' | 'output';
+
+function TaskDetailPanel({ task }: { task: RunTaskRecord }) {
+  const [activeTab, setActiveTab] = useState<DetailTab>('detail');
+  const [activeWorker, setActiveWorker] = useState(0);
+
+  const workers = (task.toolEvents ?? []).length > 0 ? (task.toolEvents ?? []) : [[]];
+  const allToolEvents = (task.toolEvents ?? []).flat();
+  const hasMultiWorker = workers.length > 1;
+
+  return (
+    <div className="space-y-3">
+      <div className="border-b border-zinc-100 flex items-center gap-1">
+        <button
+          onClick={() => setActiveTab('detail')}
+          className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+            activeTab === 'detail'
+              ? 'border-indigo-500 text-indigo-600'
+              : 'border-transparent text-zinc-400 hover:text-zinc-600'
+          }`}
+        >
+          Detail
+        </button>
+        <button
+          onClick={() => setActiveTab('output')}
+          className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+            activeTab === 'output'
+              ? 'border-indigo-500 text-indigo-600'
+              : 'border-transparent text-zinc-400 hover:text-zinc-600'
+          }`}
+        >
+          Output
+        </button>
+      </div>
+
+      {activeTab === 'detail' ? (
+        <div className="space-y-3">
+          {task.error && (
+            <pre className="text-xs text-red-600 bg-red-50 rounded-lg p-3 whitespace-pre-wrap max-h-40 overflow-y-auto">
+              {task.error}
+            </pre>
+          )}
+
+          {hasMultiWorker && (
+            <div className="flex flex-wrap gap-1.5 pb-0.5">
+              {workers.map((w, i) => (
+                <button
+                  key={i}
+                  onClick={() => setActiveWorker(i)}
+                  className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                    activeWorker === i
+                      ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
+                      : 'bg-zinc-50 text-zinc-500 border border-zinc-100 hover:bg-zinc-100'
+                  }`}
+                >
+                  Worker {i + 1} · {task.agents[i] ?? task.agents[0]}
+                  {w.filter((e) => e.type === 'tool_use').length > 0 && (
+                    <span className="ml-1 text-[10px] text-zinc-400">🔧 {w.filter((e) => e.type === 'tool_use').length}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {(hasMultiWorker ? workers[activeWorker] : allToolEvents).length > 0 ? (
+            <ToolEventList events={hasMultiWorker ? workers[activeWorker] : allToolEvents} />
+          ) : (
+            <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-5 text-center text-xs text-zinc-400">
+              No detail events captured for this task.
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {task.output ? (
+            <div className={`text-xs whitespace-pre-wrap leading-relaxed max-h-[55vh] overflow-y-auto rounded-lg p-3 ${
+              task.status === 'error' ? 'bg-red-50 text-red-700' : 'bg-zinc-50'
+            }`}>
+              {task.status === 'error'
+                ? <pre className="font-mono whitespace-pre-wrap">{task.error ? `${task.error}\n\n${task.output}` : task.output}</pre>
+                : <Markdown content={task.output} />}
+            </div>
+          ) : task.error ? (
+            <pre className="text-xs text-red-600 bg-red-50 rounded-lg p-3 whitespace-pre-wrap max-h-[55vh] overflow-y-auto">
+              {task.error}
+            </pre>
+          ) : (
+            <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-5 text-center text-xs text-zinc-400">
+              No output.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskDetailDialog({ task, onClose }: { task: RunTaskRecord; onClose: () => void }) {
+  const toolCallCount = (task.toolEvents ?? []).flat().filter((e) => e.type === 'tool_use').length;
+
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', fn);
+    return () => window.removeEventListener('keydown', fn);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-12 bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[88vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="border-b border-zinc-100 px-5 py-4 flex items-start gap-3 shrink-0">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-zinc-800">{task.taskName}</span>
+              {task.status === 'done' && <span className="text-emerald-500 text-xs">✓ Done</span>}
+              {task.status === 'running' && <span className="text-blue-500 text-xs">● Running</span>}
+              {task.status === 'error' && <span className="text-red-500 text-xs">✗ Error</span>}
+            </div>
+            <div className="flex items-center gap-3 mt-1">
+              {task.durationMs != null && <span className="text-[11px] text-zinc-400">⏱ {formatDuration(task.durationMs)}</span>}
+              {toolCallCount > 0 && <span className="text-[11px] text-zinc-400">🔧 {toolCallCount} tool calls</span>}
+              <span className="text-[11px] text-zinc-400">{task.agents.join(', ')}</span>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 transition-colors shrink-0 p-1">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          <TaskDetailPanel task={task} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Task record row
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskRow({ task, run }: { task: RunTaskRecord; run: RunRecord }) {
+function TaskRow({ task }: { task: RunTaskRecord }) {
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
   
   const allToolEvents = (task.toolEvents ?? []).flat();
   const toolCallCount = allToolEvents.filter((e) => e.type === 'tool_use').length;
-  const hasMultiWorker = (task.toolEvents ?? []).length > 1;
-
-  // Adapt RunTaskRecord into what TaskDetailModal expects
-  const modalEntry: LogEntry = {
-    id: task.taskId,
-    type: 'task:complete' as any,
-    label: task.taskName,
-    status: task.status === 'error' ? 'error' : 'done',
-    agents: task.agents,
-    detail: task.error || task.output,
-    toolEvents: allToolEvents,
-    workerEvents: task.toolEvents,
-    startedAt: new Date(run.startedAt).getTime(), // Approximated
-    finishedAt: task.durationMs ? new Date(run.startedAt).getTime() + task.durationMs : undefined
-  };
 
   return (
     <>
     <div className={`rounded-xl border overflow-hidden transition-all ${
       task.status === 'error' ? 'border-red-200' : 'border-zinc-200'
     }`}>
-      <button
-        onClick={() => setExpanded((e) => !e)}
-        className="w-full flex items-center gap-3 px-4 py-3 bg-white hover:bg-zinc-50 transition-colors text-left"
-      >
-        <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot(task.status)}`} />
-        <span className="flex-1 text-sm font-semibold text-zinc-800">{task.taskName}</span>
+      <div className="w-full flex items-center gap-3 px-4 py-3 bg-white hover:bg-zinc-50 transition-colors text-left">
+        <button
+          onClick={() => setExpanded((e) => !e)}
+          className="flex-1 min-w-0 flex items-center gap-3 text-left"
+        >
+          <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot(task.status)}`} />
+          <span className="flex-1 text-sm font-semibold text-zinc-800 truncate">{task.taskName}</span>
+          <ChevronIcon className={`w-3 h-3 text-zinc-300 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        </button>
+
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setShowModal(true)}
+            className="text-xs text-indigo-600 font-medium hover:text-indigo-800 hover:underline"
+          >
+            ↗ Open detail
+          </button>
           {task.agents.map((a, i) => (
             <span key={i} className="text-xs text-zinc-400 font-mono">{a}</span>
           ))}
@@ -209,53 +344,16 @@ function TaskRow({ task, run }: { task: RunTaskRecord; run: RunRecord }) {
           {task.durationMs != null && (
             <span className="text-xs text-zinc-400">{formatDuration(task.durationMs)}</span>
           )}
-          <ChevronIcon className={`w-3 h-3 text-zinc-300 transition-transform ${expanded ? 'rotate-90' : ''}`} />
         </div>
-      </button>
+      </div>
 
       {expanded && (
         <div className="border-t border-zinc-100 px-4 py-3 bg-white space-y-3">
-          <div className="flex justify-between items-center mb-2">
-             <span className="text-xs font-semibold text-zinc-500">Details</span>
-             <button 
-               onClick={(e) => { e.stopPropagation(); setShowModal(true); }}
-               className="text-xs text-indigo-600 font-medium hover:text-indigo-800 hover:underline"
-             >
-               ↗ Open detail
-             </button>
-          </div>
-          {/* Multi-worker breakdown */}
-          {hasMultiWorker ? (
-            (task.toolEvents ?? []).map((workerEvents, wi) => (
-              <div key={wi} className="space-y-2">
-                <p className="text-xs font-medium text-zinc-500">Worker {wi + 1} — {task.agents[wi] ?? task.agents[0]}</p>
-                <ToolEventList events={workerEvents} />
-              </div>
-            ))
-          ) : (
-            allToolEvents.length > 0 && <ToolEventList events={allToolEvents} />
-          )}
-
-          {/* Output */}
-          {task.output && (
-            <div>
-              <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Output</p>
-              <div className={`text-xs whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto rounded-lg p-3 ${
-                task.status === 'error' ? 'bg-red-50 text-red-700' : 'bg-zinc-50'
-              }`}>
-                {task.error ? <pre className="font-mono text-red-700">{task.error}\n\n{task.output}</pre> : <Markdown content={task.output} />}
-              </div>
-            </div>
-          )}
-          {task.error && !task.output && (
-            <pre className="text-xs text-red-600 bg-red-50 rounded-lg p-3 whitespace-pre-wrap max-h-32 overflow-y-auto">
-              {task.error}
-            </pre>
-          )}
+          <TaskDetailPanel task={task} />
         </div>
       )}
     </div>
-    {showModal && <TaskDetailModal entry={modalEntry} onClose={() => setShowModal(false)} />}
+    {showModal && <TaskDetailDialog task={task} onClose={() => setShowModal(false)} />}
     </>
   );
 }
@@ -264,16 +362,75 @@ function TaskRow({ task, run }: { task: RunTaskRecord; run: RunRecord }) {
 // Markdown renderer (shared)
 // ─────────────────────────────────────────────────────────────────────────────
 
+type ContentSection = { kind: 'markdown' | 'thinking'; content: string };
+
+function normalizeMixedContent(input: string): string {
+  let text = input.replace(/\r\n/g, '\n');
+  const escapedNewlineCount = (text.match(/\\n/g) ?? []).length;
+  const hasRealNewline = text.includes('\n');
+
+  // Some providers return escaped text blobs; decode for readable markdown.
+  if (escapedNewlineCount > 0 && (!hasRealNewline || escapedNewlineCount >= 2)) {
+    text = text.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+  }
+
+  return text;
+}
+
+function splitThinkingSections(input: string): ContentSection[] {
+  const content = normalizeMixedContent(input);
+  const sections: ContentSection[] = [];
+  const re = /<(thinking|think)>([\s\S]*?)<\/\1>/gi;
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+
+  while ((m = re.exec(content)) !== null) {
+    const before = content.slice(lastIndex, m.index);
+    if (before.trim()) sections.push({ kind: 'markdown', content: before });
+
+    const thinking = m[2] ?? '';
+    if (thinking.trim()) sections.push({ kind: 'thinking', content: thinking.trim() });
+    lastIndex = re.lastIndex;
+  }
+
+  const tail = content.slice(lastIndex);
+  if (tail.trim()) sections.push({ kind: 'markdown', content: tail });
+
+  if (sections.length === 0) {
+    return [{ kind: 'markdown', content }];
+  }
+  return sections;
+}
+
 function Markdown({ content, className }: { content: string; className?: string }) {
-  return (
-    <div className={`prose prose-xs max-w-none text-zinc-700 leading-relaxed
+  const sections = splitThinkingSections(content);
+  const proseClass = `prose prose-xs max-w-none text-zinc-700 leading-relaxed
       prose-headings:text-zinc-800 prose-headings:font-semibold
       prose-code:bg-zinc-100 prose-code:text-zinc-700 prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:text-[11px]
       prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:rounded-lg prose-pre:text-xs prose-pre:overflow-x-auto
       prose-a:text-indigo-600 prose-blockquote:border-l-indigo-300 prose-blockquote:text-zinc-500
-      prose-table:text-xs prose-th:bg-zinc-50 prose-td:py-1
-      ${className ?? ''}`}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      prose-table:text-xs prose-th:bg-zinc-50 prose-td:py-1`;
+
+  return (
+    <div className={`space-y-2 ${className ?? ''}`}>
+      {sections.map((section, idx) => {
+        if (section.kind === 'thinking') {
+          return (
+            <details key={`think-${idx}`} className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2">
+              <summary className="cursor-pointer select-none text-[11px] font-semibold text-amber-700">Thinking</summary>
+              <div className={`mt-2 ${proseClass} prose-amber text-amber-900`}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+              </div>
+            </details>
+          );
+        }
+
+        return (
+          <div key={`md-${idx}`} className={proseClass}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -318,7 +475,7 @@ function RunDetail({ run }: { run: RunRecord }) {
       {/* Tasks */}
       <div className="px-5 py-4 space-y-3">
         {run.tasks.map((task) => (
-          <TaskRow key={task.taskId} task={task} run={run} />
+          <TaskRow key={task.taskId} task={task} />
         ))}
       </div>
     </div>
