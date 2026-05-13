@@ -10,13 +10,15 @@ pipelines:
         dependsOn: []
       - id: implement
         name: Implementation
-        agent: claude-code
+        agent:
+          - coder
+          - jyzo87
         input: Implement the solution according to the plan.
         dependsOn:
           - plan
       - id: review
         name: Code Review
-        agent: codex
+        agent: reviewer
         input: Review the implementation for correctness, security, and code quality.
         dependsOn:
           - implement

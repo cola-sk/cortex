@@ -66,10 +66,15 @@ async function runPipeline(
     process.exit(1);
   }
 
-  // Build agent map
+  // Build agent map (resolve baseAgent references)
   const agentMap = new Map<string, Agent>();
   for (const [id, cfg] of Object.entries(config!.agents)) {
-    agentMap.set(id, new Agent(id, cfg));
+    let resolved = cfg;
+    if (cfg.baseAgent && !cfg.provider) {
+      const base = config!.agents[cfg.baseAgent];
+      if (base?.provider) resolved = { ...cfg, provider: base.provider };
+    }
+    if (resolved.provider) agentMap.set(id, new Agent(id, resolved as typeof cfg & { provider: NonNullable<typeof cfg.provider> }));
   }
 
   // Validate referenced agents exist

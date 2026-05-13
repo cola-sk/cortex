@@ -38,7 +38,8 @@ function readConfig(): ConfigFile {
 }
 
 function writeConfig(config: ConfigFile): void {
-  fs.writeFileSync(CONFIG_PATH, yaml.dump(config, { indent: 2, lineWidth: -1 }), 'utf-8');
+  const yaml_str = yaml.dump(config, { indent: 2, lineWidth: -1 });
+  fs.writeFileSync(CONFIG_PATH, yaml_str, 'utf-8');
 }
 
 function agentList(config: ConfigFile) {
@@ -271,7 +272,24 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     const agentsCfg = readConfig();
     const agentMap = new Map<string, Agent>();
     for (const [agentId, agentConfig] of Object.entries(agentsCfg.agents)) {
-      agentMap.set(agentId, new Agent(agentId, agentConfig));
+      // Resolve baseAgent: inherit provider from referenced agent
+      let resolvedConfig = agentConfig;
+      if (agentConfig.baseAgent && !agentConfig.provider) {
+        const base = agentsCfg.agents[agentConfig.baseAgent];
+        if (base?.provider) {
+          resolvedConfig = { ...agentConfig, provider: base.provider };
+        } else {
+          emit('error', { message: `Agent "${agentId}" references baseAgent "${agentConfig.baseAgent}" which has no provider` });
+          res.end();
+          return;
+        }
+      }
+      if (!resolvedConfig.provider) {
+        emit('error', { message: `Agent "${agentId}" has no provider configured` });
+        res.end();
+        return;
+      }
+      agentMap.set(agentId, new Agent(agentId, resolvedConfig as typeof agentConfig & { provider: NonNullable<typeof agentConfig.provider> }));
     }
 
     const plan: Plan = {

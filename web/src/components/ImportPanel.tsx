@@ -64,7 +64,7 @@ export function ImportPanel({ agents, onImported }: Props) {
     if (!t.detected || !t.provider) return false;
     const existing = agentMap.get(t.id);
     if (!existing) return true; // not imported yet
-    return existing.provider.type !== 'cli'; // imported but not CLI
+    return existing.provider?.type !== 'cli'; // imported but not CLI
   });
 
   if (visibleTools.length === 0) return null;

@@ -6,16 +6,20 @@ import { AgentModal } from './components/AgentModal';
 import { ImportPanel } from './components/ImportPanel';
 import type { AgentRole } from './types';
 import { PipelinePage } from './components/PipelinePage';
+import { useTranslation } from 'react-i18next';
+import i18n from './i18n';
 
-type Page = 'agents' | 'pipelines';
+type Page = 'models' | 'roles' | 'pipelines';
 
 export default function App() {
-  const [page, setPage] = useState<Page>('agents');
+  const { t } = useTranslation();
+  const [page, setPage] = useState<Page>('models');
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const [addKind, setAddKind] = useState<'model' | 'role'>('model');
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
 
   const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
@@ -40,8 +44,9 @@ export default function App() {
     loadAgents();
   }, []);
 
-  const handleAdd = () => {
+  const handleAdd = (kind: 'model' | 'role' = 'model') => {
     setEditingAgent(null);
+    setAddKind(kind);
     setModalOpen(true);
   };
 
@@ -86,88 +91,75 @@ export default function App() {
             </div>
             {/* Tab nav */}
             <nav className="flex items-center gap-1 rounded-lg bg-zinc-100 p-0.5">
-              {(['agents', 'pipelines'] as Page[]).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setPage(p)}
-                  className={`rounded-md px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
-                    page === p
-                      ? 'bg-white text-zinc-800 shadow-sm'
-                      : 'text-zinc-500 hover:text-zinc-700'
-                  }`}
-                >
-                  {p}
+              {(['models', 'roles', 'pipelines'] as Page[]).map((p) => (
+                <button key={p} onClick={() => setPage(p)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                    page === p ? 'bg-white text-zinc-800 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
+                  }`}>
+                  {t(`app.${p}`)}
                 </button>
               ))}
             </nav>
           </div>
-          {page === 'agents' && (
-            <button
-              onClick={handleAdd}
-              className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors"
+          <div className="flex items-center gap-3">
+             <button
+              className="px-2 py-1 text-xs text-zinc-500 hover:text-zinc-800 bg-zinc-100 rounded"
+              onClick={() => i18n.changeLanguage(i18n.language.startsWith('zh') ? 'en' : 'zh')}
             >
-              <PlusIcon />
-              Add Agent
+              {i18n.language.startsWith('zh') ? 'English' : '中文'}
             </button>
-          )}
+            {page === 'models' && (
+              <button onClick={() => handleAdd('model')}
+                className="flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3.5 py-2 text-xs font-medium text-zinc-600 hover:bg-zinc-50 hover:border-zinc-400 transition-colors">
+                <PlusIcon />{t('agent.addModelTitle')}
+              </button>
+            )}
+            {page === 'roles' && (
+              <button onClick={() => handleAdd('role')}
+                className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors">
+                <PlusIcon />{t('agent.addRoleTitle')}
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* Pipeline page (full-screen managed internally) */}
+      {/* Pipeline page */}
       {page === 'pipelines' && (
-        <PipelinePage agents={agents} />
+        <PipelinePage agents={agents.filter((a) => !!a.role)} />
       )}
 
-      {/* Agents page */}
-      {page === 'agents' && (
-        <main className="mx-auto max-w-6xl px-5 py-8">
-          {loading && (
-            <div className="flex items-center justify-center py-24">
-              <Spinner />
-            </div>
-          )}
+      {/* Models page */}
+      {page === 'models' && (
+        <AgentPage
+          loading={loading} error={error}
+          agents={agents.filter((a) => !a.role)}
+          emptyTitle={t('app.noModels', 'No model connections')}
+          emptyDesc={t('app.noModelsDesc', 'Add a model connection to get started.')}
+          onAdd={() => handleAdd('model')}
+          onEdit={handleEdit} onDelete={handleDelete} onRefresh={loadAgents}
+          header={<ImportPanel agents={agents} onImported={loadAgents} />}
+        />
+      )}
 
-          {!loading && error && (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-600">
-              <span className="font-medium">Failed to load agents:</span> {error}
-              <button onClick={loadAgents} className="ml-3 underline hover:no-underline">
-                Retry
-              </button>
-            </div>
-          )}
-
-          {!loading && !error && (
-            <>
-              <ImportPanel agents={agents} onImported={loadAgents} />
-              {agents.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                  <div className="text-4xl mb-4 opacity-20">◈</div>
-                  <h2 className="text-sm font-semibold text-zinc-600 mb-1">No agents configured</h2>
-                  <p className="text-xs text-zinc-400 mb-5">Add your first agent to get started.</p>
-                  <button
-                    onClick={handleAdd}
-                    className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors"
-                  >
-                    Add Agent
-                  </button>
-                </div>
-              ) : (
-                <AgentList
-                  agents={agents}
-                  onEdit={handleEdit}
-                  onDelete={handleDelete}
-                  onRefresh={loadAgents}
-                />
-              )}
-            </>
-          )}
-        </main>
+      {/* Roles page */}
+      {page === 'roles' && (
+        <AgentPage
+          loading={loading} error={error}
+          agents={agents.filter((a) => !!a.role)}
+          emptyTitle={t('app.noRoles', 'No role agents')}
+          emptyDesc={t('app.noRolesDesc', 'Add a role agent and assign it a model connection.')}
+          onAdd={() => handleAdd('role')}
+          onEdit={handleEdit} onDelete={handleDelete} onRefresh={loadAgents}
+        />
       )}
 
       {/* Modal */}
       {modalOpen && (
         <AgentModal
           agent={editingAgent}
+          agents={agents}
+          defaultKind={addKind}
           onSave={handleSave}
           onClose={() => setModalOpen(false)}
         />
@@ -197,58 +189,66 @@ function isImported(agent: { id: string; description?: string }) {
 
 const ROLE_ORDER: Array<AgentRole | undefined> = ['orchestrator', 'worker', 'reviewer', 'decider', undefined];
 
-function AgentList({
-  agents,
-  onEdit,
-  onDelete,
-  onRefresh,
+function AgentPage({
+  loading, error, agents, emptyTitle, emptyDesc,
+  onAdd, onEdit, onDelete, onRefresh, header,
 }: {
+  loading: boolean;
+  error: string | null;
   agents: import('./types').Agent[];
+  emptyTitle: string;
+  emptyDesc: string;
+  onAdd: () => void;
   onEdit: (a: import('./types').Agent) => void;
   onDelete: (id: string) => void;
   onRefresh: () => void;
+  header?: React.ReactNode;
 }) {
-  const custom = agents.filter((a) => !isImported(a)).sort(
+  const { t } = useTranslation();
+  const sorted = [...agents].sort(
     (a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role),
   );
-  const imported = agents.filter((a) => isImported(a));
-
   return (
-    <div>
-      <div className="mb-4 flex items-center justify-between">
-        <span className="text-xs text-zinc-400">
-          {agents.length} agent{agents.length !== 1 ? 's' : ''}
-        </span>
-        <button
-          onClick={onRefresh}
-          className="text-xs text-zinc-400 hover:text-zinc-600 transition-colors flex items-center gap-1"
-        >
-          <RefreshIcon /> Refresh
-        </button>
-      </div>
-
-      {custom.length > 0 && (
-        <section className="mb-4">
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-400">自定义</p>
-          <div className="flex flex-col gap-1">
-            {custom.map((a) => (
-              <AgentCard key={a.id} agent={a} onEdit={onEdit} onDelete={onDelete} />
-            ))}
-          </div>
-        </section>
+    <main className="mx-auto max-w-6xl px-5 py-8">
+      {loading && <div className="flex items-center justify-center py-24"><Spinner /></div>}
+      {!loading && error && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-600">
+          <span className="font-medium">Failed to load agents:</span> {error}
+          <button onClick={onRefresh} className="ml-3 underline hover:no-underline">Retry</button>
+        </div>
       )}
-
-      {imported.length > 0 && (
-        <section>
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-400">已导入</p>
-          <div className="flex flex-col gap-1">
-            {imported.map((a) => (
-              <AgentCard key={a.id} agent={a} imported onEdit={onEdit} onDelete={onDelete} />
-            ))}
-          </div>
-        </section>
+      {!loading && !error && (
+        <>
+          {header}
+          {sorted.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="text-4xl mb-4 opacity-20">◈</div>
+              <h2 className="text-sm font-semibold text-zinc-600 mb-1">{emptyTitle}</h2>
+              <p className="text-xs text-zinc-400 mb-5">{emptyDesc}</p>
+              <button onClick={onAdd} className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors">
+                {emptyTitle}
+              </button>
+            </div>
+          ) : (
+            <div>
+              <div className="mb-4 flex items-center justify-between">
+                <span className="text-xs text-zinc-400">
+                  {sorted.length} {sorted.length !== 1 ? t('app.agentsCount', 'items') : t('app.agentCount', 'item')}
+                </span>
+                <button onClick={onRefresh} className="text-xs text-zinc-400 hover:text-zinc-600 transition-colors flex items-center gap-1">
+                  <RefreshIcon /> {t('common.refresh', 'Refresh')}
+                </button>
+              </div>
+              <div className="flex flex-col gap-1">
+                {sorted.map((a) => (
+                  <AgentCard key={a.id} agent={a} imported={isImported(a)} onEdit={onEdit} onDelete={onDelete} />
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
-    </div>
+    </main>
   );
 }
 

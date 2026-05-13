@@ -1,4 +1,5 @@
 import type { Agent, AgentRole } from '../types';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   agent: Agent;
@@ -7,31 +8,37 @@ interface Props {
   onDelete: (id: string) => void;
 }
 
-const ROLE_META: Record<AgentRole, { label: string; color: string }> = {
-  orchestrator: { label: 'Orchestrator', color: 'bg-indigo-50 text-indigo-600 border-indigo-200' },
-  worker:       { label: 'Worker',       color: 'bg-emerald-50 text-emerald-600 border-emerald-200' },
-  reviewer:     { label: 'Reviewer',     color: 'bg-orange-50 text-orange-600 border-orange-200' },
-  decider:      { label: 'Decider',      color: 'bg-purple-50 text-purple-600 border-purple-200' },
+const ROLE_COLOR: Record<AgentRole, string> = {
+  orchestrator: 'bg-indigo-50 text-indigo-600 border-indigo-200',
+  worker:       'bg-emerald-50 text-emerald-600 border-emerald-200',
+  reviewer:     'bg-orange-50 text-orange-600 border-orange-200',
+  decider:      'bg-purple-50 text-purple-600 border-purple-200',
 };
 
 export function AgentCard({ agent, imported, onEdit, onDelete }: Props) {
-  const roleMeta = agent.role ? ROLE_META[agent.role] : null;
-  const isCli = agent.provider.type === 'cli';
-  const model = isCli
-    ? agent.provider.command
+  const { t } = useTranslation();
+  const roleColor = agent.role ? ROLE_COLOR[agent.role] : null;
+  const isCli = agent.provider?.type === 'cli';
+  const model = !agent.provider
+    ? agent.baseAgent ?? ''
+    : isCli
+    ? (agent.provider as import('../types').CliProvider).command
     : agent.provider.type === 'claude'
-      ? (agent.provider.model ?? 'default')
-      : agent.provider.model;
+      ? ((agent.provider as import('../types').ClaudeProvider).model ?? 'default')
+      : (agent.provider as import('../types').OpenAICompatProvider).model;
 
   return (
     <div className="group flex items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-2.5 hover:border-zinc-300 hover:bg-zinc-50 transition-all duration-100">
       {/* ID + description */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-mono text-sm font-medium text-zinc-800">{agent.id}</span>
-          {roleMeta && (
-            <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium ${roleMeta.color}`}>
-              {roleMeta.label}
+          <span className="font-mono text-sm font-medium text-zinc-800">{agent.name || agent.id}</span>
+          {agent.name && (
+            <span className="text-xs text-zinc-400 font-mono">#{agent.id}</span>
+          )}
+          {agent.role && roleColor && (
+            <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium ${roleColor}`}>
+              {t(`role.${agent.role}`)}
             </span>
           )}
           {imported && (

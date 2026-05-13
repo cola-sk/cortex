@@ -110,10 +110,15 @@ async function main() {
   // Load config
   const config = loadConfig(path.resolve(configPath));
 
-  // Instantiate all agents
+  // Instantiate all agents (resolve baseAgent references)
   const agentMap = new Map<string, Agent>();
   for (const [id, agentConfig] of Object.entries(config.agents)) {
-    agentMap.set(id, new Agent(id, agentConfig));
+    let resolved = agentConfig;
+    if (agentConfig.baseAgent && !agentConfig.provider) {
+      const base = config.agents[agentConfig.baseAgent];
+      if (base?.provider) resolved = { ...agentConfig, provider: base.provider };
+    }
+    if (resolved.provider) agentMap.set(id, new Agent(id, resolved as typeof agentConfig & { provider: NonNullable<typeof agentConfig.provider> }));
   }
 
   // Resolve orchestrator
@@ -123,10 +128,13 @@ async function main() {
   } else {
     const firstEntry = Object.entries(config.agents)[0];
     if (!firstEntry) throw new Error('No agents defined in config');
-    const fallbackConfig: AgentConfig = {
-      system: ORCHESTRATOR_SYSTEM,
-      provider: firstEntry[1].provider,
-    };
+    // Resolve provider for fallback (may need to follow baseAgent)
+    let fallbackProvider = firstEntry[1].provider;
+    if (!fallbackProvider && firstEntry[1].baseAgent) {
+      fallbackProvider = config.agents[firstEntry[1].baseAgent]?.provider;
+    }
+    if (!fallbackProvider) throw new Error('Could not resolve a provider for fallback orchestrator');
+    const fallbackConfig = { system: ORCHESTRATOR_SYSTEM, provider: fallbackProvider } as AgentConfig & { provider: NonNullable<AgentConfig['provider']> };
     orchestratorAgent = new Agent(orchestratorKey, fallbackConfig);
     console.log(`ℹ No "${orchestratorKey}" agent found, using "${firstEntry[0]}"'s provider.\n`);
   }

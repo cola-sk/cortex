@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Agent, Pipeline, PipelineTask, PipelineDecision, RunEventType } from '../types';
 import { api } from '../api';
+import { useTranslation } from 'react-i18next';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Templates
@@ -127,6 +128,7 @@ function agentColor(agents: Agent[], key: string): string {
 type View = 'list' | 'editor' | 'run';
 
 export function PipelinePage({ agents }: { agents: Agent[] }) {
+  const { t } = useTranslation();
   const [view, setView] = useState<View>('list');
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [loading, setLoading] = useState(true);
@@ -155,7 +157,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
   useEffect(() => { load(); }, [load]);
 
   const handleNew = () => {
-    setEditing({ id: '', name: 'New Pipeline', description: '', tasks: [], decisions: [] });
+    setEditing({ id: '', name: t('pipeline.newPipelineName'), description: '', tasks: [], decisions: [] });
     setView('editor');
   };
 
@@ -223,14 +225,14 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
         {/* Header */}
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <h1 className="text-base font-semibold text-zinc-800">Pipelines</h1>
-            <p className="mt-0.5 text-xs text-zinc-400">Design multi-agent orchestration workflows</p>
+            <h1 className="text-base font-semibold text-zinc-800">{t('pipeline.heading')}</h1>
+            <p className="mt-0.5 text-xs text-zinc-400">{t('pipeline.subheading')}</p>
           </div>
           <button
             onClick={handleNew}
             className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors"
           >
-            <PlusIcon /> New Pipeline
+            <PlusIcon />{t('pipeline.newPipeline')}
           </button>
         </div>
 
@@ -240,7 +242,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
 
         {!loading && error && (
           <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
-            {error} <button onClick={load} className="ml-2 underline">Retry</button>
+            {error} <button onClick={load} className="ml-2 underline">{t('pipeline.retry')}</button>
           </div>
         )}
 
@@ -249,7 +251,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
             {/* Templates */}
             {pipelines.length === 0 && (
               <div className="mb-8">
-                <p className="mb-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">Start from a template</p>
+                <p className="mb-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('pipeline.startFromTemplate')}</p>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   {TEMPLATES.map((t) => (
                     <button
@@ -290,12 +292,12 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
                     className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-zinc-200 bg-transparent py-8 text-zinc-300 hover:border-indigo-300 hover:text-indigo-400 transition-all"
                   >
                     <PlusIcon className="w-5 h-5" />
-                    <span className="text-xs font-medium">New Pipeline</span>
+                    <span className="text-xs font-medium">{t('pipeline.newPipeline')}</span>
                   </button>
                 </div>
                 {/* Templates section (always visible) */}
                 <div className="mt-10">
-                  <p className="mb-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">Templates</p>
+                  <p className="mb-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('pipeline.templates')}</p>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                     {TEMPLATES.map((t) => (
                       <button
@@ -331,12 +333,14 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
 // PipelineCard
 // ─────────────────────────────────────────────────────────────────────────────
 
-function PipelineCard({ pipeline, onEdit, onDelete, onRun }: {
+function PipelineCard({
+  pipeline, onEdit, onDelete, onRun }: {
   pipeline: Pipeline;
   onEdit: () => void;
   onDelete: () => void;
   onRun: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col rounded-xl border border-zinc-200 bg-white hover:border-zinc-300 hover:shadow-sm transition-all">
       <div className="flex-1 p-4">
@@ -360,13 +364,13 @@ function PipelineCard({ pipeline, onEdit, onDelete, onRun }: {
       </div>
       <div className="flex items-center gap-2 border-t border-zinc-100 px-4 py-3">
         <button onClick={onRun} className="flex-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors">
-          ▶ Run
+          ▶ {t('pipeline.run')}
         </button>
         <button onClick={onEdit} className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:border-zinc-400 hover:text-zinc-800 transition-colors">
-          Edit
+          {t('common.edit')}
         </button>
         <button onClick={onDelete} className="rounded-lg border border-red-100 px-3 py-1.5 text-xs font-medium text-red-400 hover:border-red-300 hover:text-red-500 transition-colors">
-          Del
+          {t('common.del')}
         </button>
       </div>
     </div>
@@ -377,13 +381,15 @@ function PipelineCard({ pipeline, onEdit, onDelete, onRun }: {
 // PipelineEditor
 // ─────────────────────────────────────────────────────────────────────────────
 
-function PipelineEditor({ pipeline, agents, onSave, onRun, onBack }: {
+function PipelineEditor({
+  pipeline, agents, onSave, onRun, onBack }: {
   pipeline: Pipeline;
   agents: Agent[];
   onSave: (p: Pipeline) => Promise<void>;
   onRun: (p: Pipeline) => void;
   onBack: () => void;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<Pipeline>(() => ({
     ...pipeline,
     tasks: pipeline.tasks.map((t) => ({ ...t, dependsOn: [...t.dependsOn] })),
@@ -404,7 +410,14 @@ function PipelineEditor({ pipeline, agents, onSave, onRun, onBack }: {
 
   const handleAddTask = () => {
     const id = newTaskId(draft.tasks);
-    const task: PipelineTask = { id, name: 'New Step', agent: agents[0]?.id ?? '', input: '', dependsOn: [] };
+    
+    // Auto-depend on the last task in the pipeline for convenience (creates sequential flow by default)
+    let dependsOn: string[] = [];
+    if (draft.tasks.length > 0) {
+      dependsOn = [draft.tasks[draft.tasks.length - 1].id];
+    }
+
+    const task: PipelineTask = { id, name: t('step.defaultName'), agent: agents[0]?.id ?? '', input: '', dependsOn };
     update((p) => ({ ...p, tasks: [...p.tasks, task] }));
     setSelectedId(id);
   };
@@ -438,8 +451,8 @@ function PipelineEditor({ pipeline, agents, onSave, onRun, onBack }: {
   };
 
   const handleSave = async () => {
-    if (!draft.id.trim()) { setIdError('Pipeline ID is required'); return; }
-    if (!/^[a-z0-9_-]+$/.test(draft.id)) { setIdError('ID must be lowercase a-z 0-9 _ -'); return; }
+    if (!draft.id.trim()) { setIdError(t('pipeline.idRequired')); return; }
+    if (!/^[a-z0-9_-]+$/.test(draft.id)) { setIdError(t('pipeline.idFormat')); return; }
     setIdError('');
     setSaving(true);
     try { await onSave(draft); } finally { setSaving(false); }
@@ -453,7 +466,7 @@ function PipelineEditor({ pipeline, agents, onSave, onRun, onBack }: {
       <div className="sticky top-0 z-30 bg-white border-b border-zinc-200">
         <div className="mx-auto max-w-7xl px-4 py-3 flex items-center gap-3">
           <button onClick={onBack} className="text-zinc-400 hover:text-zinc-700 flex items-center gap-1.5 text-xs transition-colors shrink-0">
-            <ChevronLeftIcon /> Back
+            <ChevronLeftIcon /> {t('common.back')}
           </button>
           <div className="w-px h-4 bg-zinc-200 shrink-0" />
           <div className="flex-1 min-w-0 flex items-center gap-3">
@@ -461,13 +474,13 @@ function PipelineEditor({ pipeline, agents, onSave, onRun, onBack }: {
               <input
                 className="text-sm font-semibold text-zinc-800 bg-transparent outline-none border-b border-transparent hover:border-zinc-300 focus:border-indigo-400 transition-colors w-48 truncate"
                 value={draft.name}
-                placeholder="Pipeline name"
+                {...{ placeholder: t('pipeline.namePlaceholder') }}
                 onChange={(e) => update((p) => ({ ...p, name: e.target.value }))}
               />
               {idError && <span className="text-xs text-red-500">{idError}</span>}
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="text-xs text-zinc-400">ID:</span>
+              <span className="text-xs text-zinc-400">{t('pipeline.idLabel')}</span>
               <input
                 className="text-xs font-mono-custom bg-zinc-50 border border-zinc-200 rounded-md px-2 py-1 outline-none focus:border-indigo-400 w-36"
                 value={draft.id}
@@ -482,14 +495,14 @@ function PipelineEditor({ pipeline, agents, onSave, onRun, onBack }: {
               onClick={() => onRun(draft)}
               className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors"
             >
-              ▶ Run
+              ▶ {t('pipeline.run')}
             </button>
             <button
               onClick={handleSave}
               disabled={saving || !isDirty}
               className="rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
-              {saving ? 'Saving…' : 'Save'}
+              {saving ? t('pipeline.saving') : t('pipeline.save')}
             </button>
           </div>
         </div>
@@ -508,7 +521,7 @@ function PipelineEditor({ pipeline, agents, onSave, onRun, onBack }: {
               <input
                 className="w-full text-xs text-zinc-500 bg-transparent outline-none placeholder-zinc-300 border-b border-transparent hover:border-zinc-200 focus:border-indigo-300 transition-colors"
                 value={draft.description ?? ''}
-                placeholder="Description (optional)"
+                {...{ placeholder: t('pipeline.descPlaceholder') }}
                 onChange={(e) => update((p) => ({ ...p, description: e.target.value }))}
               />
             </div>
@@ -516,8 +529,8 @@ function PipelineEditor({ pipeline, agents, onSave, onRun, onBack }: {
             {draft.tasks.length === 0 && draft.decisions.length === 0 && (
               <div className="flex flex-col items-center justify-center py-16 text-center rounded-2xl border-2 border-dashed border-zinc-200">
                 <div className="text-3xl mb-3 opacity-30">◈</div>
-                <p className="text-sm font-medium text-zinc-400 mb-1">Empty pipeline</p>
-                <p className="text-xs text-zinc-300 mb-5">Add steps and decision points below</p>
+                <p className="text-sm font-medium text-zinc-400 mb-1">{t('pipeline.emptyTitle')}</p>
+                <p className="text-xs text-zinc-300 mb-5">{t('pipeline.emptyHint')}</p>
               </div>
             )}
 
@@ -575,13 +588,13 @@ function PipelineEditor({ pipeline, agents, onSave, onRun, onBack }: {
                 onClick={handleAddTask}
                 className="flex items-center gap-1.5 rounded-lg border border-dashed border-zinc-300 px-4 py-2.5 text-xs font-medium text-zinc-500 hover:border-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
               >
-                <PlusIcon /> Add Step
+                <PlusIcon /> {t('pipeline.addStep').replace('+ ', '')}
               </button>
               <button
                 onClick={handleAddDecision}
                 className="flex items-center gap-1.5 rounded-lg border border-dashed border-amber-200 px-4 py-2.5 text-xs font-medium text-amber-500 hover:border-amber-400 hover:bg-amber-50 transition-all"
               >
-                <PlusIcon /> Add Decision Point
+                <PlusIcon /> {t('pipeline.addDecision').replace('+ ', '')}
               </button>
             </div>
           </div>
@@ -615,7 +628,7 @@ function PipelineEditor({ pipeline, agents, onSave, onRun, onBack }: {
             <div className="flex flex-col items-center justify-center h-full text-center px-6 py-12">
               <div className="text-3xl mb-3 opacity-20">⚙</div>
               <p className="text-xs text-zinc-400 leading-relaxed">
-                Click a step or decision point to configure it
+                {t('common.clickToConfig')}
               </p>
             </div>
           )}
@@ -638,6 +651,7 @@ function CanvasTaskNode({ task, agents, isSelected, onClick }: {
   const isMulti = Array.isArray(task.agent);
   const agentKeys = isMulti ? (task.agent as string[]) : [task.agent as string];
   const firstKey = agentKeys[0] ?? '';
+  const firstAgent = agents.find((a) => a.id === firstKey);
   const color = agentColor(agents, firstKey);
 
   return (
@@ -656,7 +670,7 @@ function CanvasTaskNode({ task, agents, isSelected, onClick }: {
           </span>
         ) : (
           <span className={`shrink-0 rounded-md px-1.5 py-0.5 text-xs font-medium ${color}`}>
-            {firstKey || '—'}
+            {firstAgent?.name || firstKey || '—'}
           </span>
         )}
       </div>
@@ -720,13 +734,15 @@ function FlowArrow() {
 // Inspectors
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskInspector({ task, allTasks, agents, onChange, onDelete }: {
+function TaskInspector({
+  task, allTasks, agents, onChange, onDelete }: {
   task: PipelineTask;
   allTasks: PipelineTask[];
   agents: Agent[];
   onChange: (t: PipelineTask) => void;
   onDelete: () => void;
 }) {
+  const { t } = useTranslation();
   const isMulti = Array.isArray(task.agent);
   const agentKeys: string[] = isMulti ? [...(task.agent as string[])] : [task.agent as string];
 
@@ -736,22 +752,22 @@ function TaskInspector({ task, allTasks, agents, onChange, onDelete }: {
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-zinc-600 uppercase tracking-wider">Step Config</h3>
+        <h3 className="text-xs font-semibold text-zinc-600 uppercase tracking-wider">{t('step.configTitle')}</h3>
         <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-600 transition-colors">
-          Delete
+          {t('common.delete')}
         </button>
       </div>
 
-      <Field label="ID">
+      <Field label={t('step.fieldId')}>
         <input className={inputCls} value={task.id} readOnly disabled />
       </Field>
 
-      <Field label="Name">
+      <Field label={t('step.fieldName')}>
         <input className={inputCls} value={task.name} onChange={(e) => setField('name', e.target.value)} />
       </Field>
 
       {/* Agent type toggle */}
-      <Field label="Agent Mode">
+      <Field label={t('step.fieldAgentMode')}>
         <div className="flex rounded-lg border border-zinc-200 overflow-hidden text-xs">
           {(['single', 'parallel'] as const).map((mode) => (
             <button
@@ -766,14 +782,14 @@ function TaskInspector({ task, allTasks, agents, onChange, onDelete }: {
                   : 'text-zinc-500 hover:bg-zinc-50'
               }`}
             >
-              {mode === 'single' ? 'Single Agent' : 'Parallel Workers'}
+              {mode === 'single' ? t('step.modeSingle') : t('step.modeParallel')}
             </button>
           ))}
         </div>
       </Field>
 
       {isMulti ? (
-        <Field label={`Workers (${agentKeys.length})`} hint="Same task runs for each worker simultaneously">
+        <Field label={t('step.fieldWorkers', { count: agentKeys.length })} hint={t('step.workersHint')}>
           <div className="space-y-1.5">
             {agentKeys.map((key, idx) => (
               <div key={idx} className="flex items-center gap-1.5">
@@ -786,9 +802,9 @@ function TaskInspector({ task, allTasks, agents, onChange, onDelete }: {
                     setField('agent', next);
                   }}
                 >
-                  <option value="">— select agent —</option>
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.id}>{a.id}{a.role ? ` [${a.role}]` : ''}</option>
+                  <option value="">{t('step.selectAgent')}</option>
+                  {agents.filter((a) => !!a.role).map((a) => (
+                    <option key={a.id} value={a.id}>{a.name || a.id} [{t(`role.${a.role}`)}]</option>
                   ))}
                 </select>
                 {agentKeys.length > 1 && (
@@ -805,36 +821,36 @@ function TaskInspector({ task, allTasks, agents, onChange, onDelete }: {
               onClick={() => setField('agent', [...agentKeys, agentKeys[0] ?? ''])}
               className="text-xs text-indigo-500 hover:text-indigo-700 transition-colors"
             >
-              + Add worker
+              {t('step.addWorker')}
             </button>
           </div>
         </Field>
       ) : (
-        <Field label="Agent">
+        <Field label={t('step.fieldAgent')}>
           <select
             className={inputCls}
             value={task.agent as string}
             onChange={(e) => setField('agent', e.target.value)}
           >
-            <option value="">— select agent —</option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>{a.id}{a.role ? ` [${a.role}]` : ''}</option>
+            <option value="">{t('step.selectAgent')}</option>
+            {agents.filter((a) => !!a.role).map((a) => (
+              <option key={a.id} value={a.id}>{a.name || a.id} [{t(`role.${a.role}`)}]</option>
             ))}
           </select>
         </Field>
       )}
 
-      <Field label="Instruction" hint="What this agent should do">
+      <Field label={t('step.fieldInstruction')} hint={t('step.instructionHint')}>
         <textarea
           className={`${inputCls} resize-y`}
           rows={4}
           value={task.input}
           onChange={(e) => setField('input', e.target.value)}
-          placeholder="Describe the task..."
+          {...{ placeholder: t('step.instructionPlaceholder') }}
         />
       </Field>
 
-      <Field label="Depends On" hint="This step runs after these steps complete">
+      <Field label={t('step.fieldDependsOn')} hint={t('step.dependsOnHint')}>
         <div className="space-y-1">
           {allTasks.filter((t) => t.id !== task.id).map((t) => (
             <label key={t.id} className="flex items-center gap-2 text-xs text-zinc-600 cursor-pointer">
@@ -854,7 +870,7 @@ function TaskInspector({ task, allTasks, agents, onChange, onDelete }: {
             </label>
           ))}
           {allTasks.filter((t) => t.id !== task.id).length === 0 && (
-            <p className="text-xs text-zinc-300">No other steps yet</p>
+            <p className="text-xs text-zinc-300">{t('step.noOtherSteps')}</p>
           )}
         </div>
       </Field>
@@ -862,30 +878,32 @@ function TaskInspector({ task, allTasks, agents, onChange, onDelete }: {
   );
 }
 
-function DecisionInspector({ decision, allTasks, agents, onChange, onDelete }: {
+function DecisionInspector({
+  decision, allTasks, agents, onChange, onDelete }: {
   decision: PipelineDecision;
   allTasks: PipelineTask[];
   agents: Agent[];
   onChange: (d: PipelineDecision) => void;
   onDelete: () => void;
 }) {
+  const { t } = useTranslation();
   const setField = <K extends keyof PipelineDecision>(key: K, val: PipelineDecision[K]) =>
     onChange({ ...decision, [key]: val });
 
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-amber-600 uppercase tracking-wider">⬡ Decision Point</h3>
+        <h3 className="text-xs font-semibold text-amber-600 uppercase tracking-wider">{`⬡ ${t('decision.panelTitle', 'Decision Point')}`}</h3>
         <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-600 transition-colors">
-          Delete
+          {t('common.delete')}
         </button>
       </div>
 
-      <Field label="ID">
+      <Field label={t('decision.fieldId')}>
         <input className={inputCls} value={decision.id} readOnly disabled />
       </Field>
 
-      <Field label="Name">
+      <Field label={t('decision.fieldName')}>
         <input
           className={inputCls}
           value={decision.name ?? ''}
@@ -894,20 +912,20 @@ function DecisionInspector({ decision, allTasks, agents, onChange, onDelete }: {
         />
       </Field>
 
-      <Field label="Decider Agent" hint="Must respond with {action, retryTaskIds, reason}">
+      <Field label={t('decision.fieldDecider')} hint={t('decision.deciderHint')}>
         <select
           className={inputCls}
           value={decision.agent}
           onChange={(e) => setField('agent', e.target.value)}
         >
-          <option value="">— select agent —</option>
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>{a.id}{a.role ? ` [${a.role}]` : ''}</option>
+          <option value="">{t('step.selectAgent')}</option>
+          {agents.filter((a) => !!a.role).map((a) => (
+            <option key={a.id} value={a.id}>{a.name || a.id} [{t(`role.${a.role}`)}]</option>
           ))}
         </select>
       </Field>
 
-      <Field label="Evaluates" hint="Steps whose output this decision reviews">
+      <Field label={t('decision.fieldEvaluates')} hint={t('decision.evaluatesHint')}>
         <div className="space-y-1">
           {allTasks.map((t) => (
             <label key={t.id} className="flex items-center gap-2 text-xs text-zinc-600 cursor-pointer">
@@ -926,11 +944,11 @@ function DecisionInspector({ decision, allTasks, agents, onChange, onDelete }: {
               <span className="text-zinc-400">{t.name}</span>
             </label>
           ))}
-          {allTasks.length === 0 && <p className="text-xs text-zinc-300">No steps yet</p>}
+          {allTasks.length === 0 && <p className="text-xs text-zinc-300">{t('decision.noStepsYet')}</p>}
         </div>
       </Field>
 
-      <Field label="Max Retries" hint="How many retry loops before forcing continue">
+      <Field label={t('decision.fieldMaxRetries')} hint={t('decision.maxRetriesHint')}>
         <input
           className={inputCls}
           type="number"
@@ -956,7 +974,9 @@ interface LogEntry {
   status: 'running' | 'done' | 'error' | 'decision';
 }
 
-function RunView({ pipeline, onBack }: { pipeline: Pipeline; onBack: () => void }) {
+function RunView({
+  pipeline, onBack }: { pipeline: Pipeline; onBack: () => void }) {
+  const { t } = useTranslation();
   const [goal, setGoal] = useState('');
   const [started, setStarted] = useState(false);
   const [done, setDone] = useState(false);
@@ -1046,7 +1066,7 @@ function RunView({ pipeline, onBack }: { pipeline: Pipeline; onBack: () => void 
           </button>
           <div className="w-px h-4 bg-zinc-200 shrink-0" />
           <span className="text-sm font-semibold text-zinc-800 truncate">{pipeline.name}</span>
-          <span className="text-xs text-zinc-400">Run</span>
+          <span className="text-xs text-zinc-400">{t('run.label')}</span>
         </div>
       </div>
 
@@ -1054,16 +1074,16 @@ function RunView({ pipeline, onBack }: { pipeline: Pipeline; onBack: () => void 
         {/* Goal input */}
         {!started && (
           <div className="bg-white rounded-xl border border-zinc-200 p-5">
-            <h2 className="text-sm font-semibold text-zinc-800 mb-1">What's your goal?</h2>
+            <h2 className="text-sm font-semibold text-zinc-800 mb-1">{t('run.goalTitle')}</h2>
             <p className="text-xs text-zinc-400 mb-4">
-              Describe the task. Each pipeline step will receive this as context.
+              {t('run.goalDesc')}
             </p>
             <textarea
               className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize-none"
               rows={3}
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
-              placeholder="e.g. Write a TypeScript function that calculates Fibonacci numbers..."
+              {...{ placeholder: t('run.goalPlaceholder') }}
               autoFocus
             />
             <div className="mt-3 flex justify-end">
@@ -1072,7 +1092,7 @@ function RunView({ pipeline, onBack }: { pipeline: Pipeline; onBack: () => void 
                 disabled={!goal.trim()}
                 className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
-                ▶ Start Run
+                ▶ {t('run.startRun').replace('▶ ', '')}
               </button>
             </div>
           </div>
@@ -1081,7 +1101,7 @@ function RunView({ pipeline, onBack }: { pipeline: Pipeline; onBack: () => void 
         {/* Pipeline diagram (compact) */}
         {started && (
           <div className="bg-white rounded-xl border border-zinc-200 p-4">
-            <div className="text-xs font-medium text-zinc-400 mb-3 uppercase tracking-wider">Goal</div>
+            <div className="text-xs font-medium text-zinc-400 mb-3 uppercase tracking-wider">{t('run.goalLabel')}</div>
             <p className="text-sm text-zinc-700 leading-relaxed">{goal}</p>
           </div>
         )}
@@ -1091,7 +1111,7 @@ function RunView({ pipeline, onBack }: { pipeline: Pipeline; onBack: () => void 
           <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
             <div className="border-b border-zinc-100 px-4 py-3 flex items-center justify-between">
               <span className="text-xs font-semibold text-zinc-600">
-                {done ? (fatalError ? '✗ Run failed' : '✓ Run complete') : '⚡ Running…'}
+                {done ? (fatalError ? t('run.failed') : t('run.complete')) : t('run.running')}
               </span>
               {!done && <Spinner />}
             </div>
@@ -1105,7 +1125,7 @@ function RunView({ pipeline, onBack }: { pipeline: Pipeline; onBack: () => void 
                 />
               ))}
               {log.length === 0 && (
-                <div className="px-4 py-6 text-center text-xs text-zinc-300">Starting…</div>
+                <div className="px-4 py-6 text-center text-xs text-zinc-300">{t('run.starting')}</div>
               )}
             </div>
           </div>
@@ -1114,7 +1134,7 @@ function RunView({ pipeline, onBack }: { pipeline: Pipeline; onBack: () => void 
         {/* Fatal error */}
         {fatalError && (
           <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
-            <span className="font-semibold">Error: </span>{fatalError}
+            {t('run.error')}{fatalError}
           </div>
         )}
 
@@ -1122,7 +1142,7 @@ function RunView({ pipeline, onBack }: { pipeline: Pipeline; onBack: () => void 
         {done && !fatalError && Object.keys(results).length > 0 && (
           <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
             <div className="border-b border-zinc-100 px-4 py-3">
-              <span className="text-xs font-semibold text-zinc-600">Results</span>
+              <span className="text-xs font-semibold text-zinc-600">{t('run.results')}</span>
             </div>
             <div className="divide-y divide-zinc-50">
               {Object.entries(results).map(([taskId, r]) => (

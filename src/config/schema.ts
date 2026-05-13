@@ -40,15 +40,22 @@ export const AGENT_ROLES = ['orchestrator', 'worker', 'reviewer', 'decider'] as 
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
 export const AgentConfigSchema = z.object({
+  /** Display name shown in UI (optional, falls back to id) */
+  name: z.string().optional(),
   /** Role of this agent in the system */
   role: z.enum(AGENT_ROLES).optional(),
   /** Short description shown in logs and UI */
   description: z.string().optional(),
   /** System prompt for this agent */
-  system: z.string(),
-  /** Provider configuration */
-  provider: ProviderConfigSchema,
-});
+  system: z.string().default(''),
+  /** Provider configuration — direct inline config */
+  provider: ProviderConfigSchema.optional(),
+  /** Reference to another agent whose provider config is inherited */
+  baseAgent: z.string().optional(),
+}).refine(
+  (d) => d.provider != null || d.baseAgent != null,
+  { message: 'Agent must specify either a provider or a baseAgent reference' },
+);
 
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 

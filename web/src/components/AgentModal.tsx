@@ -1,285 +1,212 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Agent, AgentRole, ProviderType } from '../types';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
-  agent: Agent | null; // null = add mode
+  agent: Agent | null;
+  agents: Agent[];
+  defaultKind?: AgentKind;
   onSave: (agent: Agent) => Promise<void>;
   onClose: () => void;
 }
 
-interface FormState {
-  id: string;
-  role: AgentRole | '';
-  description: string;
-  system: string;
-  providerType: ProviderType;
-  model: string;
-  baseURL: string;
-  apiKey: string;
+type AgentKind = 'model' | 'role';
+
+interface ModelForm { id: string; name: string; description: string; providerType: ProviderType; model: string; baseURL: string; apiKey: string; }
+interface RoleForm  { id: string; name: string; role: AgentRole | ''; description: string; system: string; baseAgent: string; }
+
+const DEFAULT_MODEL_FORM: ModelForm = { id: '', name: '', description: '', providerType: 'claude', model: '', baseURL: '', apiKey: '' };
+const DEFAULT_ROLE_FORM:  RoleForm  = { id: '', name: '', role: '', description: '', system: '', baseAgent: '' };
+
+function generateId(): string {
+  return Math.random().toString(36).slice(2, 8);
 }
 
-const DEFAULT_FORM: FormState = {
-  id: '',
-  role: '',
-  description: '',
-  system: '',
-  providerType: 'claude',
-  model: '',
-  baseURL: '',
-  apiKey: '',
-};
+function agentToKind(agent: Agent): AgentKind { return agent.role ? 'role' : 'model'; }
 
-function agentToForm(agent: Agent): FormState {
+function agentToModelForm(a: Agent): ModelForm {
+  const p = a.provider;
+  return { id: a.id, name: a.name ?? '', description: a.description ?? '', providerType: p?.type ?? 'claude',
+    model: p?.type === 'cli' ? p.command : (p as {model?:string})?.model ?? '',
+    baseURL: p?.type !== 'cli' ? (p as {baseURL?:string})?.baseURL ?? '' : '',
+    apiKey:  p?.type !== 'cli' ? (p as {apiKey?:string})?.apiKey  ?? '' : '' };
+}
+
+function agentToRoleForm(a: Agent): RoleForm {
+  return { id: a.id, name: a.name ?? '', role: a.role ?? '', description: a.description ?? '', system: a.system, baseAgent: a.baseAgent ?? '' };
+}
+
+function modelFormToAgent(f: ModelForm): Agent {
+  const id = f.id.trim();
+  const base = { id, name: f.name.trim() || id, description: f.description.trim() || undefined, system: '' };
+  if (f.providerType === 'claude')       return { ...base, provider: { type: 'claude',       ...(f.model   ? { model:   f.model.trim()   } : {}), ...(f.baseURL ? { baseURL: f.baseURL.trim() } : {}), ...(f.apiKey  ? { apiKey:  f.apiKey.trim()  } : {}) } };
+  if (f.providerType === 'cli')          return { ...base, provider: { type: 'cli', command: f.model.trim() || 'claude', args: [] } };
+  return { ...base, provider: { type: 'openai-compat', baseURL: f.baseURL.trim(), model: f.model.trim(), ...(f.apiKey ? { apiKey: f.apiKey.trim() } : {}) } };
+}
+
+function roleFormToAgent(f: RoleForm): Agent {
+  const id = f.id.trim();
   return {
-    id: agent.id,
-    role: agent.role ?? '',
-    description: agent.description ?? '',
-    system: agent.system,
-    providerType: agent.provider.type,
-    model: agent.provider.type === 'cli' ? agent.provider.command : (agent.provider.model ?? ''),
-    baseURL: agent.provider.type !== 'cli' ? (agent.provider.baseURL ?? '') : '',
-    apiKey: agent.provider.type !== 'cli' ? (agent.provider.apiKey ?? '') : '',
+    id,
+    name: f.name.trim() || id,
+    role: f.role as AgentRole,
+    description: f.description.trim() || undefined,
+    system: f.system.trim(),
+    baseAgent: f.baseAgent.trim(),
   };
 }
 
-function formToAgent(form: FormState): Agent {
-  const base = {
-    id: form.id.trim(),
-    ...(form.role ? { role: form.role as AgentRole } : {}),
-    description: form.description.trim() || undefined,
-    system: form.system.trim(),
-  };
-  if (form.providerType === 'claude') {
-    return {
-      ...base,
-      provider: {
-        type: 'claude',
-        ...(form.model.trim() ? { model: form.model.trim() } : {}),
-        ...(form.baseURL.trim() ? { baseURL: form.baseURL.trim() } : {}),
-        ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}),
-      },
-    };
-  }
-  if (form.providerType === 'cli') {
-    // CLI agents are imported; command is stored in model field
-    return {
-      ...base,
-      provider: { type: 'cli', command: form.model.trim() || 'claude', args: [] },
-    };
-  }
-  return {
-    ...base,
-    provider: {
-      type: 'openai-compat',
-      baseURL: form.baseURL.trim(),
-      model: form.model.trim(),
-      ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}),
-    },
-  };
-}
+const selectCls   = 'w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 transition-colors cursor-pointer';
+const textareaCls = 'w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize-y transition-colors';
 
-export function AgentModal({ agent, onSave, onClose }: Props) {
+export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClose }: Props) {
+  const { t } = useTranslation();
   const isEdit = agent !== null;
-  const [form, setForm] = useState<FormState>(isEdit ? agentToForm(agent) : DEFAULT_FORM);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Close on Escape
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    },
-    [onClose],
+  const [kind,      setKind]      = useState<AgentKind>(isEdit ? agentToKind(agent) : defaultKind);
+  const [modelForm, setModelForm] = useState<ModelForm>(() =>
+    isEdit && agentToKind(agent) === 'model' ? agentToModelForm(agent) : { ...DEFAULT_MODEL_FORM, id: generateId() }
   );
+  const [roleForm,  setRoleForm]  = useState<RoleForm>(() =>
+    isEdit && agentToKind(agent) === 'role'  ? agentToRoleForm(agent)  : { ...DEFAULT_ROLE_FORM,  id: generateId() }
+  );
+  const [saving, setSaving] = useState(false);
+  const [error,  setError]  = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyDown]);
+  // Auto-focus name field when modal opens
+  useEffect(() => { setTimeout(() => nameRef.current?.focus(), 50); }, []);
 
-  const set = (key: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
-    setForm((f) => ({ ...f, [key]: e.target.value }));
+  const modelAgents = agents.filter((a) => !a.role);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); }, [onClose]);
+  useEffect(() => { document.addEventListener('keydown', handleKeyDown); return () => document.removeEventListener('keydown', handleKeyDown); }, [handleKeyDown]);
+
+  const setM = (k: keyof ModelForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setModelForm((f) => ({ ...f, [k]: e.target.value }));
+  const setR = (k: keyof RoleForm)  => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => setRoleForm((f) => ({ ...f, [k]: e.target.value }));
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-
-    if (!form.system.trim()) {
-      setError('System prompt is required');
-      return;
+    e.preventDefault(); setError(null);
+    if (kind === 'model') {
+      if (!modelForm.id.trim()) { setError('ID is required'); return; }
+      if (modelForm.providerType === 'openai-compat') {
+        if (!modelForm.baseURL.trim()) { setError(t('agent.errBaseURLRequired')); return; }
+        if (!modelForm.model.trim())   { setError(t('agent.errModelRequired'));   return; }
+      }
+    } else {
+      if (!roleForm.id.trim())     { setError('ID is required'); return; }
+      if (!roleForm.role)           { setError(t('agent.errRoleRequired')); return; }
+      if (!roleForm.system.trim())  { setError(t('agent.errSystemRequired')); return; }
+      if (!roleForm.baseAgent.trim()) { setError(t('agent.errBaseAgentRequired')); return; }
     }
-    if (form.providerType === 'openai-compat') {
-      if (!form.baseURL.trim()) { setError('Base URL is required for OpenAI-compat provider'); return; }
-      if (!form.model.trim()) { setError('Model is required for OpenAI-compat provider'); return; }
-    }
-
     setSaving(true);
-    try {
-      await onSave(formToAgent(form));
-    } catch (err) {
-      setError((err as Error).message);
-      setSaving(false);
-    }
+    try { await onSave(kind === 'model' ? modelFormToAgent(modelForm) : roleFormToAgent(roleForm)); }
+    catch (err) { setError((err as Error).message); setSaving(false); }
   };
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
+  const titleKey = isEdit
+    ? (kind === 'model' ? 'agent.editModelTitle' : 'agent.editRoleTitle')
+    : (kind === 'model' ? 'agent.addModelTitle'  : 'agent.addRoleTitle');
 
-      {/* Modal */}
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
       <div className="relative w-full max-w-lg rounded-2xl border border-zinc-200 bg-white shadow-2xl shadow-zinc-200/80">
+
         {/* Header */}
         <div className="flex items-center justify-between border-b border-zinc-100 px-5 py-4">
-          <h2 className="text-sm font-semibold text-zinc-800">
-            {isEdit ? `Edit Agent · ${agent.id}` : 'Add Agent'}
-          </h2>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-colors"
-          >
-            <XIcon />
-          </button>
+          <h2 className="text-sm font-semibold text-zinc-800">{t(titleKey, { id: agent?.id })}</h2>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-colors"><XIcon /></button>
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="overflow-y-auto max-h-[75vh]">
+        {/* Kind toggle — removed; kind is set by the calling page */}
+
+        <form onSubmit={handleSubmit} className="overflow-y-auto max-h-[68vh]">
           <div className="space-y-4 p-5">
-            {/* ID */}
-            <Field label="Agent ID" required>
-              <Input
-                placeholder="e.g. orchestrator"
-                value={form.id}
-                onChange={set('id')}
-                mono
-                disabled={isEdit}
-                pattern="^[a-z0-9_-]+$"
-                title="Lowercase letters, numbers, dash or underscore"
-                required
-              />
-            </Field>
 
-            {/* Role */}
-            <Field label="Role" hint="Helps the orchestrator assign tasks appropriately">
-              <select
-                value={form.role}
-                onChange={set('role')}
-                className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 transition-colors cursor-pointer"
-              >
-                <option value="">— None —</option>
-                <option value="orchestrator">Orchestrator — plans and assigns tasks</option>
-                <option value="worker">Worker — executes assigned tasks</option>
-                <option value="reviewer">Reviewer — checks quality and correctness</option>
-                <option value="decider">Decider — evaluates results and decides retry/continue</option>
-              </select>
-            </Field>
+            {/* ── MODEL CONNECTION ── */}
+            {kind === 'model' && (
+              <>
+                <div className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-700">{t('agent.modelKindDesc')}</div>
+                <Field label={t('agent.fieldName')}>
+                  <Input ref={nameRef} placeholder={t('agent.namePlaceholder')} value={modelForm.name} onChange={setM('name')} />
+                </Field>
+                <Field label={t('agent.fieldDescription')}>
+                  <Input placeholder={t('agent.descPlaceholder')} value={modelForm.description} onChange={setM('description')} />
+                </Field>
+                <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                  <span>{t('agent.fieldId')}:</span>
+                  <code className="font-mono bg-zinc-100 px-1.5 py-0.5 rounded text-zinc-500">{modelForm.id}</code>
+                </div>
+                <Divider label={t('agent.sectionProvider')} />
+                <Field label={t('agent.fieldProviderType')}>
+                  <select value={modelForm.providerType} onChange={setM('providerType') as React.ChangeEventHandler<HTMLSelectElement>} className={selectCls}>
+                    <option value="claude">{t('agent.providerClaude')}</option>
+                    <option value="openai-compat">{t('agent.providerOpenAI')}</option>
+                    <option value="cli" disabled>{t('agent.providerCli')}</option>
+                  </select>
+                </Field>
+                <Field label={t('agent.fieldModel')} hint={modelForm.providerType === 'claude' ? t('agent.modelHintClaude') : t('agent.modelHintRequired')} required={modelForm.providerType === 'openai-compat'}>
+                  <Input placeholder={modelForm.providerType === 'claude' ? t('agent.modelPlaceholderClaude') : t('agent.modelPlaceholderOpenAI')} value={modelForm.model} onChange={setM('model')} mono required={modelForm.providerType === 'openai-compat'} />
+                </Field>
+                <Field label={t('agent.fieldBaseURL')} hint={modelForm.providerType === 'claude' ? t('agent.baseURLHintClaude') : t('agent.baseURLHintOpenAI')} required={modelForm.providerType === 'openai-compat'}>
+                  <Input placeholder={modelForm.providerType === 'claude' ? t('agent.baseURLPlaceholderClaude') : t('agent.baseURLPlaceholderOpenAI')} value={modelForm.baseURL} onChange={setM('baseURL')} type="url" required={modelForm.providerType === 'openai-compat'} />
+                </Field>
+                <Field label={t('agent.fieldApiKey')} hint={t('agent.apiKeyHint')}>
+                  <Input placeholder={isEdit ? t('agent.apiKeyPlaceholderEdit') : t('agent.apiKeyPlaceholderNew')} value={modelForm.apiKey} onChange={setM('apiKey')} type="password" autoComplete="off" />
+                </Field>
+              </>
+            )}
 
-            {/* Description */}
-            <Field label="Description">
-              <Input
-                placeholder="Short description (optional)"
-                value={form.description}
-                onChange={set('description')}
-              />
-            </Field>
+            {/* ── ROLE AGENT ── */}
+            {kind === 'role' && (
+              <>
+                <div className="rounded-lg bg-indigo-50 border border-indigo-100 px-3 py-2 text-xs text-indigo-700">{t('agent.roleKindDesc')}</div>
+                <Field label={t('agent.fieldName')}>
+                  <Input ref={nameRef} placeholder={t('agent.namePlaceholder')} value={roleForm.name} onChange={setR('name')} />
+                </Field>
+                <Field label={t('agent.fieldRole')} hint={t('agent.roleHint')} required>
+                  <select value={roleForm.role} onChange={setR('role')} className={selectCls} required>
+                    <option value="">{t('agent.roleNone')}</option>
+                    <option value="orchestrator">{t('agent.roleOrchestrator')}</option>
+                    <option value="worker">{t('agent.roleWorker')}</option>
+                    <option value="reviewer">{t('agent.roleReviewer')}</option>
+                    <option value="decider">{t('agent.roleDecider')}</option>
+                  </select>
+                </Field>
+                <Field label={t('agent.fieldDescription')}>
+                  <Input placeholder={t('agent.descPlaceholder')} value={roleForm.description} onChange={setR('description')} />
+                </Field>
+                <Field label={t('agent.fieldSystem')} required>
+                  <textarea value={roleForm.system} onChange={setR('system')} placeholder={t('agent.systemPlaceholder')} rows={4} required className={textareaCls} />
+                </Field>
+                <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                  <span>{t('agent.fieldId')}:</span>
+                  <code className="font-mono bg-zinc-100 px-1.5 py-0.5 rounded text-zinc-500">{roleForm.id}</code>
+                </div>
 
-            {/* System Prompt */}
-            <Field label="System Prompt" required>
-              <textarea
-                value={form.system}
-                onChange={set('system')}
-                placeholder="You are a..."
-                rows={4}
-                required
-                className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize-y transition-colors"
-              />
-            </Field>
+                <Divider label={t('agent.sectionModel')} />
 
-            <Divider label="Provider" />
-
-            {/* Provider Type */}
-            <Field label="Provider Type">
-              <select
-                value={form.providerType}
-                onChange={set('providerType') as React.ChangeEventHandler<HTMLSelectElement>}
-                className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 transition-colors cursor-pointer"
-              >
-                <option value="claude">Claude (Anthropic SDK)</option>
-                <option value="openai-compat">OpenAI Compatible (HTTP)</option>
-                <option value="cli" disabled>CLI (set by importer)</option>
-              </select>
-            </Field>
-
-            {/* Model */}
-            <Field
-              label="Model"
-              hint={form.providerType === 'claude' ? 'e.g. claude-opus-4-5 (leave blank for default)' : 'Required'}
-              required={form.providerType === 'openai-compat'}
-            >
-              <Input
-                placeholder={form.providerType === 'claude' ? 'claude-sonnet-4-5' : 'deepseek-chat'}
-                value={form.model}
-                onChange={set('model')}
-                mono
-                required={form.providerType === 'openai-compat'}
-              />
-            </Field>
-
-            {/* Base URL */}
-            <Field
-              label="Base URL"
-              hint={form.providerType === 'claude' ? 'Optional — override Anthropic API endpoint' : 'Required — OpenAI-compatible endpoint'}
-              required={form.providerType === 'openai-compat'}
-            >
-              <Input
-                placeholder={
-                  form.providerType === 'claude'
-                    ? 'https://api.anthropic.com (optional)'
-                    : 'http://localhost:11434/v1'
-                }
-                value={form.baseURL}
-                onChange={set('baseURL')}
-                type="url"
-                required={form.providerType === 'openai-compat'}
-              />
-            </Field>
-
-            {/* API Key */}
-            <Field label="API Key" hint="Stored in agents.yaml">
-              <Input
-                placeholder={isEdit ? '(leave blank to keep existing)' : 'sk-ant-… or ANTHROPIC_API_KEY env'}
-                value={form.apiKey}
-                onChange={set('apiKey')}
-                type="password"
-                autoComplete="off"
-              />
-            </Field>
+                <Field label={t('agent.fieldBaseAgent')} hint={t('agent.baseAgentHint')} required>
+                  <select value={roleForm.baseAgent} onChange={setR('baseAgent')} className={selectCls} required>
+                    <option value="">{t('agent.baseAgentNone')}</option>
+                    {modelAgents.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name || a.id}{a.description ? ` — ${a.description}` : ''}</option>
+                    ))}
+                  </select>
+                </Field>
+              </>
+            )}
           </div>
 
           {/* Footer */}
           <div className="flex items-center justify-between gap-3 border-t border-zinc-100 px-5 py-4">
-            {error ? (
-              <p className="text-xs text-red-500">{error}</p>
-            ) : (
-              <span />
-            )}
+            {error ? <p className="text-xs text-red-500">{error}</p> : <span />}
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-lg border border-zinc-200 px-4 py-2 text-xs font-medium text-zinc-600 hover:border-zinc-400 hover:text-zinc-800 transition-colors"
-              >
-                Cancel
+              <button type="button" onClick={onClose} className="rounded-lg border border-zinc-200 px-4 py-2 text-xs font-medium text-zinc-600 hover:border-zinc-400 hover:text-zinc-800 transition-colors">
+                {t('common.cancel')}
               </button>
-              <button
-                type="submit"
-                disabled={saving}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Add Agent'}
+              <button type="submit" disabled={saving} className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                {saving ? t('agent.btnSaving') : isEdit ? t('agent.btnSaveChanges') : (kind === 'model' ? t('agent.btnAddModel') : t('agent.btnAddRole'))}
               </button>
             </div>
           </div>
@@ -289,24 +216,11 @@ export function AgentModal({ agent, onSave, onClose }: Props) {
   );
 }
 
-// ---- small helpers ----
-
-function Field({
-  label,
-  hint,
-  required,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  required?: boolean;
-  children: React.ReactNode;
-}) {
+function Field({ label, hint, required, children }: { label: string; hint?: string; required?: boolean; children: React.ReactNode }) {
   return (
     <div className="space-y-1.5">
       <label className="flex items-center gap-1 text-xs font-medium text-zinc-500">
-        {label}
-        {required && <span className="text-red-500">*</span>}
+        {label}{required && <span className="text-red-500">*</span>}
       </label>
       {children}
       {hint && <p className="text-xs text-zinc-400">{hint}</p>}
@@ -314,16 +228,8 @@ function Field({
   );
 }
 
-function Input({
-  mono,
-  ...props
-}: React.InputHTMLAttributes<HTMLInputElement> & { mono?: boolean }) {
-  return (
-    <input
-      {...props}
-      className={`w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors ${mono ? 'font-mono-custom' : ''}`}
-    />
-  );
+function Input({ mono, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { mono?: boolean; ref?: React.Ref<HTMLInputElement> }) {
+  return <input {...props} className={`w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors ${mono ? 'font-mono-custom' : ''}`} />;
 }
 
 function Divider({ label }: { label: string }) {
@@ -337,9 +243,5 @@ function Divider({ label }: { label: string }) {
 }
 
 function XIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M1 1L13 13M13 1L1 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
+  return <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1L13 13M13 1L1 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>;
 }

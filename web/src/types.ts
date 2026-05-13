@@ -26,10 +26,13 @@ export type Provider = ClaudeProvider | OpenAICompatProvider | CliProvider;
 
 export interface Agent {
   id: string;
+  name?: string;
   role?: AgentRole;
   description?: string;
   system: string;
-  provider: Provider;
+  provider?: Provider;
+  /** References another agent's ID whose provider config is inherited */
+  baseAgent?: string;
 }
 
 // ---- Pipeline types ----
