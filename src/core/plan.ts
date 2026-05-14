@@ -13,6 +13,12 @@ export const TaskSchema = z.object({
   dependsOn: z.array(z.string()).default([]),
   /** When true, the runner pauses after this task completes and waits for human review */
   requiresReview: z.boolean().default(false),
+  /**
+   * Local file paths to read and inject into the prompt before calling the agent.
+   * Useful for API models that cannot access the filesystem directly.
+   * Paths are relative to cwd. Glob patterns are NOT supported — list files explicitly.
+   */
+  fileContext: z.array(z.string()).optional(),
 });
 
 // ---- Decision Point ----

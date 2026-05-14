@@ -7,6 +7,22 @@
 #   Decisions are optional quality gates that can trigger retries.
 #
 # Agent keys must match entries in your agents.yaml.
+#
+# ── fileContext ─────────────────────────────────────────────────────────────
+# When using API-based models (non-CLI), set fileContext to have the runner
+# read local files and automatically inject their contents into the prompt.
+# This lets API models "see" your codebase without needing filesystem access.
+#
+#   - id: review
+#     agent: reviewer          # API model
+#     fileContext:
+#       - src/core/runner.ts   # injected as fenced code block
+#       - src/core/plan.ts
+#
+# Recommended workflow design:
+#   - API model for planning  (no file access needed)
+#   - CLI agent for coding    (has native filesystem access via tools)
+#   - API model for review    (use fileContext to read files directly)
 
 pipelines:
 
@@ -17,13 +33,13 @@ pipelines:
     tasks:
       - id: plan
         name: Planning
-        agent: orchestrator
+        agent: orchestrator    # API model — no file access needed for planning
         input: Analyse the goal and produce a detailed implementation plan.
         dependsOn: []
 
       - id: implement
         name: Implementation
-        agent: coder          # Use [coder, coder] for two parallel workers
+        agent: coder            # CLI agent — has full filesystem access via tools
         input: Implement the solution according to the plan.
         dependsOn:
           - plan
@@ -129,3 +145,21 @@ pipelines:
           - implement
           - test
         maxRetries: 2
+
+  # ── Local project review with API model (fileContext example) ───────────────
+  local_review_pipeline:
+    name: Local Code Review
+    description: "API model reviews local project files using fileContext injection"
+    tasks:
+      - id: review
+        name: Code Review
+        agent: reviewer         # API model — fileContext injects file contents into prompt
+        input: |
+          Review the provided source files for correctness, potential bugs,
+          and code quality issues. Be specific about file names and line numbers.
+        dependsOn: []
+        fileContext:
+          - src/core/runner.ts  # List the files you want the API model to see
+          - src/core/plan.ts
+          # Add more files as needed
+    decisions: []

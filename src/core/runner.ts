@@ -1,8 +1,30 @@
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import type { Agent } from './agent.js';
 import type { Plan, Task, TaskResult, DecisionResult, ReviewAction, TaskRound } from './plan.js';
 import { buildMessageHistory, buildRevisionContext, compressRounds } from './context.js';
 
 const DECISION_PREFIX = '__decision_';
+
+/**
+ * Read files listed in task.fileContext and format them as a fenced code block
+ * section for injection into the prompt. Silently skips unreadable files.
+ */
+function buildFileContext(task: Task): string {
+  if (!task.fileContext || task.fileContext.length === 0) return '';
+  const sections: string[] = [];
+  for (const filePath of task.fileContext) {
+    try {
+      const abs = resolve(process.cwd(), filePath);
+      const content = readFileSync(abs, 'utf-8');
+      const ext = filePath.split('.').pop() ?? '';
+      sections.push(`### ${filePath}\n\`\`\`${ext}\n${content}\n\`\`\``);
+    } catch {
+      sections.push(`### ${filePath}\n*(file not found or unreadable)*`);
+    }
+  }
+  return sections.join('\n\n');
+}
 
 export interface RunnerCallbacks {
   onTaskStart?: (taskId: string, taskName: string, agents: string[]) => void;
@@ -211,6 +233,8 @@ export class Runner {
       // Build context from upstream dependencies
       const upstreamContext = this.buildContext(task.dependsOn, results);
       const goalPrefix = `Goal: ${plan.goal}`;
+      // Read local files listed in fileContext and inject them into the prompt
+      const fileContextSection = buildFileContext(task);
 
       // Build the input with revision context if applicable
       let fullInput: string;
@@ -219,27 +243,38 @@ export class Runner {
       const useHistory = primaryAgent?.supportsHistory() ?? false;
       let history: import('../providers/base.js').Message[] = [];
 
+      // Helper: assemble parts into final prompt, injecting file context when present
+      const assemblePrompt = (...parts: string[]) => {
+        const body = parts.filter(Boolean).join('\n\n---\n\n');
+        return fileContextSection
+          ? `${body}\n\n---\n\n## Local File Context\n\n${fileContextSection}`
+          : body;
+      };
+
       if (rounds.length > 0) {
         if (useHistory) {
           // API provider: use real message history
           const compressed = await compressRounds(rounds, primaryAgent!);
           history = compressed.history;
           // Current input is the revision instruction
-          fullInput = upstreamContext
-            ? `${goalPrefix}\n\n${upstreamContext}\n\n---\n\n${task.input}`
-            : `${goalPrefix}\n\n${task.input}`;
+          fullInput = assemblePrompt(
+            goalPrefix,
+            upstreamContext,
+            task.input,
+          );
         } else {
           // CLI provider: embed revision context in the prompt
           const compressed = await compressRounds(rounds, primaryAgent!);
           const revisionContext = compressed.contextText;
-          fullInput = upstreamContext
-            ? `${goalPrefix}\n\n${upstreamContext}\n\n---\n\nPrevious revision history:\n${revisionContext}\n\n---\n\nBased on the above feedback, please revise:\n${task.input}`
-            : `${goalPrefix}\n\nPrevious revision history:\n${revisionContext}\n\n---\n\nBased on the above feedback, please revise:\n${task.input}`;
+          fullInput = assemblePrompt(
+            goalPrefix,
+            upstreamContext,
+            `Previous revision history:\n${revisionContext}`,
+            `Based on the above feedback, please revise:\n${task.input}`,
+          );
         }
       } else {
-        fullInput = upstreamContext
-          ? `${goalPrefix}\n\n${upstreamContext}\n\n---\n\n${task.input}`
-          : `${goalPrefix}\n\n${task.input}`;
+        fullInput = assemblePrompt(goalPrefix, upstreamContext, task.input);
       }
 
       this.callbacks.onTaskStart?.(task.id, task.name, agentKeys);
