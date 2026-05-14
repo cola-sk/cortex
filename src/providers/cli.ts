@@ -52,7 +52,8 @@ export class CliProvider implements LLMProvider {
 
     const toolEvents: ToolEvent[] = [];
     let idx = 0;
-    let finalOutput = '';
+    const textParts: string[] = [];
+    let resultOutput = '';
     let hasEvents = false;
 
     for (const line of lines) {
@@ -65,7 +66,7 @@ export class CliProvider implements LLMProvider {
           for (const block of msg?.content ?? []) {
             if (block.type === 'text' && block.text) {
               toolEvents.push({ index: idx++, type: 'text', content: block.text as string });
-              finalOutput = block.text as string;
+              textParts.push(block.text as string);
             } else if (block.type === 'tool_use') {
               toolEvents.push({
                 index: idx++,
@@ -89,13 +90,16 @@ export class CliProvider implements LLMProvider {
           });
         } else if (ev.type === 'result') {
           hasEvents = true;
-          if (ev.result) finalOutput = ev.result as string;
+          if (ev.result) resultOutput = ev.result as string;
         }
       } catch { /* non-JSON line */ }
     }
 
     if (!hasEvents) return null;
-    return { output: finalOutput || raw, toolEvents };
+    // Prefer the `result` event output (Claude CLI's final summary).
+    // Fall back to concatenated text blocks from assistant events.
+    const finalOutput = resultOutput || textParts.join('\n\n') || raw;
+    return { output: finalOutput, toolEvents };
   }
 
   async chat(messages: Message[], options?: ChatOptions): Promise<string> {

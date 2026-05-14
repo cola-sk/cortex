@@ -680,8 +680,8 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
             task.currentRound = round;
           }
           flushAndSaveRun(run!);
-          emit('review:pending', { taskId, taskName, output: output.slice(0, 500), round });
-          emitToRunSubscribers(runId, 'review:pending', { taskId, taskName, output: output.slice(0, 500), round });
+          emit('review:pending', { taskId, taskName, output, round });
+          emitToRunSubscribers(runId, 'review:pending', { taskId, taskName, output, round });
         });
       },
       onReviewSubmitted: (taskId, action, round) => {

@@ -1131,12 +1131,10 @@ function RunView({
               let newStream = e.streamContent ?? '';
               let newDetail = e.detail;
               if (event.type === 'tool_use') {
-                const summary = event.input && typeof event.input === 'object'
-                  ? Object.values(event.input).find(v => typeof v === 'string') || JSON.stringify(event.input)
-                  : '';
-                newDetail = `🔧 [${event.name}] ${String(summary).slice(0, 60)}`;
+                // Don't update detail with tool_use summary — the timeline shows tools.
+                // Just keep the previous detail to avoid flashing.
               } else if (event.type === 'tool_result') {
-                newDetail = `✓ [Result] ${event.content ? event.content.slice(0, 50) + (event.content.length > 50 ? '...' : '') : '(empty)'}`;
+                // Keep quiet — timeline shows results.
               } else if (event.type === 'text' && event.content) {
                 newStream = appendTextChunk(newStream, event.content);
                 newDetail = '● streaming...';

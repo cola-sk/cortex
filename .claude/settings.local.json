@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cp /Users/liuzhe.x/pictures/ai/4.png /Users/liuzhe.x/coding/cortex/public/screenshot-review.png)"
+      "Bash(cp /Users/liuzhe.x/pictures/ai/4.png /Users/liuzhe.x/coding/cortex/public/screenshot-review.png)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ],
     "additionalDirectories": [
       "/Users/liuzhe.x/Pictures/ai"
