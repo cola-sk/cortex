@@ -324,7 +324,7 @@ async function runPipeline(
       if (!rec) continue;
       rec.status = result.error ? 'error' : (rec.status === 'done' ? 'done' : 'running');
       rec.output = result.output ?? rec.output;
-      rec.error = result.error ?? rec.error;
+      rec.error = result.error || undefined;
       rec.toolEvents = result.toolEvents ?? rec.toolEvents;
     }
 

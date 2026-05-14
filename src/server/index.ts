@@ -397,6 +397,14 @@ app.post('/api/pipelines', (req, res) => {
   try {
     const pf = readPipelineFile();
     const pipeline = PipelineConfigSchema.parse(req.body);
+    // Validate workspace path if provided
+    if (pipeline.workspace) {
+      const wsPath = path.resolve(pipeline.workspace);
+      if (!fs.existsSync(wsPath)) {
+        res.status(400).json({ error: `Workspace path does not exist: ${pipeline.workspace}` });
+        return;
+      }
+    }
     // Auto-generate a unique pipeline ID
     let id = `pipe_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     let attempts = 0;
@@ -418,6 +426,14 @@ app.put('/api/pipelines/:id', (req, res) => {
     const { id } = req.params;
     const pf = readPipelineFile();
     const pipeline = PipelineConfigSchema.parse(req.body);
+    // Validate workspace path if provided
+    if (pipeline.workspace) {
+      const wsPath = path.resolve(pipeline.workspace);
+      if (!fs.existsSync(wsPath)) {
+        res.status(400).json({ error: `Workspace path does not exist: ${pipeline.workspace}` });
+        return;
+      }
+    }
     pf.pipelines[id] = pipeline;
     writePipelineFile(pf);
     res.json({ id, ...pipeline });
@@ -652,7 +668,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
           if (started) task.durationMs = Date.now() - started;
           task.output = result.output;
           if (result.outputs && result.outputs.length > 1) task.outputs = result.outputs;
-          if (result.error) task.error = result.error;
+          task.error = result.error || undefined;
           if (result.toolEvents) task.toolEvents = result.toolEvents;
           run!.toolCallCount = countToolCalls(run!.tasks);
           flushAndSaveRun(run!);
@@ -736,7 +752,8 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
 
     if (!aborted) {
       pipelineFinished = true;
-      run.status = 'done';
+      const hasTaskErrors = run.tasks.some(t => t.status === 'error');
+      run.status = hasTaskErrors ? 'error' : 'done';
       run.finishedAt = new Date().toISOString();
       run.durationMs = Date.now() - new Date(runStartedAt).getTime();
       run.toolCallCount = countToolCalls(run.tasks);
