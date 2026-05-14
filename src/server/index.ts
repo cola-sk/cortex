@@ -72,6 +72,14 @@ function generateRunId(): string {
   return `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
+function resolveWorkspacePath(workspace?: string): string {
+  if (!workspace) return '';
+  if (workspace.startsWith('~')) {
+    return path.join(process.env.HOME ?? '', workspace.slice(1));
+  }
+  return path.resolve(workspace);
+}
+
 // ---- Active runs tracking (in-memory for live access) ----
 const activeRuns = new Map<string, RunRecord>();
 // Per-run SSE subscribers for /api/runs/:id/stream
@@ -166,6 +174,25 @@ function agentList(config: ConfigFile) {
 }
 
 // ---- API routes ----
+
+// GET /api/workspace/validate?path=...
+app.get('/api/workspace/validate', (req, res) => {
+  const rawPath = req.query['path'];
+  if (typeof rawPath !== 'string' || !rawPath.trim()) {
+    res.status(400).json({ error: 'path query param required' });
+    return;
+  }
+  const resolved = resolveWorkspacePath(rawPath.trim());
+  if (!fs.existsSync(resolved)) {
+    res.status(400).json({ error: `Path does not exist: ${rawPath}` });
+    return;
+  }
+  if (!fs.statSync(resolved).isDirectory()) {
+    res.status(400).json({ error: `Path is not a directory: ${rawPath}` });
+    return;
+  }
+  res.json({ ok: true, resolved });
+});
 
 // GET /api/agents
 app.get('/api/agents', (_req, res) => {
@@ -398,12 +425,10 @@ app.post('/api/pipelines', (req, res) => {
     const pf = readPipelineFile();
     const pipeline = PipelineConfigSchema.parse(req.body);
     // Validate workspace path if provided
-    if (pipeline.workspace) {
-      const wsPath = path.resolve(pipeline.workspace);
-      if (!fs.existsSync(wsPath)) {
-        res.status(400).json({ error: `Workspace path does not exist: ${pipeline.workspace}` });
-        return;
-      }
+    const wsResolved = resolveWorkspacePath(pipeline.workspace);
+    if (pipeline.workspace && !fs.existsSync(wsResolved)) {
+      res.status(400).json({ error: `Workspace path does not exist: ${pipeline.workspace}` });
+      return;
     }
     // Auto-generate a unique pipeline ID
     let id = `pipe_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
@@ -427,12 +452,10 @@ app.put('/api/pipelines/:id', (req, res) => {
     const pf = readPipelineFile();
     const pipeline = PipelineConfigSchema.parse(req.body);
     // Validate workspace path if provided
-    if (pipeline.workspace) {
-      const wsPath = path.resolve(pipeline.workspace);
-      if (!fs.existsSync(wsPath)) {
-        res.status(400).json({ error: `Workspace path does not exist: ${pipeline.workspace}` });
-        return;
-      }
+    const wsResolvedPut = resolveWorkspacePath(pipeline.workspace);
+    if (pipeline.workspace && !fs.existsSync(wsResolvedPut)) {
+      res.status(400).json({ error: `Workspace path does not exist: ${pipeline.workspace}` });
+      return;
     }
     pf.pipelines[id] = pipeline;
     writePipelineFile(pf);

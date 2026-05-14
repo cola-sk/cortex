@@ -54,6 +54,9 @@ export const api = {
   // ---- Pipelines ----
   getPipelines: () => request<Pipeline[]>('/api/pipelines'),
 
+  validateWorkspace: (wsPath: string) =>
+    request<{ ok: boolean; resolved: string }>(`/api/workspace/validate?path=${encodeURIComponent(wsPath)}`),
+
   createPipeline: (pipeline: Omit<Pipeline, 'id'>) =>
     request<Pipeline>('/api/pipelines', {
       method: 'POST',

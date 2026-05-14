@@ -441,6 +441,8 @@ function PipelineEditor({
   const [isDirty, setIsDirty] = useState(!pipeline.id); // new pipelines have no ID yet
   const [saving, setSaving] = useState(false);
   const [showWorkspaceInput, setShowWorkspaceInput] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [workspaceValidating, setWorkspaceValidating] = useState(false);
 
   const update = useCallback((fn: (p: Pipeline) => Pipeline) => {
     setDraft((prev) => fn(prev));
@@ -497,6 +499,27 @@ function PipelineEditor({
     try { await onSave(draft); } finally { setSaving(false); }
   };
 
+  const handleWorkspaceDone = async () => {
+    const ws = draft.workspace?.trim();
+    if (!ws) {
+      // Empty = clear workspace
+      setWorkspaceError(null);
+      setShowWorkspaceInput(false);
+      return;
+    }
+    setWorkspaceValidating(true);
+    setWorkspaceError(null);
+    try {
+      await api.validateWorkspace(ws);
+      setWorkspaceError(null);
+      setShowWorkspaceInput(false);
+    } catch (e) {
+      setWorkspaceError((e as Error).message);
+    } finally {
+      setWorkspaceValidating(false);
+    }
+  };
+
   const levels = computeLevels(draft.tasks);
 
   return (
@@ -522,25 +545,32 @@ function PipelineEditor({
             </div>
 
             {showWorkspaceInput ? (
-              <div className="flex items-center gap-2 min-w-[280px] max-w-[520px] w-full sm:w-auto">
-                <span className="text-[10px] text-zinc-400 uppercase tracking-wide shrink-0">Workspace</span>
-                <input
-                  className="flex-1 min-w-0 text-xs text-zinc-700 bg-white outline-none rounded border border-zinc-200 px-2 py-1.5 font-mono placeholder-zinc-300 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-100 transition-all"
-                  value={draft.workspace ?? ''}
-                  placeholder="/path/to/project"
-                  onChange={(e) => update((p) => ({ ...p, workspace: e.target.value || undefined }))}
-                />
-                <button
-                  onClick={() => setShowWorkspaceInput(false)}
-                  className="text-xs text-zinc-400 hover:text-zinc-700 transition-colors shrink-0"
-                  title="Done"
-                >
-                  Done
-                </button>
+              <div className="flex flex-col gap-1 min-w-[280px] max-w-[520px] w-full sm:w-auto">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-zinc-400 uppercase tracking-wide shrink-0">Workspace</span>
+                  <input
+                    className={`flex-1 min-w-0 text-xs text-zinc-700 bg-white outline-none rounded border px-2 py-1.5 font-mono placeholder-zinc-300 focus:ring-1 transition-all ${workspaceError ? 'border-red-400 focus:border-red-400 focus:ring-red-100' : 'border-zinc-200 focus:border-indigo-400 focus:ring-indigo-100'}`}
+                    value={draft.workspace ?? ''}
+                    placeholder="/path/to/project"
+                    onChange={(e) => { setWorkspaceError(null); update((p) => ({ ...p, workspace: e.target.value || undefined })); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleWorkspaceDone(); if (e.key === 'Escape') { setShowWorkspaceInput(false); setWorkspaceError(null); } }}
+                  />
+                  <button
+                    onClick={handleWorkspaceDone}
+                    disabled={workspaceValidating}
+                    className="text-xs text-zinc-400 hover:text-zinc-700 disabled:opacity-50 transition-colors shrink-0"
+                    title="Done"
+                  >
+                    {workspaceValidating ? '…' : 'Done'}
+                  </button>
+                </div>
+                {workspaceError && (
+                  <span className="text-[11px] text-red-500 pl-[68px]">{workspaceError}</span>
+                )}
               </div>
             ) : (
               <button
-                onClick={() => setShowWorkspaceInput(true)}
+                onClick={() => { setShowWorkspaceInput(true); setWorkspaceError(null); }}
                 className="max-w-[420px] truncate rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-[11px] text-zinc-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
                 title={draft.workspace?.trim() ? draft.workspace : 'Set workspace path'}
               >
