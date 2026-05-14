@@ -314,7 +314,7 @@ export function TaskDetailShared({
   detailEventMode = 'all',
 }: TaskDetailSharedProps) {
   const [activeWorker, setActiveWorker] = useState(0);
-  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [timelineOpen, setTimelineOpen] = useState(true);
 
   const normalizedWorkers = workers.length > 0 ? workers.map((w) => w ?? []) : [[]];
   const hasMultiWorker = normalizedWorkers.length > 1;
@@ -409,7 +409,7 @@ export function TaskDetailShared({
       {/* Output (per-worker if multi, combined if single) */}
       {workerOutput ? (
         <div className={`text-xs whitespace-pre-wrap leading-relaxed overflow-y-auto rounded-lg p-3 ${
-          fullHeight && !hasToolEvents ? 'flex-1 min-h-0' : 'max-h-[55vh]'
+          fullHeight && !workerHasToolEvents ? 'flex-1 min-h-0' : 'max-h-[55vh]'
         } bg-zinc-50`}>
           <MarkdownWithThinking content={workerOutput} />
         </div>
