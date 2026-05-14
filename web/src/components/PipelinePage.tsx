@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import type { Agent, Pipeline, PipelineTask, PipelineDecision, RunEventType, ToolEvent } from '../types';
 import { api } from '../api';
 import { useTranslation } from 'react-i18next';
+import { TaskDetailShared, MarkdownWithThinking } from './TaskDetailShared';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Templates
@@ -973,6 +972,8 @@ export interface LogEntry {
   type: RunEventType;
   label: string;
   detail?: string;
+  output?: string;
+  error?: string;
   streamContent?: string;
   agents?: string[];
   toolEvents?: ToolEvent[];          // flat merged (all workers)
@@ -980,6 +981,13 @@ export interface LogEntry {
   startedAt?: number;
   finishedAt?: number;
   status: 'running' | 'done' | 'error' | 'decision';
+}
+
+function appendTextChunk(base: string, chunk: string): string {
+  if (!chunk) return base;
+  if (!base) return chunk;
+  if (base.endsWith('\n') || chunk.startsWith('\n')) return base + chunk;
+  return `${base}\n${chunk}`;
 }
 
 function RunView({
@@ -1032,6 +1040,7 @@ function RunView({
             type,
             label: `${d.taskName as string}`,
             detail: `Running via ${(d.agents as string[]).join(', ')}`,
+            output: '',
             agents: d.agents as string[],
             toolEvents: [],
             workerEvents: (d.agents as string[]).map(() => []),
@@ -1059,15 +1068,24 @@ function RunView({
               } else if (event.type === 'tool_result') {
                 newDetail = `✓ [Result] ${event.content ? event.content.slice(0, 50) + (event.content.length > 50 ? '...' : '') : '(empty)'}`;
               } else if (event.type === 'text' && event.content) {
-                newStream += event.content;
+                newStream = appendTextChunk(newStream, event.content);
                 newDetail = '● streaming...';
               }
               return { ...e, toolEvents: newEvents, workerEvents: newWorkerEvents, streamContent: newStream, detail: newDetail };
             }));
           }
         } else if (type === 'task:complete') {
+          const error = d.error as string | undefined;
+          const output = (d.output as string | undefined) ?? '';
           setLog((prev) => prev.map((e) => e.id === (d.taskId as string)
-            ? { ...e, status: d.error ? 'error' as const : 'done' as const, detail: d.error ? (d.error as string) : (d.output as string), finishedAt: Date.now() }
+            ? {
+              ...e,
+              status: error ? 'error' as const : 'done' as const,
+              error,
+              output,
+              detail: error ? error : '✓ Completed',
+              finishedAt: Date.now(),
+            }
             : e
           ));
         } else if (type === 'decision:start') {
@@ -1251,18 +1269,47 @@ function RunView({
 // Markdown renderer (shared)
 // ─────────────────────────────────────────────────────────────────────────────
 
+type ContentSection = { kind: 'markdown' | 'thinking'; content: string };
+
+function normalizeMixedContent(input: string): string {
+  let text = input.replace(/\r\n/g, '\n');
+  const escapedNewlineCount = (text.match(/\\n/g) ?? []).length;
+  const hasRealNewline = text.includes('\n');
+
+  if (escapedNewlineCount > 0 && (!hasRealNewline || escapedNewlineCount >= 2)) {
+    text = text.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+  }
+
+  return text;
+}
+
+function splitThinkingSections(input: string): ContentSection[] {
+  const content = normalizeMixedContent(input);
+  const sections: ContentSection[] = [];
+  const re = /<(thinking|think)>([\s\S]*?)<\/\1>/gi;
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+
+  while ((m = re.exec(content)) !== null) {
+    const before = content.slice(lastIndex, m.index);
+    if (before.trim()) sections.push({ kind: 'markdown', content: before });
+
+    const thinking = m[2] ?? '';
+    if (thinking.trim()) sections.push({ kind: 'thinking', content: thinking.trim() });
+    lastIndex = re.lastIndex;
+  }
+
+  const tail = content.slice(lastIndex);
+  if (tail.trim()) sections.push({ kind: 'markdown', content: tail });
+
+  if (sections.length === 0) {
+    return [{ kind: 'markdown', content }];
+  }
+  return sections;
+}
+
 function Markdown({ content, className }: { content: string; className?: string }) {
-  return (
-    <div className={`prose prose-xs max-w-none text-zinc-700 leading-relaxed
-      prose-headings:text-zinc-800 prose-headings:font-semibold
-      prose-code:bg-zinc-100 prose-code:text-zinc-700 prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:text-[11px]
-      prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:rounded-lg prose-pre:text-xs prose-pre:overflow-x-auto
-      prose-a:text-indigo-600 prose-blockquote:border-l-indigo-300 prose-blockquote:text-zinc-500
-      prose-table:text-xs prose-th:bg-zinc-50 prose-td:py-1
-      ${className ?? ''}`}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-    </div>
-  );
+  return <MarkdownWithThinking content={content} className={className} />;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1273,29 +1320,38 @@ function LogRow({ entry, onOpenDetail }: {
   entry: LogEntry;
   onOpenDetail: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const toolCallCount = (entry.toolEvents ?? []).filter((e) => e.type === 'tool_use').length;
   const icons: Record<LogEntry['status'], string> = { running: '◌', done: '✓', error: '✗', decision: '⬡' };
   const colors: Record<LogEntry['status'], string> = { running: 'text-zinc-400', done: 'text-emerald-500', error: 'text-red-500', decision: 'text-amber-500' };
   const durationMs = entry.startedAt ? (entry.finishedAt ?? Date.now()) - entry.startedAt : undefined;
-  const previewText = entry.status === 'running' ? '● streaming...' : entry.detail?.split('\n')[0];
+  const previewText = entry.status === 'running'
+    ? '● streaming...'
+    : (entry.status === 'done'
+      ? (entry.output?.split('\n')[0] || entry.detail?.split('\n')[0])
+      : entry.detail?.split('\n')[0]);
 
   return (
     <div>
-      <button onClick={onOpenDetail} className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-zinc-50 transition-colors">
-        <span className={`shrink-0 mt-0.5 text-sm ${colors[entry.status]} ${entry.status === 'running' ? 'animate-pulse' : ''}`}>
-          {icons[entry.status]}
-        </span>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <p className="text-xs font-semibold text-zinc-800">{entry.label}</p>
-            {entry.agents && entry.agents.length > 0 && (
-              <span className="text-[10px] text-zinc-400 font-mono">{entry.agents.join(', ')}</span>
+      <div className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-zinc-50 transition-colors">
+        <button onClick={() => setExpanded((e) => !e)} className="flex-1 min-w-0 flex items-start gap-3 text-left">
+          <span className={`shrink-0 mt-0.5 text-sm ${colors[entry.status]} ${entry.status === 'running' ? 'animate-pulse' : ''}`}>
+            {icons[entry.status]}
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <p className="text-xs font-semibold text-zinc-800">{entry.label}</p>
+              {entry.agents && entry.agents.length > 0 && (
+                <span className="text-[10px] text-zinc-400 font-mono">{entry.agents.join(', ')}</span>
+              )}
+            </div>
+            {previewText && (
+              <p className="text-xs text-zinc-400 truncate mt-0.5">{previewText}</p>
             )}
           </div>
-          {previewText && (
-            <p className="text-xs text-zinc-400 truncate mt-0.5">{previewText}</p>
-          )}
-        </div>
+          <ChevronRightIcon className={`shrink-0 w-3 h-3 mt-1 text-zinc-300 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        </button>
+
         <div className="flex items-center gap-1.5 shrink-0 mt-0.5">
           {toolCallCount > 0 && (
             <span className="rounded-md bg-indigo-50 text-indigo-600 px-1.5 py-0.5 text-[10px] font-semibold">🔧 {toolCallCount}</span>
@@ -1303,9 +1359,16 @@ function LogRow({ entry, onOpenDetail }: {
           {durationMs != null && durationMs > 0 && (
             <span className="text-[10px] text-zinc-400">{formatDurationShort(durationMs)}</span>
           )}
-          <span className="text-xs text-indigo-600 font-medium ml-2">Detail ↗</span>
+          <button onClick={onOpenDetail} className="text-xs text-indigo-600 font-medium ml-2 hover:text-indigo-800">
+            Detail ↗
+          </button>
         </div>
-      </button>
+      </div>
+      {expanded && (
+        <div className="border-t border-zinc-100 px-4 py-3 bg-white">
+          <TaskDetailContent entry={entry} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1464,6 +1527,47 @@ function WorkerTimeline({ events, status }: { events: ToolEvent[]; status: LogEn
   );
 }
 
+type DetailTab = 'detail' | 'output';
+
+function getEntryWorkers(entry: LogEntry): ToolEvent[][] {
+  return entry.workerEvents && entry.workerEvents.length > 1
+    ? entry.workerEvents
+    : [entry.toolEvents ?? []];
+}
+
+function getEntryOutput(entry: LogEntry): string {
+  return entry.output ?? '';
+}
+
+function getEntryDetail(entry: LogEntry): string {
+  if (entry.status === 'error') {
+    return entry.error ?? entry.detail ?? '';
+  }
+  if (entry.status === 'decision') {
+    return entry.detail ?? '';
+  }
+  if (entry.status === 'running') {
+    if (entry.detail === '● streaming...') return '';
+    return entry.detail ?? '';
+  }
+  return '';
+}
+
+function TaskDetailContent({ entry, fullHeight = false }: { entry: LogEntry; fullHeight?: boolean }) {
+  const detailEventMode = entry.status === 'running' ? 'all' : 'tools-only';
+  return (
+    <TaskDetailShared
+      workers={getEntryWorkers(entry)}
+      agents={entry.agents}
+      status={entry.status}
+      detail={getEntryDetail(entry)}
+      output={getEntryOutput(entry)}
+      fullHeight={fullHeight}
+      detailEventMode={detailEventMode}
+    />
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // OutputModal — fullscreen dialog for viewing task output as markdown
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1476,13 +1580,13 @@ function OutputModal({ title, content, onClose }: { title: string; content: stri
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-12 bg-black/40 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center p-3 pt-4 bg-black/40 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden"
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[calc(100vh-2rem)] flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
         {/* Modal header */}
-        <div className="border-b border-zinc-100 px-5 py-4 flex items-center justify-between shrink-0">
+        <div className="border-b border-zinc-100 px-5 py-4 flex items-center justify-between shrink-0 sticky top-0 z-10 bg-white">
           <h2 className="text-sm font-semibold text-zinc-800 truncate">{title}</h2>
           <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 transition-colors shrink-0 p-1">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -1505,11 +1609,7 @@ function OutputModal({ title, content, onClose }: { title: string; content: stri
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function TaskDetailModal({ entry, onClose }: { entry: LogEntry; onClose: () => void }) {
-  const [activeTab, setActiveTab] = useState(0);
-  const workers = entry.workerEvents && entry.workerEvents.length > 1
-    ? entry.workerEvents
-    : [entry.toolEvents ?? []];
-  const agents = entry.agents ?? ['worker'];
+  const workers = getEntryWorkers(entry);
   const toolCallCount = (entry.toolEvents ?? []).filter(e => e.type === 'tool_use').length;
   const durationMs = entry.startedAt ? (entry.finishedAt ?? Date.now()) - entry.startedAt : undefined;
   const isMultiWorker = workers.length > 1;
@@ -1522,13 +1622,13 @@ export function TaskDetailModal({ entry, onClose }: { entry: LogEntry; onClose: 
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-12 bg-black/40 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center p-3 pt-4 bg-black/40 backdrop-blur-sm" onClick={onClose}>
       <div
-        className={`bg-white rounded-2xl shadow-2xl w-full ${isMultiWorker ? 'max-w-6xl' : 'max-w-3xl'} max-h-[88vh] flex flex-col overflow-hidden`}
+        className={`bg-white rounded-2xl shadow-2xl w-full ${isMultiWorker ? 'max-w-6xl' : 'max-w-3xl'} h-[calc(100vh-2rem)] flex flex-col overflow-hidden`}
         onClick={e => e.stopPropagation()}
       >
         {/* Modal header */}
-        <div className="border-b border-zinc-100 px-5 py-4 flex items-start gap-3 shrink-0">
+        <div className="border-b border-zinc-100 px-5 py-4 flex items-start gap-3 shrink-0 sticky top-0 z-10 bg-white">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold text-zinc-800">{entry.label}</span>
@@ -1550,68 +1650,9 @@ export function TaskDetailModal({ entry, onClose }: { entry: LogEntry; onClose: 
           </button>
         </div>
 
-        {/* Multi-worker: side-by-side panes */}
-        {isMultiWorker ? (
-          <>
-            {/* Tab switcher for narrow screens / fallback */}
-            <div className="border-b border-zinc-100 px-5 flex gap-0 shrink-0 overflow-x-auto md:hidden">
-              {workers.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => setActiveTab(i)}
-                  className={`px-4 py-2.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
-                    activeTab === i
-                      ? 'border-indigo-500 text-indigo-600'
-                      : 'border-transparent text-zinc-400 hover:text-zinc-600'
-                  }`}
-                >
-                  {agents[i] ? `Worker ${i + 1} · ${agents[i]}` : `Worker ${i + 1}`}
-                  {workers[i].filter(e => e.type === 'tool_use').length > 0 && (
-                    <span className="ml-1.5 rounded bg-zinc-100 px-1.5 text-[10px] text-zinc-500">
-                      🔧 {workers[i].filter(e => e.type === 'tool_use').length}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-            {/* Narrow: single pane */}
-            <div className="flex-1 overflow-hidden px-5 py-4 md:hidden">
-              <WorkerTimeline
-                key={activeTab}
-                events={workers[activeTab] ?? []}
-                status={entry.status}
-              />
-            </div>
-            {/* Wide: side-by-side */}
-            <div className="flex-1 overflow-hidden hidden md:flex">
-              {workers.map((wEvents, i) => (
-                <div key={i} className={`flex-1 flex flex-col min-w-0 ${i > 0 ? 'border-l border-zinc-100' : ''}`}>
-                  <div className="px-4 py-2 border-b border-zinc-50 bg-zinc-50/50 shrink-0 flex items-center gap-2">
-                    <span className="text-xs font-semibold text-zinc-600">Worker {i + 1}</span>
-                    <span className="text-[11px] text-zinc-400">{agents[i] ?? ''}</span>
-                    {wEvents.filter(e => e.type === 'tool_use').length > 0 && (
-                      <span className="rounded bg-zinc-100 px-1.5 text-[10px] text-zinc-500">
-                        🔧 {wEvents.filter(e => e.type === 'tool_use').length}
-                      </span>
-                    )}
-                    {entry.status === 'running' && wEvents.length > 0 && <Spinner />}
-                  </div>
-                  <div className="flex-1 overflow-hidden px-4 py-3">
-                    <WorkerTimeline events={wEvents} status={entry.status} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        ) : (
-          /* Single worker: full-width timeline */
-          <div className="flex-1 overflow-hidden px-5 py-4">
-            <WorkerTimeline
-              events={workers[0] ?? []}
-              status={entry.status}
-            />
-          </div>
-        )}
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          <TaskDetailContent entry={entry} fullHeight />
+        </div>
       </div>
     </div>
   );

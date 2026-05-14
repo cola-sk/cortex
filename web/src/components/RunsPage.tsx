@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import type { RunSummary, RunRecord, RunTaskRecord, ToolEvent } from '../types';
 import { api } from '../api';
 import { useTranslation } from 'react-i18next';
+import { TaskDetailShared, MarkdownWithThinking, type DetailStatus } from './TaskDetailShared';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -161,98 +160,21 @@ function ToolEventList({ events }: { events: ToolEvent[] }) {
 
 type DetailTab = 'detail' | 'output';
 
-function TaskDetailPanel({ task }: { task: RunTaskRecord }) {
-  const [activeTab, setActiveTab] = useState<DetailTab>('detail');
-  const [activeWorker, setActiveWorker] = useState(0);
-
-  const workers = (task.toolEvents ?? []).length > 0 ? (task.toolEvents ?? []) : [[]];
-  const allToolEvents = (task.toolEvents ?? []).flat();
-  const hasMultiWorker = workers.length > 1;
+function TaskDetailPanel({ task, fullHeight = false }: { task: RunTaskRecord; fullHeight?: boolean }) {
+  const status: DetailStatus = task.status === 'pending' ? 'running' : task.status;
+  const output = task.output ?? '';
+  const detail = task.error ?? '';
 
   return (
-    <div className="space-y-3">
-      <div className="border-b border-zinc-100 flex items-center gap-1">
-        <button
-          onClick={() => setActiveTab('detail')}
-          className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
-            activeTab === 'detail'
-              ? 'border-indigo-500 text-indigo-600'
-              : 'border-transparent text-zinc-400 hover:text-zinc-600'
-          }`}
-        >
-          Detail
-        </button>
-        <button
-          onClick={() => setActiveTab('output')}
-          className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
-            activeTab === 'output'
-              ? 'border-indigo-500 text-indigo-600'
-              : 'border-transparent text-zinc-400 hover:text-zinc-600'
-          }`}
-        >
-          Output
-        </button>
-      </div>
-
-      {activeTab === 'detail' ? (
-        <div className="space-y-3">
-          {task.error && (
-            <pre className="text-xs text-red-600 bg-red-50 rounded-lg p-3 whitespace-pre-wrap max-h-40 overflow-y-auto">
-              {task.error}
-            </pre>
-          )}
-
-          {hasMultiWorker && (
-            <div className="flex flex-wrap gap-1.5 pb-0.5">
-              {workers.map((w, i) => (
-                <button
-                  key={i}
-                  onClick={() => setActiveWorker(i)}
-                  className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                    activeWorker === i
-                      ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
-                      : 'bg-zinc-50 text-zinc-500 border border-zinc-100 hover:bg-zinc-100'
-                  }`}
-                >
-                  Worker {i + 1} · {task.agents[i] ?? task.agents[0]}
-                  {w.filter((e) => e.type === 'tool_use').length > 0 && (
-                    <span className="ml-1 text-[10px] text-zinc-400">🔧 {w.filter((e) => e.type === 'tool_use').length}</span>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {(hasMultiWorker ? workers[activeWorker] : allToolEvents).length > 0 ? (
-            <ToolEventList events={hasMultiWorker ? workers[activeWorker] : allToolEvents} />
-          ) : (
-            <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-5 text-center text-xs text-zinc-400">
-              No detail events captured for this task.
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {task.output ? (
-            <div className={`text-xs whitespace-pre-wrap leading-relaxed max-h-[55vh] overflow-y-auto rounded-lg p-3 ${
-              task.status === 'error' ? 'bg-red-50 text-red-700' : 'bg-zinc-50'
-            }`}>
-              {task.status === 'error'
-                ? <pre className="font-mono whitespace-pre-wrap">{task.error ? `${task.error}\n\n${task.output}` : task.output}</pre>
-                : <Markdown content={task.output} />}
-            </div>
-          ) : task.error ? (
-            <pre className="text-xs text-red-600 bg-red-50 rounded-lg p-3 whitespace-pre-wrap max-h-[55vh] overflow-y-auto">
-              {task.error}
-            </pre>
-          ) : (
-            <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-5 text-center text-xs text-zinc-400">
-              No output.
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+    <TaskDetailShared
+      workers={(task.toolEvents ?? []).length > 0 ? (task.toolEvents ?? []) : [[]]}
+      agents={task.agents}
+      status={status}
+      detail={detail}
+      output={output}
+      fullHeight={fullHeight}
+      detailEventMode="tools-only"
+    />
   );
 }
 
@@ -266,12 +188,12 @@ function TaskDetailDialog({ task, onClose }: { task: RunTaskRecord; onClose: () 
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-12 bg-black/40 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center p-3 pt-4 bg-black/40 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[88vh] flex flex-col overflow-hidden"
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl h-[calc(100vh-2rem)] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="border-b border-zinc-100 px-5 py-4 flex items-start gap-3 shrink-0">
+        <div className="border-b border-zinc-100 px-5 py-4 flex items-start gap-3 shrink-0 sticky top-0 z-10 bg-white">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold text-zinc-800">{task.taskName}</span>
@@ -293,7 +215,7 @@ function TaskDetailDialog({ task, onClose }: { task: RunTaskRecord; onClose: () 
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          <TaskDetailPanel task={task} />
+          <TaskDetailPanel task={task} fullHeight />
         </div>
       </div>
     </div>
@@ -403,36 +325,7 @@ function splitThinkingSections(input: string): ContentSection[] {
 }
 
 function Markdown({ content, className }: { content: string; className?: string }) {
-  const sections = splitThinkingSections(content);
-  const proseClass = `prose prose-xs max-w-none text-zinc-700 leading-relaxed
-      prose-headings:text-zinc-800 prose-headings:font-semibold
-      prose-code:bg-zinc-100 prose-code:text-zinc-700 prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:text-[11px]
-      prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:rounded-lg prose-pre:text-xs prose-pre:overflow-x-auto
-      prose-a:text-indigo-600 prose-blockquote:border-l-indigo-300 prose-blockquote:text-zinc-500
-      prose-table:text-xs prose-th:bg-zinc-50 prose-td:py-1`;
-
-  return (
-    <div className={`space-y-2 ${className ?? ''}`}>
-      {sections.map((section, idx) => {
-        if (section.kind === 'thinking') {
-          return (
-            <details key={`think-${idx}`} className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2">
-              <summary className="cursor-pointer select-none text-[11px] font-semibold text-amber-700">Thinking</summary>
-              <div className={`mt-2 ${proseClass} prose-amber text-amber-900`}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
-              </div>
-            </details>
-          );
-        }
-
-        return (
-          <div key={`md-${idx}`} className={proseClass}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
-          </div>
-        );
-      })}
-    </div>
-  );
+  return <MarkdownWithThinking content={content} className={className} />;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
