@@ -14,11 +14,19 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   });
-  const data = await res.json();
   if (!res.ok) {
-    throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+    const text = await res.text();
+    let message: string;
+    try {
+      const data = JSON.parse(text) as { error?: string };
+      message = data.error ?? `HTTP ${res.status}`;
+    } catch {
+      // Non-JSON response (e.g. HTML 404 page) — strip tags and use first line
+      message = text.replace(/<[^>]+>/g, '').trim().split('\n')[0] || `HTTP ${res.status}`;
+    }
+    throw new Error(message);
   }
-  return data as T;
+  return res.json() as Promise<T>;
 }
 
 export const api = {
