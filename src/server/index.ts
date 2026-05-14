@@ -558,7 +558,8 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         const task = run!.tasks.find((t) => t.taskId === taskId);
         if (task) {
           if (!task.toolEvents) task.toolEvents = [];
-          if (!task.toolEvents[workerIndex]) task.toolEvents[workerIndex] = [];
+          // Ensure all slots up to workerIndex are initialized (avoid sparse arrays)
+          while (task.toolEvents.length <= workerIndex) task.toolEvents.push([]);
           task.toolEvents[workerIndex].push(event);
         }
         debouncedSaveRun(run!);

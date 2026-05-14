@@ -446,7 +446,14 @@ export function RunsPage() {
     const d = data as Record<string, unknown>;
     setSelectedRun((prev) => {
       if (!prev) return prev;
-      const run = { ...prev, tasks: prev.tasks.map((t) => ({ ...t })) };
+      // Deep clone tasks and their toolEvents to avoid mutating previous state
+      const run = {
+        ...prev,
+        tasks: prev.tasks.map((t) => ({
+          ...t,
+          toolEvents: t.toolEvents ? t.toolEvents.map((w) => w ? [...w] : []) : undefined,
+        })),
+      };
 
       if (type === 'task:start') {
         const task = run.tasks.find((t) => t.taskId === d.taskId);
@@ -457,7 +464,8 @@ export function RunsPage() {
         const workerIndex = (d.workerIndex as number) ?? 0;
         if (task && event) {
           if (!task.toolEvents) task.toolEvents = [];
-          if (!task.toolEvents[workerIndex]) task.toolEvents[workerIndex] = [];
+          // Ensure all slots up to workerIndex are initialized
+          while (task.toolEvents.length <= workerIndex) task.toolEvents.push([]);
           task.toolEvents[workerIndex] = [...task.toolEvents[workerIndex], event];
         }
       } else if (type === 'task:complete') {

@@ -210,8 +210,8 @@ function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }
           <div className="mt-1 space-y-2 pl-1">
             <div>
               <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider mb-1">Input</p>
-              <pre className="text-xs text-zinc-600 whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto bg-zinc-50 rounded p-2">
-                {summary || JSON.stringify(item.use.input, null, 2)}
+              <pre className="text-xs text-zinc-600 whitespace-pre-wrap font-mono leading-relaxed max-h-64 overflow-y-auto bg-zinc-50 rounded p-2">
+                {item.use.input ? JSON.stringify(item.use.input, null, 2) : summary}
               </pre>
             </div>
             {item.result && (
@@ -219,7 +219,7 @@ function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }
                 <p className={`text-[10px] font-medium uppercase tracking-wider mb-1 ${item.result.isError ? 'text-red-400' : 'text-zinc-400'}`}>
                   Output{item.result.isError ? ' (error)' : ''}
                 </p>
-                <pre className={`text-xs whitespace-pre-wrap font-mono leading-relaxed max-h-52 overflow-y-auto rounded p-2 ${item.result.isError ? 'bg-red-50 text-red-700' : 'bg-zinc-50 text-zinc-600'}`}>
+                <pre className={`text-xs whitespace-pre-wrap font-mono leading-relaxed max-h-64 overflow-y-auto rounded p-2 ${item.result.isError ? 'bg-red-50 text-red-700' : 'bg-zinc-50 text-zinc-600'}`}>
                   {item.result.content || '(empty)'}
                 </pre>
               </div>
@@ -296,7 +296,7 @@ export function TaskDetailShared({
   const [activeWorker, setActiveWorker] = useState(0);
   const [timelineOpen, setTimelineOpen] = useState(false);
 
-  const normalizedWorkers = workers.length > 0 ? workers : [[]];
+  const normalizedWorkers = workers.length > 0 ? workers.map((w) => w ?? []) : [[]];
   const hasMultiWorker = normalizedWorkers.length > 1;
   const selectedEvents = hasMultiWorker ? (normalizedWorkers[activeWorker] ?? []) : (normalizedWorkers[0] ?? []);
   const filteredDetailEvents = detailEventMode === 'tools-only'
