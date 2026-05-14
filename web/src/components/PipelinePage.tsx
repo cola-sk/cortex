@@ -229,7 +229,10 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
             pipeline={running}
             onBack={handleRunBack}
             onDone={handleRunDone}
-            onReviewStateChange={setRunAwaitingReview}
+            onReviewStateChange={(awaiting) => {
+              setRunAwaitingReview(awaiting);
+              if (awaiting) setView('run');
+            }}
           />
         </div>
       )}
@@ -1309,8 +1312,9 @@ function RunView({
             ? { ...e, status: 'awaiting_review' as const, reviewPending: true, currentRound: round, detail: `⏸ Awaiting review (round ${round})` }
             : e
           ));
+          // Switch from task detail modal to the review panel when human input is required.
+          setModalTaskId(null);
           setReviewingTaskId(taskId);
-          setModalTaskId(taskId);
           onReviewStateChange(true);
         } else if (type === 'review:submitted') {
           const taskId = d.taskId as string;
@@ -1913,7 +1917,9 @@ function getEntryWorkers(entry: LogEntry): ToolEvent[][] {
 }
 
 function getEntryOutput(entry: LogEntry): string {
-  return entry.output ?? '';
+  if (entry.output && entry.output.trim()) return entry.output;
+  if (entry.streamContent && entry.streamContent.trim()) return entry.streamContent;
+  return '';
 }
 
 function getEntryDetail(entry: LogEntry): string {
@@ -1931,7 +1937,8 @@ function getEntryDetail(entry: LogEntry): string {
 }
 
 function TaskDetailContent({ entry, fullHeight = false }: { entry: LogEntry; fullHeight?: boolean }) {
-  const detailEventMode = entry.status === 'running' ? 'all' : 'tools-only';
+  // Keep full timeline details even after completion to avoid losing execution context.
+  const detailEventMode = 'all';
   return (
     <TaskDetailShared
       workers={getEntryWorkers(entry)}

@@ -335,9 +335,9 @@ export function TaskDetailShared({
     ? (perWorkerOutputs[activeWorker] ?? '').trim()
     : outputText;
 
-  // Only show timeline toggle if there are actual tool events (not just text)
-  const hasToolEvents = normalizedWorkers.flat().some((e) => e.type === 'tool_use');
-  const workerHasToolEvents = selectedEvents.some((e) => e.type === 'tool_use');
+  // Keep timeline available even when a run produced only text events.
+  const selectedToolCallCount = selectedEvents.filter((e) => e.type === 'tool_use').length;
+  const workerHasEvents = selectedEvents.length > 0;
 
   const workerTabs = hasMultiWorker && (
     <div className="flex flex-wrap gap-1.5 pb-0.5">
@@ -411,7 +411,7 @@ export function TaskDetailShared({
       {/* Output (per-worker if multi, combined if single) */}
       {workerOutput ? (
         <div className={`text-xs whitespace-pre-wrap leading-relaxed overflow-y-auto rounded-lg p-3 ${
-          fullHeight && !workerHasToolEvents ? 'flex-1 min-h-0' : 'max-h-[55vh]'
+            fullHeight && selectedToolCallCount === 0 ? 'flex-1 min-h-0' : 'max-h-[55vh]'
         } bg-zinc-50`}>
           <MarkdownWithThinking content={workerOutput} />
         </div>
@@ -423,8 +423,8 @@ export function TaskDetailShared({
         )
       )}
 
-      {/* Collapsible execution timeline — only when there are actual tool calls */}
-      {workerHasToolEvents && (
+      {/* Collapsible execution timeline — keep it for both tool and text events */}
+      {workerHasEvents && (
         <div className={`${fullHeight && timelineOpen ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
           <button
             onClick={() => setTimelineOpen((o) => !o)}
@@ -433,7 +433,9 @@ export function TaskDetailShared({
             <ChevronRightIcon className={`w-3 h-3 transition-transform ${timelineOpen ? 'rotate-90' : ''}`} />
             <span className="font-medium">Execution Timeline</span>
             <span className="text-[10px]">
-              ({selectedEvents.filter((e) => e.type === 'tool_use').length} tool calls)
+              {selectedToolCallCount > 0
+                ? `(${selectedToolCallCount} tool calls)`
+                : `(${selectedEvents.length} events)`}
             </span>
           </button>
           {timelineOpen && (

@@ -164,7 +164,8 @@ function TaskDetailPanel({ task, fullHeight = false }: { task: RunTaskRecord; fu
   const status: DetailStatus = task.status === 'pending' ? 'running' : task.status;
   const output = task.output ?? '';
   const detail = task.error ?? '';
-  const detailEventMode = status === 'running' ? 'all' : 'tools-only';
+  // Preserve full execution detail after completion as well.
+  const detailEventMode = 'all';
 
   return (
     <TaskDetailShared
