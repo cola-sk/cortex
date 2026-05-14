@@ -45,6 +45,12 @@ Cortex orchestrates multiple AI agents (Claude, Codex, Gemini, local models, cus
   <img src="public/screenshot-review.png" alt="Review gateway with Approve & Continue and Request Revision actions" width="780">
 </p>
 
+**Run History** — browse past executions, filter by status, and inspect per-task outputs with full tool-call timelines
+
+<p align="center">
+  <img src="public/screenshot-runs.png" alt="Run history page with execution list and task detail panels" width="780">
+</p>
+
 ## Quick Start
 
 ```bash
