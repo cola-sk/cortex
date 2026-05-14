@@ -39,6 +39,12 @@ Cortex orchestrates multiple AI agents (Claude, Codex, Gemini, local models, cus
   <img src="public/screenshot-agents.png" alt="Role agents page with model bindings" width="780">
 </p>
 
+**Review Gateway** — human-in-the-loop quality checkpoint: the Reviewer agent produces analysis, then the operator decides to approve or request revision
+
+<p align="center">
+  <img src="public/screenshot-review.png" alt="Review gateway with Approve & Continue and Request Revision actions" width="780">
+</p>
+
 ## Quick Start
 
 ```bash
