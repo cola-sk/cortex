@@ -18,6 +18,7 @@ export interface TaskDetailSharedProps {
   detail?: string;
   output?: string;
   outputs?: string[];                // per-worker outputs
+  workerStatus?: ('running' | 'done' | 'error')[];
   fullHeight?: boolean;
   detailEventMode?: 'all' | 'tools-only';
 }
@@ -168,6 +169,19 @@ function appendTextChunk(base: string, chunk: string): string {
   return `${base}\n${chunk}`;
 }
 
+/** Check if a text event is an internal CLI protocol message (e.g. Claude Code stream-json system/assistant/user envelopes) */
+function isCliProtocolJson(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('{')) return false;
+  try {
+    const obj = JSON.parse(trimmed);
+    // Claude Code stream-json emits { type: "system"|"assistant"|"user", ... } wrapper messages
+    return typeof obj === 'object' && obj !== null && typeof obj.type === 'string';
+  } catch {
+    return false;
+  }
+}
+
 function buildTimeline(events: ToolEvent[]): TimelineItem[] {
   const items: TimelineItem[] = [];
   let idx = 0;
@@ -176,11 +190,16 @@ function buildTimeline(events: ToolEvent[]): TimelineItem[] {
       const result = events.find((e) => e.type === 'tool_result' && e.toolUseId === ev.toolUseId);
       items.push({ type: 'tool', use: ev, result, index: idx++ });
     } else if (ev.type === 'text') {
+      const content = ev.content ?? '';
+      // Skip internal CLI protocol JSON messages (not human-readable)
+      if (isCliProtocolJson(content)) continue;
+      // Skip empty/whitespace-only text
+      if (!content.trim()) continue;
       const last = items[items.length - 1];
       if (last && last.type === 'text') {
-        last.content = appendTextChunk(last.content, ev.content ?? '');
+        last.content = appendTextChunk(last.content, content);
       } else {
-        items.push({ type: 'text', content: ev.content ?? '', index: idx++ });
+        items.push({ type: 'text', content, index: idx++ });
       }
     }
   }
@@ -290,6 +309,7 @@ export function TaskDetailShared({
   detail,
   output,
   outputs,
+  workerStatus,
   fullHeight = false,
   detailEventMode = 'all',
 }: TaskDetailSharedProps) {
@@ -321,6 +341,9 @@ export function TaskDetailShared({
     <div className="flex flex-wrap gap-1.5 pb-0.5">
       {normalizedWorkers.map((w, i) => {
         const toolCount = w.filter((e) => e.type === 'tool_use').length;
+        const wStatus = workerStatus?.[i];
+        const statusIcon = wStatus === 'done' ? '✓' : wStatus === 'error' ? '✗' : isRunning ? '●' : '';
+        const statusColor = wStatus === 'done' ? 'text-emerald-500' : wStatus === 'error' ? 'text-red-500' : 'text-blue-400';
         return (
           <button
             key={i}
@@ -331,6 +354,7 @@ export function TaskDetailShared({
                 : 'bg-zinc-50 text-zinc-500 border border-zinc-100 hover:bg-zinc-100'
             }`}
           >
+            {statusIcon && <span className={`mr-1 ${statusColor}`}>{statusIcon}</span>}
             Worker {i + 1} · {agents[i] ?? agents[0] ?? 'worker'}
             {toolCount > 0 && (
               <span className="ml-1 text-[10px] text-zinc-400">🔧 {toolCount}</span>

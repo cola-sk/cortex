@@ -162,6 +162,7 @@ function TaskDetailPanel({ task, fullHeight = false }: { task: RunTaskRecord; fu
   const status: DetailStatus = task.status === 'pending' ? 'running' : task.status;
   const output = task.output ?? '';
   const detail = task.error ?? '';
+  const detailEventMode = status === 'running' ? 'all' : 'tools-only';
 
   return (
     <TaskDetailShared
@@ -171,8 +172,9 @@ function TaskDetailPanel({ task, fullHeight = false }: { task: RunTaskRecord; fu
       detail={detail}
       output={output}
       outputs={task.outputs}
+      workerStatus={task.workerStatus}
       fullHeight={fullHeight}
-      detailEventMode="tools-only"
+      detailEventMode={detailEventMode}
     />
   );
 }
@@ -467,6 +469,14 @@ export function RunsPage() {
           // Ensure all slots up to workerIndex are initialized
           while (task.toolEvents.length <= workerIndex) task.toolEvents.push([]);
           task.toolEvents[workerIndex] = [...task.toolEvents[workerIndex], event];
+        }
+      } else if (type === 'worker:complete') {
+        const task = run.tasks.find((t) => t.taskId === d.taskId);
+        const workerIndex = (d.workerIndex as number) ?? 0;
+        if (task) {
+          if (!task.workerStatus) task.workerStatus = task.agents.map(() => 'running');
+          while (task.workerStatus.length <= workerIndex) task.workerStatus.push('running');
+          task.workerStatus[workerIndex] = d.error ? 'error' : 'done';
         }
       } else if (type === 'task:complete') {
         const task = run.tasks.find((t) => t.taskId === d.taskId);

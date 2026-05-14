@@ -68,6 +68,7 @@ export type RunEventType =
   | 'task:start'
   | 'task:tool_event'
   | 'task:complete'
+  | 'worker:complete'
   | 'decision:start'
   | 'decision:complete'
   | 'complete'
@@ -109,6 +110,8 @@ export interface RunTaskRecord {
   error?: string;
   /** Per-worker tool events (only for CLI agents using stream-json output) */
   toolEvents?: ToolEvent[][];
+  /** Per-worker completion status */
+  workerStatus?: ('running' | 'done' | 'error')[];
 }
 
 export interface RunSummary {

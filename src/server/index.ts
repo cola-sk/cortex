@@ -33,6 +33,7 @@ interface RunTaskRecord {
   outputs?: string[];
   error?: string;
   toolEvents?: ToolEvent[][];
+  workerStatus?: ('running' | 'done' | 'error')[];
 }
 
 interface RunRecord {
@@ -548,7 +549,11 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         emit('task:start', { taskId, taskName, agents });
         emitToRunSubscribers(runId, 'task:start', { taskId, taskName, agents });
         const task = run!.tasks.find((t) => t.taskId === taskId);
-        if (task) { task.status = 'running'; task.startedAt = new Date().toISOString(); }
+        if (task) {
+          task.status = 'running';
+          task.startedAt = new Date().toISOString();
+          if (agents.length > 1) task.workerStatus = agents.map(() => 'running');
+        }
         taskStartTimes.set(taskId, Date.now());
         flushAndSaveRun(run!);
       },
@@ -563,6 +568,17 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
           task.toolEvents[workerIndex].push(event);
         }
         debouncedSaveRun(run!);
+      },
+      onWorkerComplete: (taskId, workerIndex, output, error) => {
+        emit('worker:complete', { taskId, workerIndex, output: output.slice(0, 200), error });
+        emitToRunSubscribers(runId, 'worker:complete', { taskId, workerIndex, output: output.slice(0, 200), error });
+        const task = run!.tasks.find((t) => t.taskId === taskId);
+        if (task) {
+          if (!task.workerStatus) task.workerStatus = [];
+          while (task.workerStatus.length <= workerIndex) task.workerStatus.push('running');
+          task.workerStatus[workerIndex] = error ? 'error' : 'done';
+        }
+        flushAndSaveRun(run!);
       },
       onTaskComplete: (taskId, taskName, result: TaskResult) => {
         emit('task:complete', { taskId, taskName, output: result.output, outputs: result.outputs, error: result.error });
@@ -651,4 +667,30 @@ app.listen(PORT, () => {
   console.log(`Cortex UI  →  ${appConfig.app_url}`);
   console.log(`Config     →  ${CONFIG_PATH}`);
   console.log(`App config →  ~/.cortex/config.json\n`);
+
+  // Clean up orphaned runs (stuck in 'running' from a previous crash/restart)
+  try {
+    const runsDir = path.join(process.cwd(), 'runs');
+    if (fs.existsSync(runsDir)) {
+      for (const file of fs.readdirSync(runsDir).filter((f) => f.endsWith('.json'))) {
+        try {
+          const fp = path.join(runsDir, file);
+          const data = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+          if (data.status === 'running') {
+            data.status = 'error';
+            data.finishedAt = new Date().toISOString();
+            data.durationMs = Date.now() - new Date(data.startedAt).getTime();
+            for (const t of data.tasks ?? []) {
+              if (t.status === 'running' || t.status === 'pending') {
+                t.status = 'error';
+                t.error = 'Server restarted during execution';
+              }
+            }
+            fs.writeFileSync(fp, JSON.stringify(data, null, 2));
+            console.log(`  ⚠ Fixed orphaned run: ${data.id}`);
+          }
+        } catch { /* skip corrupt files */ }
+      }
+    }
+  } catch { /* ignore cleanup errors */ }
 });

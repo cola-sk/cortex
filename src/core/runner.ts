@@ -6,6 +6,7 @@ const DECISION_PREFIX = '__decision_';
 export interface RunnerCallbacks {
   onTaskStart?: (taskId: string, taskName: string, agents: string[]) => void;
   onTaskProgress?: (taskId: string, workerIndex: number, event: import('./events.js').ToolEvent) => void;
+  onWorkerComplete?: (taskId: string, workerIndex: number, output: string, error?: string) => void;
   onTaskComplete?: (taskId: string, taskName: string, result: TaskResult) => void;
   onDecisionStart?: (decisionId: string, evaluates: string[]) => void;
   onDecisionComplete?: (decisionId: string, decision: DecisionResult, retrying?: string[]) => void;
@@ -107,10 +108,12 @@ export class Runner {
                 });
                 const toolEvents = agent.getLastToolEvents();
                 if (!this.silent) console.log(`  ✓ [${label}] ${output.length} chars${toolEvents.length ? ` | ${toolEvents.filter(e => e.type === 'tool_use').length} tool calls` : ''}`);
+                this.callbacks.onWorkerComplete?.(task.id, idx, output);
                 return { output, toolEvents };
               } catch (err) {
                 const error = err instanceof Error ? err.message : String(err);
                 if (!this.silent) console.error(`  ✗ [${label}] ${error}`);
+                this.callbacks.onWorkerComplete?.(task.id, idx, '', error);
                 return { output: '', error, toolEvents: [] };
               }
             }),

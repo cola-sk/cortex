@@ -1007,6 +1007,7 @@ export interface LogEntry {
   agents?: string[];
   toolEvents?: ToolEvent[];          // flat merged (all workers)
   workerEvents?: ToolEvent[][];      // per-worker
+  workerStatus?: ('running' | 'done' | 'error')[];
   startedAt?: number;
   finishedAt?: number;
   status: 'running' | 'done' | 'error' | 'decision';
@@ -1064,15 +1065,17 @@ function RunView({
       await api.runPipeline(pipeline.id, goal, (type, data) => {
         const d = data as Record<string, unknown>;
         if (type === 'task:start') {
+          const agents = d.agents as string[];
           addEntry({
             id: d.taskId as string,
             type,
             label: `${d.taskName as string}`,
-            detail: `Running via ${(d.agents as string[]).join(', ')}`,
+            detail: `Running via ${agents.join(', ')}`,
             output: '',
-            agents: d.agents as string[],
+            agents,
             toolEvents: [],
-            workerEvents: (d.agents as string[]).map(() => []),
+            workerEvents: agents.map(() => []),
+            workerStatus: agents.length > 1 ? agents.map(() => 'running') : undefined,
             startedAt: Date.now(),
             status: 'running',
           });
@@ -1103,6 +1106,15 @@ function RunView({
               return { ...e, toolEvents: newEvents, workerEvents: newWorkerEvents, streamContent: newStream, detail: newDetail };
             }));
           }
+        } else if (type === 'worker:complete') {
+          const workerIndex = (d.workerIndex as number) ?? 0;
+          const error = d.error as string | undefined;
+          setLog((prev) => prev.map((e) => {
+            if (e.id !== (d.taskId as string)) return e;
+            const newStatus = [...(e.workerStatus ?? (e.agents ?? []).map(() => 'running' as const))];
+            newStatus[workerIndex] = error ? 'error' : 'done';
+            return { ...e, workerStatus: newStatus };
+          }));
         } else if (type === 'task:complete') {
           const error = d.error as string | undefined;
           const output = (d.output as string | undefined) ?? '';
@@ -1596,6 +1608,7 @@ function TaskDetailContent({ entry, fullHeight = false }: { entry: LogEntry; ful
       detail={getEntryDetail(entry)}
       output={getEntryOutput(entry)}
       outputs={entry.outputs}
+      workerStatus={entry.workerStatus}
       fullHeight={fullHeight}
       detailEventMode={detailEventMode}
     />
