@@ -3,7 +3,13 @@
     "allow": [
       "Bash(cp /Users/liuzhe.x/pictures/ai/4.png /Users/liuzhe.x/coding/cortex/public/screenshot-review.png)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(curl -s -X POST http://localhost:47821/api/pipelines -H \"Content-Type: application/json\" -d '{\"name\":\"Test\",\"workspace\":\"/nonexistent/path\",\"tasks\":[],\"decisions\":[]}')",
+      "Bash(curl -s -X POST http://localhost:47821/api/pipelines -H \"Content-Type: application/json\" -d '{\"name\":\"Test\",\"workspace\":\"~/ninebot/mfn-developer-console\",\"tasks\":[],\"decisions\":[]}')",
+      "Bash(curl -s -X DELETE http://localhost:47821/api/pipelines/pipe_mp56pdip_gina)",
+      "Bash(lsof -ti:47821)",
+      "Bash(xargs kill -9)",
+      "Bash(npm run *)"
     ],
     "additionalDirectories": [
       "/Users/liuzhe.x/Pictures/ai"
