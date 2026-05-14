@@ -137,6 +137,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
   const [editing, setEditing] = useState<Pipeline | null>(null);
   const [running, setRunning] = useState<Pipeline | null>(null);
   const [runActive, setRunActive] = useState(false);
+  const [runAwaitingReview, setRunAwaitingReview] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
   const showToast = (msg: string, ok = true) => {
@@ -196,11 +197,11 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
     } catch (e) { showToast((e as Error).message, false); }
   };
 
-  const handleRun = (p: Pipeline) => { setRunning(p); setRunActive(true); setView('run'); };
+  const handleRun = (p: Pipeline) => { setRunning(p); setRunActive(true); setRunAwaitingReview(false); setView('run'); };
 
   const handleRunBack = () => { setView('list'); };
-  const handleRunDone = () => { setRunActive(false); };
-  const handleDismissRun = () => { setRunning(null); setRunActive(false); };
+  const handleRunDone = () => { setRunActive(false); setRunAwaitingReview(false); };
+  const handleDismissRun = () => { if (runAwaitingReview) return; setRunning(null); setRunActive(false); };
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -225,6 +226,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
             pipeline={running}
             onBack={handleRunBack}
             onDone={handleRunDone}
+            onReviewStateChange={setRunAwaitingReview}
           />
         </div>
       )}
@@ -233,19 +235,31 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
       <div className="mx-auto px-5 py-8">
         {/* Running pipeline banner */}
         {running && (
-          <div className="mb-6 flex items-center gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 cursor-pointer hover:border-indigo-300 transition-colors" onClick={() => setView('run')}>
-            <span className={`shrink-0 w-2 h-2 rounded-full ${runActive ? 'bg-indigo-500 animate-pulse' : 'bg-emerald-500'}`} />
+          <div className={`mb-6 flex items-center gap-3 rounded-xl border px-4 py-3 cursor-pointer transition-colors ${
+            runAwaitingReview
+              ? 'border-amber-300 bg-amber-50 hover:border-amber-400'
+              : 'border-indigo-200 bg-indigo-50 hover:border-indigo-300'
+          }`} onClick={() => setView('run')}>
+            <span className={`shrink-0 w-2 h-2 rounded-full ${
+              runAwaitingReview ? 'bg-amber-500 animate-pulse' : runActive ? 'bg-indigo-500 animate-pulse' : 'bg-emerald-500'
+            }`} />
             <div className="flex-1 min-w-0">
-              <span className="text-xs font-semibold text-indigo-700">{running.name}</span>
-              <span className="ml-2 text-[10px] text-indigo-400">{runActive ? 'Running...' : 'Completed'}</span>
+              <span className={`text-xs font-semibold ${runAwaitingReview ? 'text-amber-700' : 'text-indigo-700'}`}>{running.name}</span>
+              <span className={`ml-2 text-[10px] ${runAwaitingReview ? 'text-amber-500' : 'text-indigo-400'}`}>
+                {runAwaitingReview ? '⏸ Awaiting Review' : runActive ? 'Running...' : 'Completed'}
+              </span>
             </div>
-            <span className="text-xs text-indigo-500 font-medium">View →</span>
-            <button
-              onClick={(e) => { e.stopPropagation(); handleDismissRun(); }}
-              className="text-indigo-300 hover:text-indigo-500 transition-colors p-0.5"
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-            </button>
+            <span className={`text-xs font-medium ${runAwaitingReview ? 'text-amber-600' : 'text-indigo-500'}`}>
+              {runAwaitingReview ? 'Review →' : 'View →'}
+            </span>
+            {!runAwaitingReview && (
+              <button
+                onClick={(e) => { e.stopPropagation(); handleDismissRun(); }}
+                className="text-indigo-300 hover:text-indigo-500 transition-colors p-0.5"
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              </button>
+            )}
           </div>
         )}
 
@@ -703,7 +717,10 @@ function CanvasTaskNode({ task, agents, isSelected, onClick }: {
           </span>
         )}
       </div>
-      <p className="text-xs font-semibold text-zinc-800 truncate">{task.name}</p>
+      <p className="text-xs font-semibold text-zinc-800 truncate">
+        {task.name}
+        {task.requiresReview && <span className="ml-1 text-amber-500 text-[10px]" title="Requires human review">⏸</span>}
+      </p>
       {task.input && (
         <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed">{task.input}</p>
       )}
@@ -903,6 +920,19 @@ function TaskInspector({
           )}
         </div>
       </Field>
+
+      {/* Requires Review toggle */}
+      <Field label="Human Review" hint="Pause after this step for human approval before continuing">
+        <label className="flex items-center gap-2 text-xs text-zinc-600 cursor-pointer">
+          <input
+            type="checkbox"
+            className="rounded"
+            checked={task.requiresReview ?? false}
+            onChange={(e) => setField('requiresReview' as keyof PipelineTask, e.target.checked as never)}
+          />
+          <span>Require human review before downstream tasks run</span>
+        </label>
+      </Field>
     </div>
   );
 }
@@ -1010,7 +1040,11 @@ export interface LogEntry {
   workerStatus?: ('running' | 'done' | 'error')[];
   startedAt?: number;
   finishedAt?: number;
-  status: 'running' | 'done' | 'error' | 'decision';
+  status: 'running' | 'done' | 'error' | 'decision' | 'awaiting_review' | 'pending';
+  // Review fields
+  requiresReview?: boolean;
+  currentRound?: number;
+  reviewPending?: boolean;
 }
 
 function appendTextChunk(base: string, chunk: string): string {
@@ -1021,7 +1055,7 @@ function appendTextChunk(base: string, chunk: string): string {
 }
 
 function RunView({
-  pipeline, onBack, onDone }: { pipeline: Pipeline; onBack: () => void; onDone: () => void }) {
+  pipeline, onBack, onDone, onReviewStateChange }: { pipeline: Pipeline; onBack: () => void; onDone: () => void; onReviewStateChange: (awaiting: boolean) => void }) {
   const { t } = useTranslation();
   const [goal, setGoal] = useState('');
   const [started, setStarted] = useState(false);
@@ -1031,6 +1065,8 @@ function RunView({
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [modalTaskId, setModalTaskId] = useState<string | null>(null);
   const [modalOutput, setModalOutput] = useState<{ title: string; content: string } | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [reviewingTaskId, setReviewingTaskId] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   const addEntry = (entry: LogEntry) => {
@@ -1064,7 +1100,9 @@ function RunView({
     try {
       await api.runPipeline(pipeline.id, goal, (type, data) => {
         const d = data as Record<string, unknown>;
-        if (type === 'task:start') {
+        if (type === 'run:started' as RunEventType) {
+          setActiveRunId(d.runId as string);
+        } else if (type === 'task:start') {
           const agents = d.agents as string[];
           addEntry({
             id: d.taskId as string,
@@ -1149,12 +1187,48 @@ function RunView({
           });
         } else if (type === 'complete') {
           setResults(d.results as Record<string, { output: string; error?: string }>);
+          const runId = d.runId as string | undefined;
+          if (runId) setActiveRunId(runId);
           setDone(true);
           onDone();
         } else if (type === 'error') {
           setFatalError(d.message as string);
           setDone(true);
           onDone();
+        } else if (type === 'review:pending') {
+          const taskId = d.taskId as string;
+          const round = (d.round as number) ?? 1;
+          setLog((prev) => prev.map((e) => e.id === taskId
+            ? { ...e, status: 'awaiting_review' as const, reviewPending: true, currentRound: round, detail: `⏸ Awaiting review (round ${round})` }
+            : e
+          ));
+          setReviewingTaskId(taskId);
+          setModalTaskId(taskId);
+          onReviewStateChange(true);
+        } else if (type === 'review:submitted') {
+          const taskId = d.taskId as string;
+          const action = d.action as string;
+          setLog((prev) => prev.map((e) => e.id === taskId
+            ? { ...e, reviewPending: false, detail: action === 'approve' ? '✓ Approved — continuing' : `↻ Revising (feedback: ${(d.comment as string)?.slice(0, 50)}...)` }
+            : e
+          ));
+          if (action === 'approve') {
+            setReviewingTaskId(null);
+            onReviewStateChange(false);
+          }
+        } else if (type === 'task:revision') {
+          const taskId = d.taskId as string;
+          const round = (d.round as number) ?? 2;
+          setLog((prev) => prev.map((e) => e.id === taskId
+            ? { ...e, status: 'running' as const, currentRound: round, reviewPending: false, detail: `↻ Revision round ${round}`, toolEvents: [], workerEvents: e.agents?.map(() => []) ?? [[]], streamContent: '' }
+            : e
+          ));
+        } else if (type === 'task:rollback') {
+          const toTaskId = d.toTaskId as string;
+          setLog((prev) => prev.map((e) => e.id === toTaskId
+            ? { ...e, status: 'pending' as const, detail: `↩ Rolling back — ${(d.reason as string)?.slice(0, 60)}` }
+            : e
+          ));
         }
       });
     } catch (e) {
@@ -1239,6 +1313,23 @@ function RunView({
             </div>
           </div>
         )}
+
+        {/* Review panel — shown when a task is awaiting review */}
+        {reviewingTaskId && activeRunId && (() => {
+          const entry = log.find((e) => e.id === reviewingTaskId);
+          if (!entry || !entry.reviewPending) return null;
+          return (
+            <ReviewPanel
+              runId={activeRunId}
+              taskId={reviewingTaskId}
+              taskName={entry.label}
+              output={entry.output ?? entry.streamContent ?? ''}
+              round={entry.currentRound ?? 1}
+              pipeline={pipeline}
+              onSubmitted={() => setReviewingTaskId(null)}
+            />
+          );
+        })()}
 
         {/* Fatal error */}
         {fatalError && (
@@ -1359,6 +1450,140 @@ function Markdown({ content, className }: { content: string; className?: string 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ReviewPanel — human review UI for paused tasks
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, onSubmitted }: {
+  runId: string;
+  taskId: string;
+  taskName: string;
+  output: string;
+  round: number;
+  pipeline: Pipeline;
+  onSubmitted: () => void;
+}) {
+  const [comment, setComment] = useState('');
+  const [action, setAction] = useState<'approve' | 'revise'>('approve');
+  const [targetTaskId, setTargetTaskId] = useState(taskId);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Find upstream tasks for rollback target selector
+  const upstreamTasks = pipeline.tasks.filter((t) => t.id !== taskId);
+
+  const handleSubmit = async () => {
+    if (action === 'revise' && !comment.trim()) {
+      setError('Please provide feedback when requesting a revision.');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.submitReview(
+        runId,
+        taskId,
+        action,
+        comment.trim(),
+        action === 'revise' && targetTaskId !== taskId ? targetTaskId : undefined,
+      );
+      onSubmitted();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border-2 border-amber-300 overflow-hidden shadow-sm">
+      <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-2">
+        <span className="text-amber-600 text-sm">⏸</span>
+        <span className="text-xs font-semibold text-amber-800">Review: {taskName}</span>
+        <span className="text-[10px] text-amber-500 ml-auto">Round {round}</span>
+      </div>
+
+      <div className="px-4 py-3 space-y-3">
+        {/* Output preview */}
+        {output && (
+          <div className="max-h-48 overflow-y-auto rounded-lg bg-zinc-50 p-3 text-xs">
+            <Markdown content={output} />
+          </div>
+        )}
+
+        {/* Action selector */}
+        <div className="flex gap-2">
+          <button
+            onClick={() => setAction('approve')}
+            className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
+              action === 'approve'
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
+            }`}
+          >
+            ✓ Approve & Continue
+          </button>
+          <button
+            onClick={() => setAction('revise')}
+            className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
+              action === 'revise'
+                ? 'bg-amber-50 border-amber-300 text-amber-700'
+                : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
+            }`}
+          >
+            ↻ Request Revision
+          </button>
+        </div>
+
+        {/* Comment / feedback */}
+        <textarea
+          className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize-none"
+          rows={3}
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          placeholder={action === 'approve' ? 'Optional comment...' : 'Describe what needs to change...'}
+        />
+
+        {/* Rollback target (only for revise) */}
+        {action === 'revise' && upstreamTasks.length > 0 && (
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-zinc-500 shrink-0">Revise target:</span>
+            <select
+              value={targetTaskId}
+              onChange={(e) => setTargetTaskId(e.target.value)}
+              className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
+            >
+              <option value={taskId}>Current task ({taskId})</option>
+              {upstreamTasks.map((t) => (
+                <option key={t.id} value={t.id}>↩ {t.name} ({t.id})</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {error && (
+          <p className="text-xs text-red-500">{error}</p>
+        )}
+
+        {/* Submit */}
+        <div className="flex justify-end">
+          <button
+            onClick={handleSubmit}
+            disabled={submitting}
+            className={`rounded-lg px-4 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50 ${
+              action === 'approve'
+                ? 'bg-emerald-600 hover:bg-emerald-500'
+                : 'bg-amber-600 hover:bg-amber-500'
+            }`}
+          >
+            {submitting ? 'Submitting...' : action === 'approve' ? '✓ Approve' : '↻ Submit Revision'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // LogRow
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1368,8 +1593,8 @@ function LogRow({ entry, onOpenDetail }: {
 }) {
   const [expanded, setExpanded] = useState(false);
   const toolCallCount = (entry.toolEvents ?? []).filter((e) => e.type === 'tool_use').length;
-  const icons: Record<LogEntry['status'], string> = { running: '◌', done: '✓', error: '✗', decision: '⬡' };
-  const colors: Record<LogEntry['status'], string> = { running: 'text-zinc-400', done: 'text-emerald-500', error: 'text-red-500', decision: 'text-amber-500' };
+  const icons: Record<LogEntry['status'], string> = { running: '◌', done: '✓', error: '✗', decision: '⬡', awaiting_review: '⏸', pending: '↩' };
+  const colors: Record<LogEntry['status'], string> = { running: 'text-zinc-400', done: 'text-emerald-500', error: 'text-red-500', decision: 'text-amber-500', awaiting_review: 'text-amber-500', pending: 'text-zinc-300' };
   const durationMs = entry.startedAt ? (entry.finishedAt ?? Date.now()) - entry.startedAt : undefined;
   const previewText = entry.status === 'running'
     ? '● streaming...'
@@ -1604,7 +1829,7 @@ function TaskDetailContent({ entry, fullHeight = false }: { entry: LogEntry; ful
     <TaskDetailShared
       workers={getEntryWorkers(entry)}
       agents={entry.agents}
-      status={entry.status}
+      status={entry.status === 'awaiting_review' || entry.status === 'pending' ? 'running' : entry.status}
       detail={getEntryDetail(entry)}
       output={getEntryOutput(entry)}
       outputs={entry.outputs}

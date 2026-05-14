@@ -31,6 +31,11 @@ export class Agent {
     return [];
   }
 
+  /** Returns true if this agent's provider supports multi-turn message history (API providers). CLI providers don't. */
+  supportsHistory(): boolean {
+    return !(this.provider instanceof CliProvider);
+  }
+
   private static createProvider(provider: ProviderConfig): LLMProvider {
     switch (provider.type) {
       case 'claude':

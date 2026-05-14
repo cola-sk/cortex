@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp /Users/liuzhe.x/pictures/ai/4.png /Users/liuzhe.x/coding/cortex/public/screenshot-review.png)"
+    ],
+    "additionalDirectories": [
+      "/Users/liuzhe.x/Pictures/ai"
+    ]
+  }
+}

@@ -75,6 +75,13 @@ export const api = {
   getRuns: () => request<RunSummary[]>('/api/runs'),
   getRun: (id: string) => request<RunRecord>(`/api/runs/${encodeURIComponent(id)}`),
 
+  /** Submit a human review for a paused task */
+  submitReview: (runId: string, taskId: string, action: 'approve' | 'revise', comment: string, targetTaskId?: string) =>
+    request<{ success: boolean }>(`/api/runs/${encodeURIComponent(runId)}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ taskId, action, comment, targetTaskId }),
+    }),
+
   /** Run a pipeline via SSE. Calls onEvent for each event; resolves when stream ends. */
   async runPipeline(
     id: string,

@@ -11,6 +11,8 @@ export const TaskSchema = z.object({
   input: z.string(),
   /** IDs of tasks that must complete before this one runs */
   dependsOn: z.array(z.string()).default([]),
+  /** When true, the runner pauses after this task completes and waits for human review */
+  requiresReview: z.boolean().default(false),
 });
 
 // ---- Decision Point ----
@@ -66,5 +68,28 @@ export interface DecisionResult {
   /** Task ids to re-run (only when action === 'retry') */
   retryTaskIds?: string[];
   reason: string;
+}
+
+// ---- Human Review ----
+
+export interface ReviewAction {
+  action: 'approve' | 'revise';
+  comment: string;
+  /** When revising, optionally target an upstream task instead of the current one */
+  targetTaskId?: string;
+}
+
+export interface TaskRound {
+  round: number;
+  input: string;
+  output: string;
+  toolEvents?: import('./events.js').ToolEvent[][];
+  finishedAt: string;
+  review?: {
+    action: 'approve' | 'revise';
+    comment: string;
+    targetTaskId?: string;
+    reviewedAt: string;
+  };
 }
 

@@ -44,6 +44,8 @@ export interface PipelineTask {
   agent: string | string[];
   input: string;
   dependsOn: string[];
+  /** When true, runner pauses after this task for human review */
+  requiresReview?: boolean;
 }
 
 export interface PipelineDecision {
@@ -71,6 +73,10 @@ export type RunEventType =
   | 'worker:complete'
   | 'decision:start'
   | 'decision:complete'
+  | 'review:pending'
+  | 'review:submitted'
+  | 'task:revision'
+  | 'task:rollback'
   | 'complete'
   | 'error';
 
@@ -97,11 +103,29 @@ export interface ToolEvent {
   isError?: boolean;
 }
 
+export interface ReviewRecord {
+  action: 'approve' | 'revise';
+  comment: string;
+  targetTaskId?: string;
+  reviewedAt: string;
+}
+
+export interface RoundRecord {
+  round: number;
+  output: string;
+  toolEvents?: ToolEvent[][];
+  finishedAt: string;
+  review?: ReviewRecord;
+}
+
 export interface RunTaskRecord {
   taskId: string;
   taskName: string;
   agents: string[];
-  status: 'pending' | 'running' | 'done' | 'error';
+  status: 'pending' | 'running' | 'done' | 'error' | 'awaiting_review';
+  requiresReview?: boolean;
+  currentRound?: number;
+  rounds?: RoundRecord[];
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;
@@ -119,7 +143,7 @@ export interface RunSummary {
   pipelineId: string;
   pipelineName: string;
   goal: string;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'awaiting_review';
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;

@@ -9,7 +9,7 @@ import { detectAllTools, detectTool } from '../importers/index.js';
 import { readAppConfig, portFromUrl, DEFAULT_CONFIG } from '../config/appConfig.js';
 import { Agent } from '../core/agent.js';
 import { Runner } from '../core/runner.js';
-import type { Plan, TaskResult } from '../core/plan.js';
+import type { Plan, TaskResult, ReviewAction, TaskRound } from '../core/plan.js';
 import type { ToolEvent } from '../core/events.js';
 
 const app = express();
@@ -21,11 +21,29 @@ const RUNS_DIR = path.resolve(process.env.RUNS_DIR ?? 'runs');
 
 // ---- Run record types ----
 
+interface ReviewRecord {
+  action: 'approve' | 'revise';
+  comment: string;
+  targetTaskId?: string;
+  reviewedAt: string;
+}
+
+interface RoundRecord {
+  round: number;
+  output: string;
+  toolEvents?: ToolEvent[][];
+  finishedAt: string;
+  review?: ReviewRecord;
+}
+
 interface RunTaskRecord {
   taskId: string;
   taskName: string;
   agents: string[];
-  status: 'pending' | 'running' | 'done' | 'error';
+  status: 'pending' | 'running' | 'done' | 'error' | 'awaiting_review';
+  requiresReview?: boolean;
+  currentRound?: number;
+  rounds?: RoundRecord[];
   startedAt?: string;
   finishedAt?: string;
   durationMs?: number;
@@ -41,7 +59,7 @@ interface RunRecord {
   pipelineId: string;
   pipelineName: string;
   goal: string;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'awaiting_review';
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;
@@ -58,6 +76,8 @@ function generateRunId(): string {
 const activeRuns = new Map<string, RunRecord>();
 // Per-run SSE subscribers for /api/runs/:id/stream
 const runSubscribers = new Map<string, Set<express.Response>>();
+// Per-run review resolvers: key = "runId:taskId"
+const reviewResolvers = new Map<string, (review: ReviewAction) => void>();
 
 function emitToRunSubscribers(runId: string, type: string, data: unknown): void {
   const subs = runSubscribers.get(runId);
@@ -425,6 +445,45 @@ app.delete('/api/pipelines/:id', (req, res) => {
   }
 });
 
+// POST /api/runs/:runId/review — submit human review for a paused task
+app.post('/api/runs/:runId/review', (req, res) => {
+  try {
+    const { runId } = req.params;
+    const body = req.body as { taskId?: string; action?: string; comment?: string; targetTaskId?: string };
+
+    if (!body.taskId || typeof body.taskId !== 'string') {
+      res.status(400).json({ error: 'taskId is required' });
+      return;
+    }
+    if (body.action !== 'approve' && body.action !== 'revise') {
+      res.status(400).json({ error: 'action must be "approve" or "revise"' });
+      return;
+    }
+    if (body.action === 'revise' && (!body.comment || !body.comment.trim())) {
+      res.status(400).json({ error: 'comment is required when action is "revise"' });
+      return;
+    }
+
+    const key = `${runId}:${body.taskId}`;
+    const resolver = reviewResolvers.get(key);
+    if (!resolver) {
+      res.status(404).json({ error: `No pending review for run "${runId}" task "${body.taskId}"` });
+      return;
+    }
+
+    const review: ReviewAction = {
+      action: body.action,
+      comment: body.comment ?? '',
+      targetTaskId: body.targetTaskId,
+    };
+    resolver(review);
+    reviewResolvers.delete(key);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // POST /api/pipelines/:id/run  — SSE stream
 app.post('/api/pipelines/:id/run', async (req, res) => {
   const { id } = req.params;
@@ -452,7 +511,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
   const doAbort = () => {
     // Guard: don't abort if pipeline already completed normally
     if (pipelineFinished) return;
-    if (!aborted && run && run.status === 'running') {
+    if (!aborted && run && (run.status === 'running' || run.status === 'awaiting_review')) {
       aborted = true;
       abortController.abort();
       run.status = 'error';
@@ -537,10 +596,14 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         taskName: t.name,
         agents: Array.isArray(t.agent) ? t.agent : [t.agent],
         status: 'pending' as const,
+        ...(t.requiresReview ? { requiresReview: true } : {}),
       })),
     };
     saveRun(run);
     activeRuns.set(runId, run);
+
+    emit('run:started', { runId });
+    emitToRunSubscribers(runId, 'run:started', { runId });
 
     const taskStartTimes = new Map<string, number>();
 
@@ -605,6 +668,70 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         emit('decision:complete', { decisionId, action: decision.action, reason: decision.reason, retrying });
         emitToRunSubscribers(runId, 'decision:complete', { decisionId, action: decision.action, reason: decision.reason, retrying });
       },
+      onReviewRequired: (taskId, taskName, output, round) => {
+        return new Promise<ReviewAction>((resolve) => {
+          const key = `${runId}:${taskId}`;
+          reviewResolvers.set(key, resolve);
+          // Update run status
+          run!.status = 'awaiting_review';
+          const task = run!.tasks.find((t) => t.taskId === taskId);
+          if (task) {
+            task.status = 'awaiting_review';
+            task.currentRound = round;
+          }
+          flushAndSaveRun(run!);
+          emit('review:pending', { taskId, taskName, output: output.slice(0, 500), round });
+          emitToRunSubscribers(runId, 'review:pending', { taskId, taskName, output: output.slice(0, 500), round });
+        });
+      },
+      onReviewSubmitted: (taskId, action, round) => {
+        run!.status = 'running';
+        const task = run!.tasks.find((t) => t.taskId === taskId);
+        if (task) {
+          if (!task.rounds) task.rounds = [];
+          task.rounds.push({
+            round,
+            output: task.output ?? '',
+            toolEvents: task.toolEvents,
+            finishedAt: new Date().toISOString(),
+            review: {
+              action: action.action,
+              comment: action.comment,
+              targetTaskId: action.targetTaskId,
+              reviewedAt: new Date().toISOString(),
+            },
+          });
+          if (action.action === 'approve') {
+            task.status = 'done';
+          } else {
+            task.status = 'pending';
+          }
+        }
+        flushAndSaveRun(run!);
+        emit('review:submitted', { taskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, round });
+        emitToRunSubscribers(runId, 'review:submitted', { taskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, round });
+      },
+      onTaskRevision: (taskId, round) => {
+        const task = run!.tasks.find((t) => t.taskId === taskId);
+        if (task) {
+          task.status = 'running';
+          task.currentRound = round;
+        }
+        flushAndSaveRun(run!);
+        emit('task:revision', { taskId, round });
+        emitToRunSubscribers(runId, 'task:revision', { taskId, round });
+      },
+      onTaskRollback: (fromTaskId, toTaskId, reason) => {
+        // Reset downstream tasks in the run record
+        for (const task of run!.tasks) {
+          if (task.taskId === toTaskId || task.status === 'done') {
+            // Only reset tasks that would need to re-run
+          }
+        }
+        flushAndSaveRun(run!);
+        emit('task:rollback', { fromTaskId, toTaskId, reason });
+        emitToRunSubscribers(runId, 'task:rollback', { fromTaskId, toTaskId, reason });
+      },
     });
 
     const results = await runner.run(plan, abortController.signal);
@@ -630,7 +757,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     if (!aborted) {
       emit('error', { message: (err as Error).message });
       if (run) emitToRunSubscribers(run.id, 'error', { message: (err as Error).message });
-      if (run && run.status === 'running') {
+      if (run && (run.status === 'running' || run.status === 'awaiting_review')) {
         run.status = 'error';
         run.finishedAt = new Date().toISOString();
         run.durationMs = Date.now() - new Date(run.startedAt).getTime();
@@ -641,6 +768,10 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     process.off('SIGTERM', sigtermHandler);
     if (run) {
       activeRuns.delete(run.id);
+      // Clean up any pending review resolvers for this run
+      for (const key of reviewResolvers.keys()) {
+        if (key.startsWith(`${run.id}:`)) reviewResolvers.delete(key);
+      }
       // Close all run subscribers
       const subs = runSubscribers.get(run.id);
       if (subs) {
@@ -676,7 +807,7 @@ app.listen(PORT, () => {
         try {
           const fp = path.join(runsDir, file);
           const data = JSON.parse(fs.readFileSync(fp, 'utf-8'));
-          if (data.status === 'running') {
+          if (data.status === 'running' || data.status === 'awaiting_review') {
             data.status = 'error';
             data.finishedAt = new Date().toISOString();
             data.durationMs = Date.now() - new Date(data.startedAt).getTime();

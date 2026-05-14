@@ -1,5 +1,6 @@
 import type { Agent } from './agent.js';
-import type { Plan, Task, TaskResult, DecisionResult } from './plan.js';
+import type { Plan, Task, TaskResult, DecisionResult, ReviewAction, TaskRound } from './plan.js';
+import { buildMessageHistory, buildRevisionContext, compressRounds } from './context.js';
 
 const DECISION_PREFIX = '__decision_';
 
@@ -10,6 +11,11 @@ export interface RunnerCallbacks {
   onTaskComplete?: (taskId: string, taskName: string, result: TaskResult) => void;
   onDecisionStart?: (decisionId: string, evaluates: string[]) => void;
   onDecisionComplete?: (decisionId: string, decision: DecisionResult, retrying?: string[]) => void;
+  /** Called when a task with requiresReview completes. Runner pauses until the returned Promise resolves. */
+  onReviewRequired?: (taskId: string, taskName: string, output: string, round: number) => Promise<ReviewAction>;
+  onReviewSubmitted?: (taskId: string, action: ReviewAction, round: number) => void;
+  onTaskRevision?: (taskId: string, round: number) => void;
+  onTaskRollback?: (fromTaskId: string, toTaskId: string, reason: string) => void;
 }
 
 export class Runner {
@@ -29,10 +35,13 @@ export class Runner {
    *  - True parallel execution for tasks that have no dependency between them
    *  - Multi-worker parallel execution when task.agent is an array
    *  - Decision point evaluation with retry loops
+   *  - Human-in-the-loop review with pause/resume
    */
   async run(plan: Plan, signal?: AbortSignal): Promise<Map<string, TaskResult>> {
     const results = new Map<string, TaskResult>();
     const retryCount = new Map<string, number>();
+    // Track revision rounds per task
+    const taskRounds = new Map<string, TaskRound[]>();
 
     const decisionCount = plan.decisions?.length ?? 0;
     if (!this.silent) {
@@ -45,7 +54,7 @@ export class Runner {
     const completed = new Set<string>();
 
     // Safety ceiling to prevent infinite retry loops
-    const MAX_ITERATIONS = (plan.tasks.length + decisionCount + 1) * 10;
+    const MAX_ITERATIONS = (plan.tasks.length + decisionCount + 1) * 20;
     let iterations = 0;
 
     while (pending.size > 0) {
@@ -80,65 +89,7 @@ export class Runner {
       // ---- Execute the ready batch in parallel ----
       await Promise.all(
         ready.map(async (task) => {
-          const context = this.buildContext(task.dependsOn, results);
-          // Always inject the goal so agents know what they're working toward
-          const goalPrefix = `Goal: ${plan.goal}`;
-          const fullInput = context
-            ? `${goalPrefix}\n\n${context}\n\n---\n\n${task.input}`
-            : `${goalPrefix}\n\n${task.input}`;
-
-          const agentKeys = Array.isArray(task.agent) ? task.agent : [task.agent];
-          this.callbacks.onTaskStart?.(task.id, task.name, agentKeys);
-
-          // Run all assigned agents in parallel (multi-worker)
-          const workerResults = await Promise.all(
-            agentKeys.map(async (key, idx) => {
-              const agent = this.agents.get(key);
-              if (!agent) {
-                return { output: '', error: `Unknown agent "${key}"` };
-              }
-              const label = agentKeys.length > 1 ? `${task.id}[worker${idx + 1}]` : task.id;
-              if (!this.silent) console.log(`  ⚙ [${label}] ${task.name} → ${key}`);
-              try {
-                const output = await agent.chat(fullInput, [], {
-                  onStreamEvent: (event) => {
-                    this.callbacks.onTaskProgress?.(task.id, idx, event);
-                  },
-                  signal,
-                });
-                const toolEvents = agent.getLastToolEvents();
-                if (!this.silent) console.log(`  ✓ [${label}] ${output.length} chars${toolEvents.length ? ` | ${toolEvents.filter(e => e.type === 'tool_use').length} tool calls` : ''}`);
-                this.callbacks.onWorkerComplete?.(task.id, idx, output);
-                return { output, toolEvents };
-              } catch (err) {
-                const error = err instanceof Error ? err.message : String(err);
-                if (!this.silent) console.error(`  ✗ [${label}] ${error}`);
-                this.callbacks.onWorkerComplete?.(task.id, idx, '', error);
-                return { output: '', error, toolEvents: [] };
-              }
-            }),
-          );
-
-          const outputs = workerResults.map((r) => r.output);
-          const errors = workerResults.map((r) => r.error).filter(Boolean);
-          const nonEmptyOutputs = outputs.filter(Boolean);
-          const combinedOutput = agentKeys.length > 1
-            ? outputs.map((o, i) => `[Worker ${i + 1} — ${agentKeys[i]}]\n${o || '(no output)'}`).join('\n\n')
-            : outputs[0] ?? '';
-
-          const allToolEvents = workerResults.map((r) => r.toolEvents ?? []);
-          const hasToolEvents = allToolEvents.some((te) => te.length > 0);
-
-          const taskResult: TaskResult = {
-            taskId: task.id,
-            outputs,
-            output: combinedOutput,
-            ...(errors.length ? { error: errors.join('; ') } : {}),
-            ...(hasToolEvents ? { toolEvents: allToolEvents } : {}),
-          };
-          results.set(task.id, taskResult);
-          completed.add(task.id);
-          this.callbacks.onTaskComplete?.(task.id, task.name, taskResult);
+          await this.executeTaskWithReview(task, plan, results, taskRounds, pending, completed, signal);
         }),
       );
 
@@ -232,6 +183,224 @@ export class Runner {
     }
 
     return results;
+  }
+
+  /**
+   * Execute a single task, handling review loops if requiresReview is set.
+   */
+  private async executeTaskWithReview(
+    task: Task,
+    plan: Plan,
+    results: Map<string, TaskResult>,
+    taskRounds: Map<string, TaskRound[]>,
+    pending: Map<string, Task>,
+    completed: Set<string>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const MAX_REVIEW_ROUNDS = 10;
+
+    for (let attempt = 0; attempt < MAX_REVIEW_ROUNDS; attempt++) {
+      const rounds = taskRounds.get(task.id) ?? [];
+      const currentRound = rounds.length + 1;
+
+      if (currentRound > 1) {
+        this.callbacks.onTaskRevision?.(task.id, currentRound);
+        if (!this.silent) console.log(`  ↻ [${task.id}] Revision round ${currentRound}`);
+      }
+
+      // Build context from upstream dependencies
+      const upstreamContext = this.buildContext(task.dependsOn, results);
+      const goalPrefix = `Goal: ${plan.goal}`;
+
+      // Build the input with revision context if applicable
+      let fullInput: string;
+      const agentKeys = Array.isArray(task.agent) ? task.agent : [task.agent];
+      const primaryAgent = this.agents.get(agentKeys[0]);
+      const useHistory = primaryAgent?.supportsHistory() ?? false;
+      let history: import('../providers/base.js').Message[] = [];
+
+      if (rounds.length > 0) {
+        if (useHistory) {
+          // API provider: use real message history
+          const compressed = await compressRounds(rounds, primaryAgent!);
+          history = compressed.history;
+          // Current input is the revision instruction
+          fullInput = upstreamContext
+            ? `${goalPrefix}\n\n${upstreamContext}\n\n---\n\n${task.input}`
+            : `${goalPrefix}\n\n${task.input}`;
+        } else {
+          // CLI provider: embed revision context in the prompt
+          const compressed = await compressRounds(rounds, primaryAgent!);
+          const revisionContext = compressed.contextText;
+          fullInput = upstreamContext
+            ? `${goalPrefix}\n\n${upstreamContext}\n\n---\n\nPrevious revision history:\n${revisionContext}\n\n---\n\nBased on the above feedback, please revise:\n${task.input}`
+            : `${goalPrefix}\n\nPrevious revision history:\n${revisionContext}\n\n---\n\nBased on the above feedback, please revise:\n${task.input}`;
+        }
+      } else {
+        fullInput = upstreamContext
+          ? `${goalPrefix}\n\n${upstreamContext}\n\n---\n\n${task.input}`
+          : `${goalPrefix}\n\n${task.input}`;
+      }
+
+      this.callbacks.onTaskStart?.(task.id, task.name, agentKeys);
+
+      // Run all assigned agents in parallel (multi-worker)
+      const workerResults = await Promise.all(
+        agentKeys.map(async (key, idx) => {
+          const agent = this.agents.get(key);
+          if (!agent) {
+            return { output: '', error: `Unknown agent "${key}"` };
+          }
+          const label = agentKeys.length > 1 ? `${task.id}[worker${idx + 1}]` : task.id;
+          if (!this.silent) console.log(`  ⚙ [${label}] ${task.name} → ${key}`);
+          try {
+            const output = await agent.chat(fullInput, history, {
+              onStreamEvent: (event) => {
+                this.callbacks.onTaskProgress?.(task.id, idx, event);
+              },
+              signal,
+            });
+            const toolEvents = agent.getLastToolEvents();
+            if (!this.silent) console.log(`  ✓ [${label}] ${output.length} chars${toolEvents.length ? ` | ${toolEvents.filter(e => e.type === 'tool_use').length} tool calls` : ''}`);
+            this.callbacks.onWorkerComplete?.(task.id, idx, output);
+            return { output, toolEvents };
+          } catch (err) {
+            const error = err instanceof Error ? err.message : String(err);
+            if (!this.silent) console.error(`  ✗ [${label}] ${error}`);
+            this.callbacks.onWorkerComplete?.(task.id, idx, '', error);
+            return { output: '', error, toolEvents: [] };
+          }
+        }),
+      );
+
+      const outputs = workerResults.map((r) => r.output);
+      const errors = workerResults.map((r) => r.error).filter(Boolean);
+      const combinedOutput = agentKeys.length > 1
+        ? outputs.map((o, i) => `[Worker ${i + 1} — ${agentKeys[i]}]\n${o || '(no output)'}`).join('\n\n')
+        : outputs[0] ?? '';
+
+      const allToolEvents = workerResults.map((r) => r.toolEvents ?? []);
+      const hasToolEvents = allToolEvents.some((te) => te.length > 0);
+
+      const taskResult: TaskResult = {
+        taskId: task.id,
+        outputs,
+        output: combinedOutput,
+        ...(errors.length ? { error: errors.join('; ') } : {}),
+        ...(hasToolEvents ? { toolEvents: allToolEvents } : {}),
+      };
+      results.set(task.id, taskResult);
+      this.callbacks.onTaskComplete?.(task.id, task.name, taskResult);
+
+      // Check if this task requires human review
+      if (task.requiresReview && this.callbacks.onReviewRequired && !taskResult.error) {
+        if (!this.silent) console.log(`  ⏸ [${task.id}] Awaiting human review (round ${currentRound})...`);
+
+        const review = await this.callbacks.onReviewRequired(task.id, task.name, combinedOutput, currentRound);
+        this.callbacks.onReviewSubmitted?.(task.id, review, currentRound);
+
+        // Record this round
+        const round: TaskRound = {
+          round: currentRound,
+          input: fullInput,
+          output: combinedOutput,
+          ...(hasToolEvents ? { toolEvents: allToolEvents } : {}),
+          finishedAt: new Date().toISOString(),
+          review: {
+            action: review.action,
+            comment: review.comment,
+            targetTaskId: review.targetTaskId,
+            reviewedAt: new Date().toISOString(),
+          },
+        };
+        const updatedRounds = [...rounds, round];
+        taskRounds.set(task.id, updatedRounds);
+
+        if (review.action === 'approve') {
+          if (!this.silent) console.log(`  ✓ [${task.id}] Approved — continuing`);
+          completed.add(task.id);
+          return;
+        }
+
+        // Revise — determine target
+        const targetId = review.targetTaskId ?? task.id;
+
+        if (targetId !== task.id) {
+          // Rollback to upstream task
+          if (!this.silent) console.log(`  ↩ [${task.id}] Rolling back to ${targetId}`);
+          this.callbacks.onTaskRollback?.(task.id, targetId, review.comment);
+
+          // Clear current task and all downstream
+          const downstream = this.findAllDownstream(targetId, plan.tasks);
+          for (const id of [targetId, ...downstream]) {
+            completed.delete(id);
+            results.delete(id);
+            const orig = plan.tasks.find((t) => t.id === id);
+            if (orig) pending.set(id, orig);
+          }
+
+          // Add the review feedback to the target task's rounds
+          const targetRounds = taskRounds.get(targetId) ?? [];
+          if (targetRounds.length > 0) {
+            const lastRound = targetRounds[targetRounds.length - 1];
+            if (!lastRound.review) {
+              lastRound.review = {
+                action: 'revise',
+                comment: review.comment,
+                targetTaskId: targetId,
+                reviewedAt: new Date().toISOString(),
+              };
+            }
+          } else {
+            // Target hasn't been tracked yet — create a synthetic round
+            const targetResult = results.get(targetId);
+            taskRounds.set(targetId, [{
+              round: 1,
+              input: '',
+              output: targetResult?.output ?? '',
+              finishedAt: new Date().toISOString(),
+              review: {
+                action: 'revise',
+                comment: review.comment,
+                targetTaskId: targetId,
+                reviewedAt: new Date().toISOString(),
+              },
+            }]);
+          }
+          return; // Exit — the main loop will re-execute the target task
+        }
+
+        // Revise current task — loop continues
+        if (!this.silent) console.log(`  ↻ [${task.id}] Revising based on feedback`);
+        continue;
+      }
+
+      // No review required or had an error — mark complete and return
+      completed.add(task.id);
+      return;
+    }
+
+    // Exceeded max review rounds
+    if (!this.silent) console.warn(`  ⚠ [${task.id}] Max review rounds (${MAX_REVIEW_ROUNDS}) reached — forcing continue`);
+    completed.add(task.id);
+  }
+
+  /**
+   * Find all task IDs that directly or indirectly depend on the given task ID.
+   */
+  private findAllDownstream(taskId: string, tasks: Task[]): string[] {
+    const downstream = new Set<string>();
+    const queue = [taskId];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const t of tasks) {
+        if (t.dependsOn.includes(current) && !downstream.has(t.id)) {
+          downstream.add(t.id);
+          queue.push(t.id);
+        }
+      }
+    }
+    return [...downstream];
   }
 
   private buildContext(dependsOn: string[], results: Map<string, TaskResult>): string {

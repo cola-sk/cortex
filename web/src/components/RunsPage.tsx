@@ -24,12 +24,14 @@ function formatTime(iso?: string): string {
 function statusColors(status: string) {
   if (status === 'done') return 'bg-emerald-100 text-emerald-700';
   if (status === 'error') return 'bg-red-100 text-red-600';
+  if (status === 'awaiting_review') return 'bg-amber-100 text-amber-700';
   return 'bg-blue-100 text-blue-600';
 }
 
 function statusDot(status: string) {
   if (status === 'done') return 'bg-emerald-400';
   if (status === 'error') return 'bg-red-400';
+  if (status === 'awaiting_review') return 'bg-amber-400 animate-pulse';
   return 'bg-blue-400 animate-pulse';
 }
 
@@ -333,7 +335,97 @@ function Markdown({ content, className }: { content: string; className?: string 
 // Run detail panel
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RunDetail({ run }: { run: RunRecord }) {
+function RunDetailReviewPanel({ runId, task, onSubmitted }: {
+  runId: string;
+  task: RunTaskRecord;
+  onSubmitted: () => void;
+}) {
+  const [comment, setComment] = useState('');
+  const [action, setAction] = useState<'approve' | 'revise'>('approve');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    if (action === 'revise' && !comment.trim()) {
+      setError('Please provide feedback when requesting a revision.');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.submitReview(runId, task.taskId, action, comment.trim());
+      onSubmitted();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border-2 border-amber-300 overflow-hidden shadow-sm">
+      <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-2">
+        <span className="text-amber-600 text-sm">⏸</span>
+        <span className="text-xs font-semibold text-amber-800">Review: {task.taskName}</span>
+        <span className="text-[10px] text-amber-500 ml-auto">Round {task.currentRound ?? 1}</span>
+      </div>
+      <div className="px-4 py-3 space-y-3">
+        {task.output && (
+          <div className="max-h-48 overflow-y-auto rounded-lg bg-zinc-50 p-3 text-xs">
+            <Markdown content={task.output} />
+          </div>
+        )}
+        <div className="flex gap-2">
+          <button
+            onClick={() => setAction('approve')}
+            className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
+              action === 'approve'
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
+            }`}
+          >
+            ✓ Approve & Continue
+          </button>
+          <button
+            onClick={() => setAction('revise')}
+            className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
+              action === 'revise'
+                ? 'bg-amber-50 border-amber-300 text-amber-700'
+                : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
+            }`}
+          >
+            ↻ Request Revision
+          </button>
+        </div>
+        <textarea
+          className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize-none"
+          rows={3}
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          placeholder={action === 'approve' ? 'Optional comment...' : 'Describe what needs to change...'}
+        />
+        {error && <p className="text-xs text-red-500">{error}</p>}
+        <div className="flex justify-end">
+          <button
+            onClick={handleSubmit}
+            disabled={submitting}
+            className={`rounded-lg px-4 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50 ${
+              action === 'approve'
+                ? 'bg-emerald-600 hover:bg-emerald-500'
+                : 'bg-amber-600 hover:bg-amber-500'
+            }`}
+          >
+            {submitting ? 'Submitting...' : action === 'approve' ? '✓ Approve' : '↻ Submit Revision'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RunDetail({ run, onReviewSubmitted }: { run: RunRecord; onReviewSubmitted: () => void }) {
+  const awaitingTask = run.tasks.find((t) => t.status === 'awaiting_review');
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="px-5 py-5 border-b border-zinc-100">
@@ -365,6 +457,17 @@ function RunDetail({ run }: { run: RunRecord }) {
           <span className="text-zinc-300 font-mono text-[10px]">{run.id}</span>
         </div>
       </div>
+
+      {/* Review panel for awaiting task */}
+      {awaitingTask && (
+        <div className="px-5 py-4">
+          <RunDetailReviewPanel
+            runId={run.id}
+            task={awaitingTask}
+            onSubmitted={onReviewSubmitted}
+          />
+        </div>
+      )}
 
       {/* Tasks */}
       <div className="px-5 py-4 space-y-3">
@@ -493,6 +596,25 @@ export function RunsPage() {
       } else if (type === 'error') {
         run.status = 'error';
         run.finishedAt = new Date().toISOString();
+      } else if (type === 'review:pending') {
+        run.status = 'awaiting_review';
+        const task = run.tasks.find((t) => t.taskId === d.taskId);
+        if (task) {
+          task.status = 'awaiting_review';
+          task.currentRound = (d.round as number) ?? 1;
+        }
+      } else if (type === 'review:submitted') {
+        run.status = 'running';
+        const task = run.tasks.find((t) => t.taskId === d.taskId);
+        if (task) {
+          task.status = (d.action as string) === 'approve' ? 'done' : 'running';
+        }
+      } else if (type === 'task:revision') {
+        const task = run.tasks.find((t) => t.taskId === d.taskId);
+        if (task) {
+          task.status = 'running';
+          task.currentRound = (d.round as number) ?? 2;
+        }
       }
 
       return run;
@@ -533,8 +655,8 @@ export function RunsPage() {
     api.getRun(selectedId)
       .then((run) => {
         setSelectedRun(run);
-        // If the run is still running, subscribe to SSE for live updates
-        if (run.status === 'running') {
+        // If the run is still running or awaiting review, subscribe to SSE for live updates
+        if (run.status === 'running' || run.status === 'awaiting_review') {
           sseRef.current = api.subscribeRun(selectedId, applyRunEvent);
         }
       })
@@ -590,7 +712,12 @@ export function RunsPage() {
         {loadingDetail ? (
           <div className="flex justify-center py-20"><Spinner /></div>
         ) : selectedRun ? (
-          <RunDetail run={selectedRun} />
+          <RunDetail run={selectedRun} onReviewSubmitted={() => {
+            // Refresh the run detail after review submission
+            if (selectedId) {
+              api.getRun(selectedId).then(setSelectedRun).catch(() => {});
+            }
+          }} />
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-center px-8">
             <div className="text-4xl mb-4 opacity-20">🔍</div>
