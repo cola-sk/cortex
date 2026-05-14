@@ -1,5 +1,4 @@
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { execSync } from 'child_process';
 import type { Agent } from './agent.js';
 import type { Plan, Task, TaskResult, DecisionResult, ReviewAction, TaskRound } from './plan.js';
 import { buildMessageHistory, buildRevisionContext, compressRounds } from './context.js';
@@ -7,23 +6,18 @@ import { buildMessageHistory, buildRevisionContext, compressRounds } from './con
 const DECISION_PREFIX = '__decision_';
 
 /**
- * Read files listed in task.fileContext and format them as a fenced code block
- * section for injection into the prompt. Silently skips unreadable files.
+ * Get the current git diff (staged + unstaged) for injection into the prompt.
+ * Returns empty string if not in a git repo or no changes.
  */
-function buildFileContext(task: Task): string {
-  if (!task.fileContext || task.fileContext.length === 0) return '';
-  const sections: string[] = [];
-  for (const filePath of task.fileContext) {
-    try {
-      const abs = resolve(process.cwd(), filePath);
-      const content = readFileSync(abs, 'utf-8');
-      const ext = filePath.split('.').pop() ?? '';
-      sections.push(`### ${filePath}\n\`\`\`${ext}\n${content}\n\`\`\``);
-    } catch {
-      sections.push(`### ${filePath}\n*(file not found or unreadable)*`);
-    }
+function getGitDiff(cwd?: string): string {
+  try {
+    // Combined diff: staged + unstaged working tree changes
+    const diff = execSync('git diff HEAD', { encoding: 'utf-8', maxBuffer: 1024 * 1024, cwd: cwd || undefined }).trim();
+    if (!diff) return '';
+    return `\`\`\`diff\n${diff}\n\`\`\``;
+  } catch {
+    return '';
   }
-  return sections.join('\n\n');
 }
 
 export interface RunnerCallbacks {
@@ -44,12 +38,14 @@ export class Runner {
   private agents: Map<string, Agent>;
   private callbacks: RunnerCallbacks;
   private silent: boolean;
+  private workspace?: string;
 
-  constructor(agents: Map<string, Agent>, callbacks: RunnerCallbacks = {}, silent = false) {
+  constructor(agents: Map<string, Agent>, callbacks: RunnerCallbacks = {}, silent = false, workspace?: string) {
     this.agents = agents;
     this.callbacks = callbacks;
     // Silent mode: suppress internal progress logs (used when caller provides callbacks)
     this.silent = silent || Object.keys(callbacks).length > 0;
+    this.workspace = workspace;
   }
 
   /**
@@ -233,8 +229,8 @@ export class Runner {
       // Build context from upstream dependencies
       const upstreamContext = this.buildContext(task.dependsOn, results);
       const goalPrefix = `Goal: ${plan.goal}`;
-      // Read local files listed in fileContext and inject them into the prompt
-      const fileContextSection = buildFileContext(task);
+      // Read git diff if task.gitDiff is enabled (use workspace as cwd)
+      const gitDiffSection = task.gitDiff ? getGitDiff(this.workspace) : '';
 
       // Build the input with revision context if applicable
       let fullInput: string;
@@ -243,11 +239,16 @@ export class Runner {
       const useHistory = primaryAgent?.supportsHistory() ?? false;
       let history: import('../providers/base.js').Message[] = [];
 
-      // Helper: assemble parts into final prompt, injecting file context when present
+      // Helper: assemble parts into final prompt, appending git diff and workspace hint when present
+      const workspaceHint = this.workspace && primaryAgent?.isCli()
+        ? `## Workspace\n\nYou MUST work in the following directory: ${this.workspace}`
+        : '';
       const assemblePrompt = (...parts: string[]) => {
-        const body = parts.filter(Boolean).join('\n\n---\n\n');
-        return fileContextSection
-          ? `${body}\n\n---\n\n## Local File Context\n\n${fileContextSection}`
+        const sections = [...parts.filter(Boolean)];
+        if (workspaceHint) sections.push(workspaceHint);
+        const body = sections.join('\n\n---\n\n');
+        return gitDiffSection
+          ? `${body}\n\n---\n\n## Git Diff\n\n${gitDiffSection}`
           : body;
       };
 

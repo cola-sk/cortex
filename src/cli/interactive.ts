@@ -314,7 +314,7 @@ async function runPipeline(
         }
         printDecision(decisionId, decision.action, decision.reason, retrying);
       },
-    });
+    }, false, pipeline.workspace);
     const results = await runner.run(plan);
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 

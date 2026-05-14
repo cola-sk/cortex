@@ -395,17 +395,15 @@ app.get('/api/pipelines', (_req, res) => {
 // POST /api/pipelines
 app.post('/api/pipelines', (req, res) => {
   try {
-    const { id, ...rest } = req.body as { id?: string } & Record<string, unknown>;
-    if (!id || typeof id !== 'string' || !/^[a-z0-9_-]+$/.test(id)) {
-      res.status(400).json({ error: 'Pipeline id is required (lowercase alphanumeric/dash/underscore)' });
-      return;
-    }
     const pf = readPipelineFile();
-    if (pf.pipelines[id]) {
-      res.status(409).json({ error: `Pipeline "${id}" already exists` });
-      return;
+    const pipeline = PipelineConfigSchema.parse(req.body);
+    // Auto-generate a unique pipeline ID
+    let id = `pipe_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    let attempts = 0;
+    while (pf.pipelines[id]) {
+      id = `pipe_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      if (++attempts > 10) throw new Error('Failed to generate unique pipeline ID');
     }
-    const pipeline = PipelineConfigSchema.parse(rest);
     pf.pipelines[id] = pipeline;
     writePipelineFile(pf);
     res.status(201).json({ id, ...pipeline });
@@ -732,7 +730,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         emit('task:rollback', { fromTaskId, toTaskId, reason });
         emitToRunSubscribers(runId, 'task:rollback', { fromTaskId, toTaskId, reason });
       },
-    });
+    }, false, pipelineCfg.workspace);
 
     const results = await runner.run(plan, abortController.signal);
 

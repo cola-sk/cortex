@@ -46,6 +46,8 @@ export interface PipelineTask {
   dependsOn: string[];
   /** When true, runner pauses after this task for human review */
   requiresReview?: boolean;
+  /** When true, inject git diff HEAD output into this task's prompt */
+  gitDiff?: boolean;
 }
 
 export interface PipelineDecision {
@@ -60,6 +62,8 @@ export interface Pipeline {
   id: string;
   name: string;
   description?: string;
+  /** Working directory for CLI agents and gitDiff. Defaults to server cwd. */
+  workspace?: string;
   tasks: PipelineTask[];
   decisions: PipelineDecision[];
 }

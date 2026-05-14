@@ -14,11 +14,11 @@ export const TaskSchema = z.object({
   /** When true, the runner pauses after this task completes and waits for human review */
   requiresReview: z.boolean().default(false),
   /**
-   * Local file paths to read and inject into the prompt before calling the agent.
-   * Useful for API models that cannot access the filesystem directly.
-   * Paths are relative to cwd. Glob patterns are NOT supported — list files explicitly.
+   * When true, inject the current git diff (staged + unstaged) into the prompt.
+   * Useful for API models doing code review — they can't access the filesystem,
+   * but they can review the diff injected into their context.
    */
-  fileContext: z.array(z.string()).optional(),
+  gitDiff: z.boolean().default(false),
 });
 
 // ---- Decision Point ----

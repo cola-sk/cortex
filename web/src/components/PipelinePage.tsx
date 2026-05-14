@@ -165,8 +165,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
   };
 
   const handleFromTemplate = (tpl: (typeof TEMPLATES)[0]) => {
-    const id = tpl.id + '_' + Date.now().toString(36);
-    setEditing({ id, ...tpl.pipeline });
+    setEditing({ id: '', ...tpl.pipeline });
     setView('editor');
   };
 
@@ -189,7 +188,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
         await api.updatePipeline(id, rest);
         showToast(`Saved "${p.name}"`);
       } else {
-        await api.createPipeline(p);
+        await api.createPipeline(rest);
         showToast(`Created "${p.name}"`);
       }
       await load();
@@ -439,9 +438,9 @@ function PipelineEditor({
     decisions: pipeline.decisions.map((d) => ({ ...d, evaluates: [...d.evaluates] })),
   }));
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [isDirty, setIsDirty] = useState(!pipeline.id); // new pipelines are dirty
+  const [isDirty, setIsDirty] = useState(!pipeline.id); // new pipelines have no ID yet
   const [saving, setSaving] = useState(false);
-  const [idError, setIdError] = useState('');
+  const [showWorkspaceInput, setShowWorkspaceInput] = useState(false);
 
   const update = useCallback((fn: (p: Pipeline) => Pipeline) => {
     setDraft((prev) => fn(prev));
@@ -494,9 +493,6 @@ function PipelineEditor({
   };
 
   const handleSave = async () => {
-    if (!draft.id.trim()) { setIdError(t('pipeline.idRequired')); return; }
-    if (!/^[a-z0-9_-]+$/.test(draft.id)) { setIdError(t('pipeline.idFormat')); return; }
-    setIdError('');
     setSaving(true);
     try { await onSave(draft); } finally { setSaving(false); }
   };
@@ -512,7 +508,7 @@ function PipelineEditor({
             <ChevronLeftIcon /> {t('common.back')}
           </button>
           <div className="w-px h-4 bg-zinc-200 shrink-0" />
-          <div className="flex-1 min-w-0 flex items-center gap-3">
+          <div className="flex-1 min-w-0 flex items-center gap-3 flex-wrap">
             <div className="flex flex-col gap-0.5 min-w-0">
               <input
                 className="text-sm font-semibold text-zinc-800 bg-transparent outline-none border-b border-transparent hover:border-zinc-300 focus:border-indigo-400 transition-colors w-48 truncate"
@@ -520,23 +516,43 @@ function PipelineEditor({
                 {...{ placeholder: t('pipeline.namePlaceholder') }}
                 onChange={(e) => update((p) => ({ ...p, name: e.target.value }))}
               />
-              {idError && <span className="text-xs text-red-500">{idError}</span>}
+              {draft.id && (
+                <span className="text-[10px] text-zinc-400 font-mono-custom">{draft.id}</span>
+              )}
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-zinc-400">{t('pipeline.idLabel')}</span>
-              <input
-                className="text-xs font-mono-custom bg-zinc-50 border border-zinc-200 rounded-md px-2 py-1 outline-none focus:border-indigo-400 w-36"
-                value={draft.id}
-                placeholder="my-pipeline"
-                disabled={!!pipeline.id}
-                onChange={(e) => { update((p) => ({ ...p, id: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '-') })); setIdError(''); }}
-              />
-            </div>
+
+            {showWorkspaceInput ? (
+              <div className="flex items-center gap-2 min-w-[280px] max-w-[520px] w-full sm:w-auto">
+                <span className="text-[10px] text-zinc-400 uppercase tracking-wide shrink-0">Workspace</span>
+                <input
+                  className="flex-1 min-w-0 text-xs text-zinc-700 bg-white outline-none rounded border border-zinc-200 px-2 py-1.5 font-mono placeholder-zinc-300 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-100 transition-all"
+                  value={draft.workspace ?? ''}
+                  placeholder="/path/to/project"
+                  onChange={(e) => update((p) => ({ ...p, workspace: e.target.value || undefined }))}
+                />
+                <button
+                  onClick={() => setShowWorkspaceInput(false)}
+                  className="text-xs text-zinc-400 hover:text-zinc-700 transition-colors shrink-0"
+                  title="Done"
+                >
+                  Done
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowWorkspaceInput(true)}
+                className="max-w-[420px] truncate rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-[11px] text-zinc-500 hover:border-indigo-300 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                title={draft.workspace?.trim() ? draft.workspace : 'Set workspace path'}
+              >
+                {draft.workspace?.trim() ? `Workspace: ${draft.workspace}` : '+ Workspace'}
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => onRun(draft)}
-              className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition-colors"
+              disabled={!draft.id}
+              className="flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               ▶ {t('pipeline.run')}
             </button>
@@ -560,7 +576,7 @@ function PipelineEditor({
         >
           <div className="mx-auto">
             {/* Description row */}
-            <div className="mb-6">
+            <div className="mb-4">
               <input
                 className="w-full text-xs text-zinc-500 bg-transparent outline-none placeholder-zinc-300 border-b border-transparent hover:border-zinc-200 focus:border-indigo-300 transition-colors"
                 value={draft.description ?? ''}
@@ -650,6 +666,7 @@ function PipelineEditor({
               task={selectedTask}
               allTasks={draft.tasks}
               agents={agents}
+              hasWorkspace={!!draft.workspace?.trim()}
               onChange={(updated) => {
                 update((p) => ({ ...p, tasks: p.tasks.map((t) => (t.id === updated.id ? updated : t)) }));
               }}
@@ -691,6 +708,7 @@ function CanvasTaskNode({ task, agents, isSelected, onClick }: {
   isSelected: boolean;
   onClick: () => void;
 }) {
+  const { t } = useTranslation();
   const isMulti = Array.isArray(task.agent);
   const agentKeys = isMulti ? (task.agent as string[]) : [task.agent as string];
   const firstKey = agentKeys[0] ?? '';
@@ -719,7 +737,7 @@ function CanvasTaskNode({ task, agents, isSelected, onClick }: {
       </div>
       <p className="text-xs font-semibold text-zinc-800 truncate">
         {task.name}
-        {task.requiresReview && <span className="ml-1 text-amber-500 text-[10px]" title="Requires human review">⏸</span>}
+        {task.requiresReview && <span className="ml-1 text-amber-500 text-[10px]" title={t('step.humanReviewBadgeTitle')}>⏸</span>}
       </p>
       {task.input && (
         <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed">{task.input}</p>
@@ -781,10 +799,11 @@ function FlowArrow() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function TaskInspector({
-  task, allTasks, agents, onChange, onDelete }: {
+  task, allTasks, agents, hasWorkspace, onChange, onDelete }: {
   task: PipelineTask;
   allTasks: PipelineTask[];
   agents: Agent[];
+  hasWorkspace: boolean;
   onChange: (t: PipelineTask) => void;
   onDelete: () => void;
 }) {
@@ -792,8 +811,31 @@ function TaskInspector({
   const isMulti = Array.isArray(task.agent);
   const agentKeys: string[] = isMulti ? [...(task.agent as string[])] : [task.agent as string];
 
+  const isCliAgent = (agentId: string): boolean => {
+    const byId = new Map(agents.map((a) => [a.id, a]));
+    const visited = new Set<string>();
+    let current = byId.get(agentId);
+    while (current) {
+      if (current.provider?.type) return current.provider.type === 'cli';
+      if (!current.baseAgent || visited.has(current.baseAgent)) return false;
+      visited.add(current.baseAgent);
+      current = byId.get(current.baseAgent);
+    }
+    return false;
+  };
+
+  // gitDiff is mainly for API-model review tasks; CLI tasks can read git/files directly.
+  const isCliOnlyTask = agentKeys.length > 0 && agentKeys.every((k) => isCliAgent(k));
+  const canUseGitDiff = hasWorkspace && !isCliOnlyTask;
+
   const setField = <K extends keyof PipelineTask>(key: K, val: PipelineTask[K]) =>
     onChange({ ...task, [key]: val });
+
+  useEffect(() => {
+    if (isCliOnlyTask && task.gitDiff) {
+      onChange({ ...task, gitDiff: false });
+    }
+  }, [isCliOnlyTask, onChange, task]);
 
   return (
     <div className="p-4 space-y-4">
@@ -922,7 +964,7 @@ function TaskInspector({
       </Field>
 
       {/* Requires Review toggle */}
-      <Field label="Human Review" hint="Pause after this step for human approval before continuing">
+      <Field label={t('step.humanReviewLabel')} hint={t('step.humanReviewHint')}>
         <label className="flex items-center gap-2 text-xs text-zinc-600 cursor-pointer">
           <input
             type="checkbox"
@@ -930,9 +972,24 @@ function TaskInspector({
             checked={task.requiresReview ?? false}
             onChange={(e) => setField('requiresReview' as keyof PipelineTask, e.target.checked as never)}
           />
-          <span>Require human review before downstream tasks run</span>
+          <span>{t('step.humanReviewToggle')}</span>
         </label>
       </Field>
+
+      {/* Git Diff toggle — only available when pipeline has a workspace configured */}
+      {canUseGitDiff && (
+        <Field label={t('step.gitDiffLabel')} hint={t('step.gitDiffHint')}>
+          <label className="flex items-center gap-2 text-xs text-zinc-600 cursor-pointer">
+            <input
+              type="checkbox"
+              className="rounded"
+              checked={task.gitDiff ?? false}
+              onChange={(e) => setField('gitDiff' as keyof PipelineTask, e.target.checked as never)}
+            />
+            <span>{t('step.gitDiffToggle')}</span>
+          </label>
+        </Field>
+      )}
     </div>
   );
 }

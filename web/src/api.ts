@@ -54,7 +54,7 @@ export const api = {
   // ---- Pipelines ----
   getPipelines: () => request<Pipeline[]>('/api/pipelines'),
 
-  createPipeline: (pipeline: Pipeline) =>
+  createPipeline: (pipeline: Omit<Pipeline, 'id'>) =>
     request<Pipeline>('/api/pipelines', {
       method: 'POST',
       body: JSON.stringify(pipeline),

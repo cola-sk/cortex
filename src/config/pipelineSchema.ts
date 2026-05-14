@@ -4,6 +4,8 @@ import { TaskSchema, DecisionPointSchema } from '../core/plan.js';
 export const PipelineConfigSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
+  /** Working directory for CLI agents and gitDiff. Defaults to process.cwd(). */
+  workspace: z.string().optional(),
   tasks: z.array(TaskSchema).default([]),
   decisions: z.array(DecisionPointSchema).default([]),
 });

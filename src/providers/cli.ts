@@ -8,6 +8,25 @@ export interface CliProviderOptions {
   args: string[];
 }
 
+/**
+ * Build a robust PATH for CLI tools.
+ * Helps when server is launched from GUI/non-login shells where PATH is incomplete.
+ */
+function buildCliPath(): string {
+  const existing = process.env.PATH ?? '';
+  const home = process.env.HOME ?? '';
+  const extras = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    home ? `${home}/.local/bin` : '',
+  ].filter(Boolean);
+
+  const merged = [...new Set([...existing.split(':'), ...extras].filter(Boolean))];
+  return merged.join(':');
+}
+
 /** Strip ANSI escape codes from terminal output */
 function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex
@@ -145,6 +164,7 @@ export class CliProvider implements LLMProvider {
       const child = spawn(this.command, resolvedArgs, {
         env: {
           ...process.env,
+          PATH: buildCliPath(),
           CI: '1',
           NO_COLOR: '1',
           TERM: 'dumb',
@@ -233,7 +253,18 @@ export class CliProvider implements LLMProvider {
         }
       });
 
-      child.on('error', (err) => reject(new Error(`CLI "${this.command}" failed to start: ${err.message}`)));
+      child.on('error', (err) => {
+        const e = err as NodeJS.ErrnoException;
+        if (e.code === 'ENOENT') {
+          reject(new Error(
+            `CLI "${this.command}" not found in PATH. ` +
+            `Ensure it is installed and available to the server process. ` +
+            `Current PATH: ${buildCliPath()}`,
+          ));
+          return;
+        }
+        reject(new Error(`CLI "${this.command}" failed to start: ${err.message}`));
+      });
 
       // Abort support: kill child when signal fires
       if (options?.signal) {

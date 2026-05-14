@@ -36,6 +36,11 @@ export class Agent {
     return !(this.provider instanceof CliProvider);
   }
 
+  /** Returns true if this agent uses a CLI provider (local subprocess). */
+  isCli(): boolean {
+    return this.provider instanceof CliProvider;
+  }
+
   private static createProvider(provider: ProviderConfig): LLMProvider {
     switch (provider.type) {
       case 'claude':

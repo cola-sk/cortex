@@ -8,21 +8,28 @@
 #
 # Agent keys must match entries in your agents.yaml.
 #
-# ── fileContext ─────────────────────────────────────────────────────────────
-# When using API-based models (non-CLI), set fileContext to have the runner
-# read local files and automatically inject their contents into the prompt.
-# This lets API models "see" your codebase without needing filesystem access.
+# ── gitDiff ─────────────────────────────────────────────────────────────────
+# When using API-based models (non-CLI), set gitDiff: true to have the runner
+# automatically inject `git diff HEAD` output into the prompt.
+# This lets API models review your local changes without filesystem access.
 #
 #   - id: review
 #     agent: reviewer          # API model
-#     fileContext:
-#       - src/core/runner.ts   # injected as fenced code block
-#       - src/core/plan.ts
+#     gitDiff: true            # injects current staged + unstaged diff
+#
+# ── workspace ──────────────────────────────────────────────────────────────
+# Set workspace at the pipeline level to control where CLI agents execute
+# and where gitDiff runs. All CLI agents in the pipeline will use this as cwd.
+# API-only agents are unaffected.
+#
+#   my_pipeline:
+#     name: My Pipeline
+#     workspace: /path/to/target/project
 #
 # Recommended workflow design:
 #   - API model for planning  (no file access needed)
 #   - CLI agent for coding    (has native filesystem access via tools)
-#   - API model for review    (use fileContext to read files directly)
+#   - API model for review    (use gitDiff to see what changed)
 
 pipelines:
 
@@ -146,20 +153,25 @@ pipelines:
           - test
         maxRetries: 2
 
-  # ── Local project review with API model (fileContext example) ───────────────
+  # ── Local code review with API model (gitDiff + workspace example) ─────────
   local_review_pipeline:
     name: Local Code Review
-    description: "API model reviews local project files using fileContext injection"
+    description: "CLI agent codes in target project, API model reviews git diff"
+    workspace: /path/to/your/project    # All CLI agents run here; gitDiff runs here
     tasks:
+      - id: implement
+        name: Implementation
+        agent: coder            # CLI agent — runs in workspace directory
+        input: Implement the requested changes.
+        dependsOn: []
+
       - id: review
         name: Code Review
-        agent: reviewer         # API model — fileContext injects file contents into prompt
+        agent: reviewer         # API model — gitDiff injects diff into prompt
         input: |
-          Review the provided source files for correctness, potential bugs,
+          Review the provided git diff for correctness, potential bugs,
           and code quality issues. Be specific about file names and line numbers.
-        dependsOn: []
-        fileContext:
-          - src/core/runner.ts  # List the files you want the API model to see
-          - src/core/plan.ts
-          # Add more files as needed
+        dependsOn:
+          - implement
+        gitDiff: true           # Injects `git diff HEAD` from workspace
     decisions: []
