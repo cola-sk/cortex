@@ -61,3 +61,11 @@
     font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
   }
 }
+
+/* highlight.js overrides — ensure code blocks respect prose-pre styling */
+@layer base {
+  pre code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+}

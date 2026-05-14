@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
+import 'highlight.js/styles/github-dark.css';
 import type { ToolEvent } from '../types';
 
 export type DetailStatus = 'running' | 'done' | 'error' | 'decision';
@@ -125,7 +127,7 @@ export function MarkdownWithThinking({ content, className }: { content: string; 
             <details key={`think-${idx}`} className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2">
               <summary className="cursor-pointer select-none text-[11px] font-semibold text-amber-700">Thinking</summary>
               <div className={`mt-2 ${proseClass} prose-amber text-amber-900`}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{section.content}</ReactMarkdown>
               </div>
             </details>
           );
@@ -133,7 +135,7 @@ export function MarkdownWithThinking({ content, className }: { content: string; 
 
         return (
           <div key={`md-${idx}`} className={proseClass}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{section.content}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{section.content}</ReactMarkdown>
           </div>
         );
       })}
