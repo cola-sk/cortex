@@ -9,6 +9,8 @@ export interface Message {
 export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
+  /** Working directory for CLI providers (ignored by API providers). */
+  cwd?: string;
   onStreamEvent?: (event: ToolEvent) => void;
   signal?: AbortSignal;
 }

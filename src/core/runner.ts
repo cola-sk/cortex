@@ -1,9 +1,19 @@
 import { execSync } from 'child_process';
+import path from 'path';
 import type { Agent } from './agent.js';
 import type { Plan, Task, TaskResult, DecisionResult, ReviewAction, TaskRound } from './plan.js';
 import { buildMessageHistory, buildRevisionContext, compressRounds } from './context.js';
 
 const DECISION_PREFIX = '__decision_';
+
+function resolveWorkspacePath(workspace?: string): string | undefined {
+  if (!workspace?.trim()) return undefined;
+  const trimmed = workspace.trim();
+  if (trimmed.startsWith('~')) {
+    return path.join(process.env.HOME ?? '', trimmed.slice(1));
+  }
+  return path.resolve(trimmed);
+}
 
 /**
  * Get the current git diff (staged + unstaged) for injection into the prompt.
@@ -45,7 +55,7 @@ export class Runner {
     this.callbacks = callbacks;
     // Silent mode: suppress internal progress logs (used when caller provides callbacks)
     this.silent = silent || Object.keys(callbacks).length > 0;
-    this.workspace = workspace;
+    this.workspace = resolveWorkspacePath(workspace);
   }
 
   /**
@@ -239,14 +249,9 @@ export class Runner {
       const useHistory = primaryAgent?.supportsHistory() ?? false;
       let history: import('../providers/base.js').Message[] = [];
 
-      // Helper: assemble parts into final prompt, appending git diff and workspace hint when present
-      const workspaceHint = this.workspace && primaryAgent?.isCli()
-        ? `## Workspace\n\nYou MUST work in the following directory: ${this.workspace}`
-        : '';
+      // Helper: assemble parts into final prompt, appending git diff when present
       const assemblePrompt = (...parts: string[]) => {
-        const sections = [...parts.filter(Boolean)];
-        if (workspaceHint) sections.push(workspaceHint);
-        const body = sections.join('\n\n---\n\n');
+        const body = parts.filter(Boolean).join('\n\n---\n\n');
         return gitDiffSection
           ? `${body}\n\n---\n\n## Git Diff\n\n${gitDiffSection}`
           : body;
@@ -291,6 +296,7 @@ export class Runner {
           if (!this.silent) console.log(`  ⚙ [${label}] ${task.name} → ${key}`);
           try {
             const output = await agent.chat(fullInput, history, {
+              cwd: agent.isCli() ? this.workspace : undefined,
               onStreamEvent: (event) => {
                 this.callbacks.onTaskProgress?.(task.id, idx, event);
               },

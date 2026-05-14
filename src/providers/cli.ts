@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import path from 'path';
 import type { LLMProvider, Message, ChatOptions } from './base.js';
 import type { ToolEvent } from '../core/events.js';
 
@@ -25,6 +26,15 @@ function buildCliPath(): string {
 
   const merged = [...new Set([...existing.split(':'), ...extras].filter(Boolean))];
   return merged.join(':');
+}
+
+function normalizeCwd(cwd?: string): string | undefined {
+  if (!cwd?.trim()) return undefined;
+  const trimmed = cwd.trim();
+  if (trimmed.startsWith('~')) {
+    return path.join(process.env.HOME ?? '', trimmed.slice(1));
+  }
+  return path.resolve(trimmed);
 }
 
 /** Strip ANSI escape codes from terminal output */
@@ -162,6 +172,7 @@ export class CliProvider implements LLMProvider {
 
     return new Promise((resolve, reject) => {
       const child = spawn(this.command, resolvedArgs, {
+        cwd: normalizeCwd(options?.cwd),
         env: {
           ...process.env,
           PATH: buildCliPath(),

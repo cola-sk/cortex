@@ -75,7 +75,11 @@ function computeLevels(tasks: PipelineTask[]): PipelineTask[][] {
   let remaining = [...tasks];
   while (remaining.length > 0) {
     const level = remaining.filter((t) => t.dependsOn.every((d) => placed.has(d)));
-    if (level.length === 0) break;
+    if (level.length === 0) {
+      // Invalid graph (cycle or unresolved dependency): keep remaining tasks visible.
+      levels.push(remaining);
+      break;
+    }
     level.forEach((t) => placed.add(t.id));
     remaining = remaining.filter((t) => !placed.has(t.id));
     levels.push(level);
@@ -858,8 +862,26 @@ function TaskInspector({
   const isCliOnlyTask = agentKeys.length > 0 && agentKeys.every((k) => isCliAgent(k));
   const canUseGitDiff = hasWorkspace && !isCliOnlyTask;
 
-  const setField = <K extends keyof PipelineTask>(key: K, val: PipelineTask[K]) =>
+  const taskIndex = allTasks.findIndex((x) => x.id === task.id);
+  const availableDependencyTasks = taskIndex > 0 ? allTasks.slice(0, taskIndex) : [];
+  const availableDependencyIds = new Set(availableDependencyTasks.map((x) => x.id));
+
+  const setField = <K extends keyof PipelineTask>(key: K, val: PipelineTask[K]) => {
+    if (key === 'dependsOn') {
+      const nextDeps = (val as string[]).filter((depId) => availableDependencyIds.has(depId));
+      onChange({ ...task, dependsOn: nextDeps });
+      return;
+    }
     onChange({ ...task, [key]: val });
+  };
+
+  useEffect(() => {
+    // Auto-clean invalid forward dependencies to avoid cycles and hidden canvas rows.
+    const sanitized = task.dependsOn.filter((depId) => availableDependencyIds.has(depId));
+    if (sanitized.length !== task.dependsOn.length) {
+      onChange({ ...task, dependsOn: sanitized });
+    }
+  }, [availableDependencyIds, onChange, task]);
 
   useEffect(() => {
     if (isCliOnlyTask && task.gitDiff) {
@@ -970,7 +992,7 @@ function TaskInspector({
 
       <Field label={t('step.fieldDependsOn')} hint={t('step.dependsOnHint')}>
         <div className="space-y-1">
-          {allTasks.filter((t) => t.id !== task.id).map((t) => (
+          {availableDependencyTasks.map((t) => (
             <label key={t.id} className="flex items-center gap-2 text-xs text-zinc-600 cursor-pointer">
               <input
                 type="checkbox"
@@ -987,7 +1009,7 @@ function TaskInspector({
               <span className="text-zinc-400">{t.name}</span>
             </label>
           ))}
-          {allTasks.filter((t) => t.id !== task.id).length === 0 && (
+          {availableDependencyTasks.length === 0 && (
             <p className="text-xs text-zinc-300">{t('step.noOtherSteps')}</p>
           )}
         </div>
