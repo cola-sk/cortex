@@ -116,10 +116,11 @@ export class Runner {
             }),
           );
 
-          const outputs = workerResults.map((r) => r.output).filter(Boolean);
+          const outputs = workerResults.map((r) => r.output);
           const errors = workerResults.map((r) => r.error).filter(Boolean);
+          const nonEmptyOutputs = outputs.filter(Boolean);
           const combinedOutput = agentKeys.length > 1
-            ? outputs.map((o, i) => `[Worker ${i + 1} — ${agentKeys[i]}]\n${o}`).join('\n\n')
+            ? outputs.map((o, i) => `[Worker ${i + 1} — ${agentKeys[i]}]\n${o || '(no output)'}`).join('\n\n')
             : outputs[0] ?? '';
 
           const allToolEvents = workerResults.map((r) => r.toolEvents ?? []);

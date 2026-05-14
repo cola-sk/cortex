@@ -17,6 +17,7 @@ export interface TaskDetailSharedProps {
   status: DetailStatus;
   detail?: string;
   output?: string;
+  outputs?: string[];                // per-worker outputs
   fullHeight?: boolean;
   detailEventMode?: 'all' | 'tools-only';
 }
@@ -288,11 +289,12 @@ export function TaskDetailShared({
   status,
   detail,
   output,
+  outputs,
   fullHeight = false,
   detailEventMode = 'all',
 }: TaskDetailSharedProps) {
-  const [activeTab, setActiveTab] = useState<'detail' | 'output'>('detail');
   const [activeWorker, setActiveWorker] = useState(0);
+  const [timelineOpen, setTimelineOpen] = useState(false);
 
   const normalizedWorkers = workers.length > 0 ? workers : [[]];
   const hasMultiWorker = normalizedWorkers.length > 1;
@@ -303,98 +305,114 @@ export function TaskDetailShared({
   const detailEvents = filteredDetailEvents.length > 0 ? filteredDetailEvents : selectedEvents;
   const detailText = (detail ?? '').trim();
   const outputText = (output ?? '').trim();
+  const isRunning = status === 'running';
 
-  // Smart tab visibility: show both tabs only when detail and output genuinely differ.
-  // - Running tasks always show both (live timeline is the execution process)
-  // - Tasks with tool_use events: detail=tool execution, output=final result → different
-  // - Tasks with distinct detail text (error/decision): detail text differs from output
-  // - Otherwise (text-only streaming where detail ≈ output): unified view, no tabs
+  // Per-worker: use outputs array if available, otherwise fall back to combined output
+  const perWorkerOutputs = hasMultiWorker && outputs && outputs.length > 1 ? outputs : null;
+  const workerOutput = perWorkerOutputs
+    ? (perWorkerOutputs[activeWorker] ?? '').trim()
+    : outputText;
+
+  // Only show timeline toggle if there are actual tool events (not just text)
   const hasToolEvents = normalizedWorkers.flat().some((e) => e.type === 'tool_use');
-  const hasDistinctDetail = detailText !== '' && detailText !== outputText;
-  const showTabs = status === 'running' || hasToolEvents || hasDistinctDetail;
+  const workerHasToolEvents = selectedEvents.some((e) => e.type === 'tool_use');
 
-  // When tabs are hidden, show the best available content
-  const effectiveTab = showTabs ? activeTab : 'unified';
+  const workerTabs = hasMultiWorker && (
+    <div className="flex flex-wrap gap-1.5 pb-0.5">
+      {normalizedWorkers.map((w, i) => {
+        const toolCount = w.filter((e) => e.type === 'tool_use').length;
+        return (
+          <button
+            key={i}
+            onClick={() => setActiveWorker(i)}
+            className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+              activeWorker === i
+                ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
+                : 'bg-zinc-50 text-zinc-500 border border-zinc-100 hover:bg-zinc-100'
+            }`}
+          >
+            Worker {i + 1} · {agents[i] ?? agents[0] ?? 'worker'}
+            {toolCount > 0 && (
+              <span className="ml-1 text-[10px] text-zinc-400">🔧 {toolCount}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
 
+  // ── Running: worker tabs + live timeline ──
+  if (isRunning) {
+    return (
+      <div className={`space-y-3 ${fullHeight ? 'h-full min-h-0 flex flex-col' : ''}`}>
+        {detailText && (
+          <div className="rounded-lg p-3 bg-zinc-50 text-zinc-700">
+            <MarkdownWithThinking content={detailText} className="text-xs" />
+          </div>
+        )}
+        {workerTabs}
+        {detailEvents.length > 0 ? (
+          <WorkerTimeline events={detailEvents} status={status} fullHeight={fullHeight} />
+        ) : (
+          <div className="py-10 text-center text-xs text-zinc-300 animate-pulse">Waiting for events...</div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Done / Error / Decision ──
+  // Multi-worker: worker tabs, each tab shows that worker's output + that worker's timeline
+  // Single-worker: output + collapsible timeline (only if has tool events)
   return (
     <div className={`space-y-3 ${fullHeight ? 'h-full min-h-0 flex flex-col' : ''}`}>
-      {showTabs && (
-        <div className="border-b border-zinc-100 flex items-center gap-1">
-          <button
-            onClick={() => setActiveTab('detail')}
-            className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
-              activeTab === 'detail'
-                ? 'border-indigo-500 text-indigo-600'
-                : 'border-transparent text-zinc-400 hover:text-zinc-600'
-            }`}
-          >
-            Detail
-          </button>
-          <button
-            onClick={() => setActiveTab('output')}
-            className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
-              activeTab === 'output'
-                ? 'border-indigo-500 text-indigo-600'
-                : 'border-transparent text-zinc-400 hover:text-zinc-600'
-            }`}
-          >
-            Output
-          </button>
+      {/* Error banner */}
+      {detailText && status === 'error' && (
+        <div className="rounded-lg p-3 bg-red-50 text-red-700">
+          <MarkdownWithThinking content={detailText} className="text-xs" />
         </div>
       )}
 
-      {effectiveTab === 'detail' ? (
-        <div className={`space-y-3 ${fullHeight ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
-          {detailText && (
-            <div className={`rounded-lg p-3 ${status === 'error' ? 'bg-red-50 text-red-700' : 'bg-zinc-50 text-zinc-700'}`}>
-              <MarkdownWithThinking content={detailText} className="text-xs" />
-            </div>
-          )}
+      {/* Decision banner */}
+      {detailText && status === 'decision' && (
+        <div className="rounded-lg p-3 bg-amber-50 text-amber-800">
+          <MarkdownWithThinking content={detailText} className="text-xs" />
+        </div>
+      )}
 
-          {hasMultiWorker && (
-            <div className="flex flex-wrap gap-1.5 pb-0.5">
-              {normalizedWorkers.map((w, i) => (
-                <button
-                  key={i}
-                  onClick={() => setActiveWorker(i)}
-                  className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                    activeWorker === i
-                      ? 'bg-indigo-50 text-indigo-600 border border-indigo-100'
-                      : 'bg-zinc-50 text-zinc-500 border border-zinc-100 hover:bg-zinc-100'
-                  }`}
-                >
-                  Worker {i + 1} · {agents[i] ?? agents[0] ?? 'worker'}
-                  {w.filter((e) => e.type === 'tool_use').length > 0 && (
-                    <span className="ml-1 text-[10px] text-zinc-400">🔧 {w.filter((e) => e.type === 'tool_use').length}</span>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
+      {/* Worker tabs for multi-worker */}
+      {workerTabs}
 
-          {detailEvents.length > 0 ? (
-            <WorkerTimeline events={detailEvents} status={status} fullHeight={fullHeight} />
-          ) : (
-            <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-5 text-center text-xs text-zinc-400">
-              No detail events captured for this task.
-            </div>
-          )}
+      {/* Output (per-worker if multi, combined if single) */}
+      {workerOutput ? (
+        <div className={`text-xs whitespace-pre-wrap leading-relaxed overflow-y-auto rounded-lg p-3 ${
+          fullHeight && !hasToolEvents ? 'flex-1 min-h-0' : 'max-h-[55vh]'
+        } bg-zinc-50`}>
+          <MarkdownWithThinking content={workerOutput} />
         </div>
       ) : (
-        <div className={`space-y-2 ${fullHeight ? 'flex-1 min-h-0' : ''}`}>
-          {outputText ? (
-            <div className={`text-xs whitespace-pre-wrap leading-relaxed overflow-y-auto rounded-lg p-3 ${
-              fullHeight ? 'h-full min-h-0' : 'max-h-[55vh]'
-            } ${
-              status === 'error' ? 'bg-red-50 text-red-700' : 'bg-zinc-50'
-            }`}>
-              {status === 'error'
-                ? <pre className="font-mono whitespace-pre-wrap">{outputText}</pre>
-                : <MarkdownWithThinking content={outputText} />}
-            </div>
-          ) : (
-            <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-5 text-center text-xs text-zinc-400">
-              No output yet.
+        !detailText && (
+          <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-5 text-center text-xs text-zinc-400">
+            No output.
+          </div>
+        )
+      )}
+
+      {/* Collapsible execution timeline — only when there are actual tool calls */}
+      {workerHasToolEvents && (
+        <div className={`${fullHeight && timelineOpen ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
+          <button
+            onClick={() => setTimelineOpen((o) => !o)}
+            className="flex items-center gap-2 text-xs text-zinc-400 hover:text-zinc-600 transition-colors py-1"
+          >
+            <ChevronRightIcon className={`w-3 h-3 transition-transform ${timelineOpen ? 'rotate-90' : ''}`} />
+            <span className="font-medium">Execution Timeline</span>
+            <span className="text-[10px]">
+              ({selectedEvents.filter((e) => e.type === 'tool_use').length} tool calls)
+            </span>
+          </button>
+          {timelineOpen && (
+            <div className={`mt-2 ${fullHeight ? 'flex-1 min-h-0' : ''}`}>
+              <WorkerTimeline events={detailEvents} status={status} fullHeight={fullHeight} />
             </div>
           )}
         </div>

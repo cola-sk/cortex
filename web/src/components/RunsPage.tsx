@@ -158,8 +158,6 @@ function ToolEventList({ events }: { events: ToolEvent[] }) {
   );
 }
 
-type DetailTab = 'detail' | 'output';
-
 function TaskDetailPanel({ task, fullHeight = false }: { task: RunTaskRecord; fullHeight?: boolean }) {
   const status: DetailStatus = task.status === 'pending' ? 'running' : task.status;
   const output = task.output ?? '';
@@ -172,6 +170,7 @@ function TaskDetailPanel({ task, fullHeight = false }: { task: RunTaskRecord; fu
       status={status}
       detail={detail}
       output={output}
+      outputs={task.outputs}
       fullHeight={fullHeight}
       detailEventMode="tools-only"
     />

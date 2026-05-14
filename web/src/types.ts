@@ -105,6 +105,7 @@ export interface RunTaskRecord {
   finishedAt?: string;
   durationMs?: number;
   output?: string;
+  outputs?: string[];
   error?: string;
   /** Per-worker tool events (only for CLI agents using stream-json output) */
   toolEvents?: ToolEvent[][];

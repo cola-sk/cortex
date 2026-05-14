@@ -30,6 +30,7 @@ interface RunTaskRecord {
   finishedAt?: string;
   durationMs?: number;
   output?: string;
+  outputs?: string[];
   error?: string;
   toolEvents?: ToolEvent[][];
 }
@@ -494,7 +495,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         }
       },
       onTaskComplete: (taskId, taskName, result: TaskResult) => {
-        emit('task:complete', { taskId, taskName, output: result.output, error: result.error });
+        emit('task:complete', { taskId, taskName, output: result.output, outputs: result.outputs, error: result.error });
         const task = run!.tasks.find((t) => t.taskId === taskId);
         if (task) {
           task.status = result.error ? 'error' : 'done';
@@ -502,6 +503,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
           const started = taskStartTimes.get(taskId);
           if (started) task.durationMs = Date.now() - started;
           task.output = result.output;
+          if (result.outputs && result.outputs.length > 1) task.outputs = result.outputs;
           if (result.error) task.error = result.error;
           if (result.toolEvents) task.toolEvents = result.toolEvents;
           run!.toolCallCount = countToolCalls(run!.tasks);

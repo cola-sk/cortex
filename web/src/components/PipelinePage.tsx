@@ -136,6 +136,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Pipeline | null>(null);
   const [running, setRunning] = useState<Pipeline | null>(null);
+  const [runActive, setRunActive] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
   const showToast = (msg: string, ok = true) => {
@@ -195,7 +196,11 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
     } catch (e) { showToast((e as Error).message, false); }
   };
 
-  const handleRun = (p: Pipeline) => { setRunning(p); setView('run'); };
+  const handleRun = (p: Pipeline) => { setRunning(p); setRunActive(true); setView('run'); };
+
+  const handleRunBack = () => { setView('list'); };
+  const handleRunDone = () => { setRunActive(false); };
+  const handleDismissRun = () => { setRunning(null); setRunActive(false); };
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -211,18 +216,39 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
     );
   }
 
-  if (view === 'run' && running) {
-    return (
-      <RunView
-        pipeline={running}
-        onBack={() => { setView('list'); setRunning(null); }}
-      />
-    );
-  }
-
+  // RunView is kept mounted (hidden) to preserve SSE connection & state
   return (
+    <>
+      {running && (
+        <div className={view === 'run' ? '' : 'hidden'}>
+          <RunView
+            pipeline={running}
+            onBack={handleRunBack}
+            onDone={handleRunDone}
+          />
+        </div>
+      )}
+      {view === 'list' && (
     <div className="min-h-screen bg-zinc-50">
       <div className="mx-auto px-5 py-8">
+        {/* Running pipeline banner */}
+        {running && (
+          <div className="mb-6 flex items-center gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 cursor-pointer hover:border-indigo-300 transition-colors" onClick={() => setView('run')}>
+            <span className={`shrink-0 w-2 h-2 rounded-full ${runActive ? 'bg-indigo-500 animate-pulse' : 'bg-emerald-500'}`} />
+            <div className="flex-1 min-w-0">
+              <span className="text-xs font-semibold text-indigo-700">{running.name}</span>
+              <span className="ml-2 text-[10px] text-indigo-400">{runActive ? 'Running...' : 'Completed'}</span>
+            </div>
+            <span className="text-xs text-indigo-500 font-medium">View →</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleDismissRun(); }}
+              className="text-indigo-300 hover:text-indigo-500 transition-colors p-0.5"
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+            </button>
+          </div>
+        )}
+
         {/* Header */}
         <div className="mb-8 flex items-center justify-between">
           <div>
@@ -327,6 +353,8 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
         </div>
       )}
     </div>
+      )}
+    </>
   );
 }
 
@@ -973,6 +1001,7 @@ export interface LogEntry {
   label: string;
   detail?: string;
   output?: string;
+  outputs?: string[];                // per-worker outputs
   error?: string;
   streamContent?: string;
   agents?: string[];
@@ -991,7 +1020,7 @@ function appendTextChunk(base: string, chunk: string): string {
 }
 
 function RunView({
-  pipeline, onBack }: { pipeline: Pipeline; onBack: () => void }) {
+  pipeline, onBack, onDone }: { pipeline: Pipeline; onBack: () => void; onDone: () => void }) {
   const { t } = useTranslation();
   const [goal, setGoal] = useState('');
   const [started, setStarted] = useState(false);
@@ -1077,12 +1106,14 @@ function RunView({
         } else if (type === 'task:complete') {
           const error = d.error as string | undefined;
           const output = (d.output as string | undefined) ?? '';
+          const outputs = d.outputs as string[] | undefined;
           setLog((prev) => prev.map((e) => e.id === (d.taskId as string)
             ? {
               ...e,
               status: error ? 'error' as const : 'done' as const,
               error,
               output,
+              outputs,
               detail: error ? error : '✓ Completed',
               finishedAt: Date.now(),
             }
@@ -1107,14 +1138,17 @@ function RunView({
         } else if (type === 'complete') {
           setResults(d.results as Record<string, { output: string; error?: string }>);
           setDone(true);
+          onDone();
         } else if (type === 'error') {
           setFatalError(d.message as string);
           setDone(true);
+          onDone();
         }
       });
     } catch (e) {
       setFatalError((e as Error).message);
       setDone(true);
+      onDone();
     }
   };
 
@@ -1527,7 +1561,6 @@ function WorkerTimeline({ events, status }: { events: ToolEvent[]; status: LogEn
   );
 }
 
-type DetailTab = 'detail' | 'output';
 
 function getEntryWorkers(entry: LogEntry): ToolEvent[][] {
   return entry.workerEvents && entry.workerEvents.length > 1
@@ -1562,6 +1595,7 @@ function TaskDetailContent({ entry, fullHeight = false }: { entry: LogEntry; ful
       status={entry.status}
       detail={getEntryDetail(entry)}
       output={getEntryOutput(entry)}
+      outputs={entry.outputs}
       fullHeight={fullHeight}
       detailEventMode={detailEventMode}
     />
