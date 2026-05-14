@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import type { RunSummary, RunRecord, RunTaskRecord, ToolEvent } from '../types';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import type { RunSummary, RunRecord, RunTaskRecord, RunEventType, ToolEvent } from '../types';
 import { api } from '../api';
 import { useTranslation } from 'react-i18next';
 import { TaskDetailShared, MarkdownWithThinking, type DetailStatus } from './TaskDetailShared';
@@ -423,6 +423,7 @@ export function RunsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<RunRecord | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const sseRef = useRef<{ abort: () => void } | null>(null);
 
   const load = useCallback(async (silent = false) => {
     try {
@@ -440,16 +441,57 @@ export function RunsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Handle polling for the selected run and the overall list
-  useEffect(() => {
-    let interval: number;
+  // Apply SSE event to the selected run in-place
+  const applyRunEvent = useCallback((type: RunEventType, data: unknown) => {
+    const d = data as Record<string, unknown>;
+    setSelectedRun((prev) => {
+      if (!prev) return prev;
+      const run = { ...prev, tasks: prev.tasks.map((t) => ({ ...t })) };
 
+      if (type === 'task:start') {
+        const task = run.tasks.find((t) => t.taskId === d.taskId);
+        if (task) { task.status = 'running'; task.startedAt = new Date().toISOString(); }
+      } else if (type === 'task:tool_event') {
+        const task = run.tasks.find((t) => t.taskId === d.taskId);
+        const event = d.event as ToolEvent;
+        const workerIndex = (d.workerIndex as number) ?? 0;
+        if (task && event) {
+          if (!task.toolEvents) task.toolEvents = [];
+          if (!task.toolEvents[workerIndex]) task.toolEvents[workerIndex] = [];
+          task.toolEvents[workerIndex] = [...task.toolEvents[workerIndex], event];
+        }
+      } else if (type === 'task:complete') {
+        const task = run.tasks.find((t) => t.taskId === d.taskId);
+        if (task) {
+          task.status = d.error ? 'error' : 'done';
+          task.finishedAt = new Date().toISOString();
+          task.output = (d.output as string) ?? '';
+          task.outputs = d.outputs as string[] | undefined;
+          if (d.error) task.error = d.error as string;
+        }
+      } else if (type === 'complete') {
+        run.status = 'done';
+        run.finishedAt = new Date().toISOString();
+      } else if (type === 'error') {
+        run.status = 'error';
+        run.finishedAt = new Date().toISOString();
+      }
+
+      return run;
+    });
+
+    // Refresh list when run completes
+    if (type === 'complete' || type === 'error') {
+      load(true);
+    }
+  }, [load]);
+
+  // Polling for the run list + selected run refresh
+  useEffect(() => {
     const poll = async () => {
-      // Refresh the list silently
       await load(true);
-      
-      // If a run is selected, refresh its details
-      if (selectedId) {
+      // Only poll run detail if not subscribed via SSE
+      if (selectedId && !sseRef.current) {
         try {
           const detail = await api.getRun(selectedId);
           setSelectedRun(detail);
@@ -457,21 +499,35 @@ export function RunsPage() {
       }
     };
 
-    // Only poll constantly, or poll if something is running.
-    // For simplicity, we just poll every 2.5s since it's a local dev tool
-    interval = window.setInterval(poll, 2500);
-
+    const interval = window.setInterval(poll, 2500);
     return () => clearInterval(interval);
   }, [selectedId, load]);
 
+  // Load selected run detail + subscribe to SSE if running
   useEffect(() => {
     if (!selectedId) return;
+
+    // Clean up previous SSE subscription
+    sseRef.current?.abort();
+    sseRef.current = null;
+
     setLoadingDetail(true);
     api.getRun(selectedId)
-      .then(setSelectedRun)
+      .then((run) => {
+        setSelectedRun(run);
+        // If the run is still running, subscribe to SSE for live updates
+        if (run.status === 'running') {
+          sseRef.current = api.subscribeRun(selectedId, applyRunEvent);
+        }
+      })
       .catch(() => setSelectedRun(null))
       .finally(() => setLoadingDetail(false));
-  }, [selectedId]);
+
+    return () => {
+      sseRef.current?.abort();
+      sseRef.current = null;
+    };
+  }, [selectedId, applyRunEvent]);
 
   return (
     <div className="flex h-[calc(100vh-48px)] bg-zinc-50">

@@ -53,6 +53,38 @@ function generateRunId(): string {
   return `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
+// ---- Active runs tracking (in-memory for live access) ----
+const activeRuns = new Map<string, RunRecord>();
+// Per-run SSE subscribers for /api/runs/:id/stream
+const runSubscribers = new Map<string, Set<express.Response>>();
+
+function emitToRunSubscribers(runId: string, type: string, data: unknown): void {
+  const subs = runSubscribers.get(runId);
+  if (!subs || subs.size === 0) return;
+  const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const res of subs) {
+    try { res.write(payload); } catch { subs.delete(res); }
+  }
+}
+
+// Debounced save for in-progress events (avoid hammering disk)
+const savePending = new Map<string, ReturnType<typeof setTimeout>>();
+function debouncedSaveRun(run: RunRecord, delay = 2000): void {
+  const existing = savePending.get(run.id);
+  if (existing) clearTimeout(existing);
+  savePending.set(run.id, setTimeout(() => {
+    savePending.delete(run.id);
+    saveRun(run);
+  }, delay));
+}
+
+function flushAndSaveRun(run: RunRecord): void {
+  const existing = savePending.get(run.id);
+  if (existing) clearTimeout(existing);
+  savePending.delete(run.id);
+  saveRun(run);
+}
+
 function ensureRunsDir(): void {
   if (!fs.existsSync(RUNS_DIR)) fs.mkdirSync(RUNS_DIR, { recursive: true });
 }
@@ -219,10 +251,16 @@ app.get('/api/runs', (_req, res) => {
   }
 });
 
-// GET /api/runs/:id — full run detail
+// GET /api/runs/:id — full run detail (live in-memory if active, else from disk)
 app.get('/api/runs/:id', (req, res) => {
   try {
     const { id } = req.params;
+    // Return live in-memory data if this run is active
+    const active = activeRuns.get(id);
+    if (active) {
+      res.json(active);
+      return;
+    }
     const filePath = path.join(RUNS_DIR, `${id}.json`);
     if (!fs.existsSync(filePath)) {
       res.status(404).json({ error: `Run "${id}" not found` });
@@ -232,6 +270,33 @@ app.get('/api/runs/:id', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+// GET /api/runs/:id/stream — SSE stream for an active run (subscribe to live events)
+app.get('/api/runs/:id/stream', (req, res) => {
+  const { id } = req.params;
+  const active = activeRuns.get(id);
+  if (!active) {
+    // Run is not active — return 204 (no content to stream)
+    res.status(204).end();
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+
+  // Subscribe this response to future events
+  if (!runSubscribers.has(id)) runSubscribers.set(id, new Set());
+  runSubscribers.get(id)!.add(res);
+
+  res.on('close', () => {
+    runSubscribers.get(id)?.delete(res);
+  });
 });
 
 // GET /api/importers  — detect all local CLI tools
@@ -474,28 +539,33 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
       })),
     };
     saveRun(run);
+    activeRuns.set(runId, run);
 
     const taskStartTimes = new Map<string, number>();
 
     const runner = new Runner(agentMap, {
       onTaskStart: (taskId, taskName, agents) => {
         emit('task:start', { taskId, taskName, agents });
+        emitToRunSubscribers(runId, 'task:start', { taskId, taskName, agents });
         const task = run!.tasks.find((t) => t.taskId === taskId);
         if (task) { task.status = 'running'; task.startedAt = new Date().toISOString(); }
         taskStartTimes.set(taskId, Date.now());
-        saveRun(run!);
+        flushAndSaveRun(run!);
       },
       onTaskProgress: (taskId, workerIndex, event) => {
         emit('task:tool_event', { taskId, workerIndex, event });
+        emitToRunSubscribers(runId, 'task:tool_event', { taskId, workerIndex, event });
         const task = run!.tasks.find((t) => t.taskId === taskId);
         if (task) {
           if (!task.toolEvents) task.toolEvents = [];
           if (!task.toolEvents[workerIndex]) task.toolEvents[workerIndex] = [];
           task.toolEvents[workerIndex].push(event);
         }
+        debouncedSaveRun(run!);
       },
       onTaskComplete: (taskId, taskName, result: TaskResult) => {
         emit('task:complete', { taskId, taskName, output: result.output, outputs: result.outputs, error: result.error });
+        emitToRunSubscribers(runId, 'task:complete', { taskId, taskName, output: result.output, outputs: result.outputs, error: result.error });
         const task = run!.tasks.find((t) => t.taskId === taskId);
         if (task) {
           task.status = result.error ? 'error' : 'done';
@@ -507,12 +577,17 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
           if (result.error) task.error = result.error;
           if (result.toolEvents) task.toolEvents = result.toolEvents;
           run!.toolCallCount = countToolCalls(run!.tasks);
-          saveRun(run!);
+          flushAndSaveRun(run!);
         }
       },
-      onDecisionStart: (decisionId, evaluates) => emit('decision:start', { decisionId, evaluates }),
-      onDecisionComplete: (decisionId, decision, retrying) =>
-        emit('decision:complete', { decisionId, action: decision.action, reason: decision.reason, retrying }),
+      onDecisionStart: (decisionId, evaluates) => {
+        emit('decision:start', { decisionId, evaluates });
+        emitToRunSubscribers(runId, 'decision:start', { decisionId, evaluates });
+      },
+      onDecisionComplete: (decisionId, decision, retrying) => {
+        emit('decision:complete', { decisionId, action: decision.action, reason: decision.reason, retrying });
+        emitToRunSubscribers(runId, 'decision:complete', { decisionId, action: decision.action, reason: decision.reason, retrying });
+      },
     });
 
     const results = await runner.run(plan, abortController.signal);
@@ -523,7 +598,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
       run.finishedAt = new Date().toISOString();
       run.durationMs = Date.now() - new Date(runStartedAt).getTime();
       run.toolCallCount = countToolCalls(run.tasks);
-      saveRun(run);
+      flushAndSaveRun(run);
 
       const summary: Record<string, { output: string; error?: string }> = {};
       for (const [key, r] of results) {
@@ -532,19 +607,30 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         }
       }
       emit('complete', { taskCount: plan.tasks.length, results: summary, runId });
+      emitToRunSubscribers(runId, 'complete', { taskCount: plan.tasks.length, results: summary, runId });
     }
   } catch (err) {
     if (!aborted) {
       emit('error', { message: (err as Error).message });
+      if (run) emitToRunSubscribers(run.id, 'error', { message: (err as Error).message });
       if (run && run.status === 'running') {
         run.status = 'error';
         run.finishedAt = new Date().toISOString();
         run.durationMs = Date.now() - new Date(run.startedAt).getTime();
-        saveRun(run);
+        flushAndSaveRun(run);
       }
     }
   } finally {
     process.off('SIGTERM', sigtermHandler);
+    if (run) {
+      activeRuns.delete(run.id);
+      // Close all run subscribers
+      const subs = runSubscribers.get(run.id);
+      if (subs) {
+        for (const sub of subs) { try { sub.end(); } catch {} }
+        runSubscribers.delete(run.id);
+      }
+    }
   }
 
   res.end();

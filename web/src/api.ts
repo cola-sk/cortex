@@ -122,5 +122,62 @@ export const api = {
       }
     }
   },
+
+  /**
+   * Subscribe to a running run's SSE stream. Returns null if the run is not active.
+   * The caller gets an abort function to stop listening.
+   */
+  subscribeRun(
+    runId: string,
+    onEvent: (type: RunEventType, data: unknown) => void,
+  ): { abort: () => void } | null {
+    const controller = new AbortController();
+    let active = true;
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/stream`, {
+          signal: controller.signal,
+        });
+        if (!res.ok || res.status === 204 || !res.body) return;
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (active) {
+          const { done, value } = await reader.read();
+          if (value) {
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop() ?? '';
+
+            for (const part of parts) {
+              if (!part.trim()) continue;
+              let eventType: RunEventType = 'task:start';
+              let dataStr = '';
+              for (const line of part.split('\n')) {
+                if (line.startsWith('event: ')) eventType = line.slice(7) as RunEventType;
+                else if (line.startsWith('data: ')) dataStr = line.slice(6);
+              }
+              if (dataStr) {
+                try { onEvent(eventType, JSON.parse(dataStr)); } catch { /* ignore */ }
+              }
+            }
+          }
+          if (done) break;
+        }
+      } catch {
+        // aborted or network error — silent
+      }
+    })();
+
+    return {
+      abort: () => {
+        active = false;
+        controller.abort();
+      },
+    };
+  },
 };
 
