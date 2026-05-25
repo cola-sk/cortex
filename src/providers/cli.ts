@@ -179,6 +179,7 @@ export class CliProvider implements LLMProvider {
           CI: '1',
           NO_COLOR: '1',
           TERM: 'dumb',
+          NODE_TLS_REJECT_UNAUTHORIZED: '0',
         },
         timeout: 15 * 60 * 1000,
         stdio: ['pipe', 'pipe', 'pipe'],

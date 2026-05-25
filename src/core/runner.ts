@@ -1,18 +1,34 @@
 import { execSync } from 'child_process';
 import path from 'path';
+import fs from 'fs';
 import type { Agent } from './agent.js';
 import type { Plan, Task, TaskResult, DecisionResult, ReviewAction, TaskRound } from './plan.js';
 import { buildMessageHistory, buildRevisionContext, compressRounds } from './context.js';
 
 const DECISION_PREFIX = '__decision_';
 
-function resolveWorkspacePath(workspace?: string): string | undefined {
-  if (!workspace?.trim()) return undefined;
-  const trimmed = workspace.trim();
-  if (trimmed.startsWith('~')) {
-    return path.join(process.env.HOME ?? '', trimmed.slice(1));
+function resolveWorkspacePath(workspace?: string): string {
+  const home = process.env.HOME ?? '';
+  let targetPath: string;
+
+  if (!workspace?.trim()) {
+    // Default to a safe user-home workspace subdirectory to protect the cortex source code
+    targetPath = path.join(home, '.cortex', 'workspace');
+  } else {
+    const trimmed = workspace.trim();
+    if (trimmed.startsWith('~')) {
+      targetPath = path.join(home, trimmed.slice(1));
+    } else {
+      targetPath = path.resolve(trimmed);
+    }
   }
-  return path.resolve(trimmed);
+
+  // Ensure the safe directory exists
+  if (!fs.existsSync(targetPath)) {
+    fs.mkdirSync(targetPath, { recursive: true });
+  }
+
+  return targetPath;
 }
 
 /**
@@ -48,7 +64,7 @@ export class Runner {
   private agents: Map<string, Agent>;
   private callbacks: RunnerCallbacks;
   private silent: boolean;
-  private workspace?: string;
+  private workspace: string;
 
   constructor(agents: Map<string, Agent>, callbacks: RunnerCallbacks = {}, silent = false, workspace?: string) {
     this.agents = agents;
@@ -189,6 +205,24 @@ export class Runner {
               retryCount.set(id, (retryCount.get(id) ?? 0) + 1);
               const orig = plan.tasks.find((t) => t.id === id);
               if (orig) {
+                // Save current result to taskRounds before deleting it to preserve retry context
+                const prevResult = results.get(id);
+                if (prevResult) {
+                  const rounds = taskRounds.get(id) ?? [];
+                  const newRound: TaskRound = {
+                    round: rounds.length + 1,
+                    input: orig.input,
+                    output: prevResult.output,
+                    finishedAt: new Date().toISOString(),
+                    review: {
+                      action: 'revise',
+                      comment: `[自动决策点 ${dp.id} 触发重试]: 理由是 "${decision.reason}"`,
+                      reviewedAt: new Date().toISOString(),
+                    },
+                  };
+                  taskRounds.set(id, [...rounds, newRound]);
+                }
+
                 completed.delete(id);
                 results.delete(id);
                 pending.set(id, orig);

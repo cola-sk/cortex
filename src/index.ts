@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import path from 'path';
 import { loadConfig } from './config/loader.js';
 import { Agent } from './core/agent.js';
