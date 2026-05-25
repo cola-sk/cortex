@@ -82,6 +82,7 @@ export class CliProvider implements LLMProvider {
     const toolEvents: ToolEvent[] = [];
     let idx = 0;
     const textParts: string[] = [];
+    const geminiTextParts: string[] = [];
     let resultOutput = '';
     let hasEvents = false;
 
@@ -106,6 +107,19 @@ export class CliProvider implements LLMProvider {
               });
             }
           }
+        } else if (ev.type === 'message' && ev.role === 'assistant' && typeof ev.content === 'string') {
+          hasEvents = true;
+          toolEvents.push({ index: idx++, type: 'text', content: ev.content });
+          geminiTextParts.push(ev.content);
+        } else if (ev.type === 'tool_use') {
+          hasEvents = true;
+          toolEvents.push({
+            index: idx++,
+            type: 'tool_use',
+            name: ev.tool_name as string,
+            input: (ev.parameters ?? {}) as Record<string, unknown>,
+            toolUseId: ev.tool_id as string,
+          });
         } else if (ev.type === 'tool') {
           hasEvents = true;
           const content = ev.content as Array<{ type: string; text?: string }> | undefined;
@@ -117,6 +131,15 @@ export class CliProvider implements LLMProvider {
             toolUseId: ev.tool_use_id as string,
             isError: ev.is_error as boolean | undefined,
           });
+        } else if (ev.type === 'tool_result') {
+          hasEvents = true;
+          toolEvents.push({
+            index: idx++,
+            type: 'tool_result',
+            content: ev.output as string,
+            toolUseId: ev.tool_id as string,
+            isError: ev.status !== 'success',
+          });
         } else if (ev.type === 'result') {
           hasEvents = true;
           if (ev.result) resultOutput = ev.result as string;
@@ -126,8 +149,8 @@ export class CliProvider implements LLMProvider {
 
     if (!hasEvents) return null;
     // Prefer the `result` event output (Claude CLI's final summary).
-    // Fall back to concatenated text blocks from assistant events.
-    const finalOutput = resultOutput || textParts.join('\n\n') || raw;
+    // Fall back to concatenated text blocks from assistant/message events.
+    const finalOutput = resultOutput || textParts.join('\n\n') || geminiTextParts.join('') || raw;
     return { output: finalOutput, toolEvents };
   }
 
@@ -161,6 +184,8 @@ export class CliProvider implements LLMProvider {
           resolvedArgs.push('--system-prompt', systemContent);
         }
         resolvedArgs.push('-p', userContent, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions');
+      } else if (cmd === 'gemini') {
+        resolvedArgs.push('-p', effectivePrompt, '--output-format', 'stream-json', '--yolo');
       } else if (cmd === 'codex') {
         // Codex CLI: use exec subcommand with positional prompt
         resolvedArgs.push('exec', effectivePrompt);
@@ -231,6 +256,20 @@ export class CliProvider implements LLMProvider {
                       handledAsJson = true;
                     }
                   }
+                } else if (ev.type === 'message' && ev.role === 'assistant' && typeof ev.content === 'string') {
+                  streamEvent = { index: streamIdx++, type: 'text', content: ev.content };
+                  options.onStreamEvent(streamEvent);
+                  handledAsJson = true;
+                } else if (ev.type === 'tool_use') {
+                  streamEvent = {
+                    index: streamIdx++,
+                    type: 'tool_use',
+                    name: ev.tool_name as string,
+                    input: (ev.parameters ?? {}) as Record<string, unknown>,
+                    toolUseId: ev.tool_id as string,
+                  };
+                  options.onStreamEvent(streamEvent);
+                  handledAsJson = true;
                 } else if (ev.type === 'tool') {
                   const content = ev.content as Array<{ type: string; text?: string }> | undefined;
                   const text = content?.map((c) => c.text ?? '').join('') ?? String(ev.content ?? '');
@@ -240,6 +279,16 @@ export class CliProvider implements LLMProvider {
                     content: text,
                     toolUseId: ev.tool_use_id as string,
                     isError: ev.is_error as boolean | undefined,
+                  };
+                  options.onStreamEvent(streamEvent);
+                  handledAsJson = true;
+                } else if (ev.type === 'tool_result') {
+                  streamEvent = {
+                    index: streamIdx++,
+                    type: 'tool_result',
+                    content: ev.output as string,
+                    toolUseId: ev.tool_id as string,
+                    isError: ev.status !== 'success',
                   };
                   options.onStreamEvent(streamEvent);
                   handledAsJson = true;
