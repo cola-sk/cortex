@@ -139,7 +139,7 @@ export function MarkdownWithThinking({
   markdownClassName?: string;
 }) {
   const sections = splitThinkingSections(content);
-  const proseClass = `prose prose-sm max-w-none text-zinc-800 leading-relaxed
+  const proseClass = `prose prose-sm max-w-none text-zinc-800 leading-relaxed font-sans
       prose-headings:text-zinc-900 prose-headings:font-semibold prose-headings:tracking-tight
       prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5
       prose-code:bg-zinc-100 prose-code:text-zinc-850 prose-code:rounded prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[11.5px] prose-code:font-mono-custom prose-code:border prose-code:border-zinc-200/60
