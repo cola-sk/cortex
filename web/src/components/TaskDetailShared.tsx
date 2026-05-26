@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import 'highlight.js/styles/github-dark.css';
+import 'highlight.js/styles/atom-one-dark.css';
 import type { ToolEvent } from '../types';
 
 export type DetailStatus = 'running' | 'done' | 'error' | 'decision' | 'interrupted';
@@ -84,70 +84,24 @@ function formatJsonLikeText(text: string): string | null {
   return null;
 }
 
-function guessLanguageFromCodeText(text: string): string {
-  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
-  if (lines.length === 0) return 'text';
-
-  const commandLineCount = lines.filter((line) =>
-    /^(?:\$|#)?\s*(npm|pnpm|yarn|bun|node|npx|git|ls|cd|cat|echo|curl|wget|python|pip|go|cargo|docker|kubectl|helm|make|cmake|uv|pytest|java|javac|mvn|gradle|apt|brew)\b/i.test(line)
-  ).length;
-  if (commandLineCount >= Math.max(2, Math.ceil(lines.length * 0.5))) return 'bash';
-
-  const htmlLikeCount = lines.filter((line) => /<\/?[a-z][\w-]*(\s[^>]*)?>/i.test(line)).length;
-  if (htmlLikeCount >= Math.max(2, Math.ceil(lines.length * 0.4))) return 'html';
-
-  const pythonLikeCount = lines.filter((line) =>
-    /^def\s+\w+\(|^class\s+\w+|^from\s+\w+\s+import|^import\s+\w+|:\s*$/.test(line)
-  ).length;
-  if (pythonLikeCount >= Math.max(2, Math.ceil(lines.length * 0.35))) return 'python';
-
-  const tsLikeCount = lines.filter((line) =>
-    /\binterface\s+\w+|\btype\s+\w+\s*=|:\s*(string|number|boolean|unknown|any|Record<|Array<|Promise<)/.test(line)
-  ).length;
-  if (tsLikeCount >= Math.max(1, Math.ceil(lines.length * 0.25))) return 'typescript';
-
-  const jsLikeCount = lines.filter((line) =>
-    /\b(const|let|var|function|class|import|export|return)\b|=>|[{};]/.test(line)
-  ).length;
-  if (jsLikeCount >= Math.max(2, Math.ceil(lines.length * 0.35))) return 'javascript';
-
-  const yamlLikeCount = lines.filter((line) => /^[\w"-]+\s*:\s*.+$/.test(line) && !/[{};]/.test(line)).length;
-  if (yamlLikeCount >= Math.max(2, Math.ceil(lines.length * 0.6))) return 'yaml';
-
-  return 'text';
-}
-
-function formatCodeLikeText(text: string): string | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  if (trimmed.includes('```')) return null;
-
-  const lines = trimmed.split('\n');
-  const nonEmptyLines = lines.map((line) => line.trim()).filter(Boolean);
-  if (nonEmptyLines.length < 2) return null;
-
-  const codeIndicatorCount = nonEmptyLines.filter((line) =>
-    /[{};]/.test(line) ||
-    /\b(const|let|var|function|class|import|export|return|if|else|for|while|switch|case|def|from|SELECT|INSERT|UPDATE|DELETE)\b/.test(line) ||
-    /^<\/?[a-z][\w-]*(\s[^>]*)?>/i.test(line) ||
-    /^(?:\$|#)?\s*(npm|pnpm|yarn|bun|node|npx|git|ls|cd|cat|echo|curl|wget|python|pip|go|cargo|docker|kubectl|helm|make|cmake|uv|pytest|java|javac|mvn|gradle|apt|brew)\b/i.test(line)
-  ).length;
-
-  const sentenceLikeCount = nonEmptyLines.filter((line) =>
-    /[.!?。！？]$/.test(line) && line.split(/\s+/).length >= 6
-  ).length;
-
-  if (codeIndicatorCount < Math.max(2, Math.ceil(nonEmptyLines.length * 0.45))) return null;
-  if (sentenceLikeCount > Math.ceil(nonEmptyLines.length * 0.4)) return null;
-
-  const lang = guessLanguageFromCodeText(trimmed);
-  return `\`\`\`${lang}\n${trimmed}\n\`\`\``;
-}
-
 function prepareDisplayContent(input: string): string {
   const normalized = normalizeMixedContent(input);
   if (/<(thinking|think)>/i.test(normalized)) return normalized;
-  return formatJsonLikeText(normalized) ?? formatCodeLikeText(normalized) ?? normalized;
+
+  const trimmed = normalized.trim();
+  // High performance: only try JSON parsing if the content is small and looks like JSON.
+  if (trimmed.length < 50000 && ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']')))) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        return `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return normalized;
 }
 
 function splitThinkingSections(input: string): ContentSection[] {
@@ -187,9 +141,9 @@ export function MarkdownWithThinking({
   const sections = splitThinkingSections(content);
   const proseClass = `prose prose-sm max-w-none text-zinc-800 leading-relaxed
       prose-headings:text-zinc-900 prose-headings:font-semibold prose-headings:tracking-tight
-      prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5
-      prose-code:bg-zinc-100 prose-code:text-zinc-800 prose-code:rounded prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[12px]
-      prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:rounded-md prose-pre:text-[12px] prose-pre:overflow-x-auto prose-pre:!px-1 prose-pre:!py-1 prose-pre:!my-0 prose-pre:!mx-0 prose-pre:shadow-sm
+      prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5
+      prose-code:bg-zinc-100 prose-code:text-zinc-850 prose-code:rounded prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[11.5px] prose-code:font-mono-custom prose-code:border prose-code:border-zinc-200/60
+      prose-pre:bg-[#282c34] prose-pre:text-zinc-100 prose-pre:rounded-lg prose-pre:text-[12.5px] prose-pre:overflow-x-auto prose-pre:!p-4 prose-pre:!my-3 prose-pre:!mx-0 prose-pre:shadow-md prose-pre:border prose-pre:border-zinc-800/80 prose-pre:font-mono-custom
       prose-a:text-indigo-600 prose-blockquote:border-l-4 prose-blockquote:border-l-indigo-300 prose-blockquote:text-zinc-500 prose-blockquote:pl-4 prose-blockquote:italic
       prose-table:text-xs prose-th:bg-zinc-50 prose-td:py-1.5 prose-th:py-2 prose-td:px-3 prose-th:px-3`;
 
