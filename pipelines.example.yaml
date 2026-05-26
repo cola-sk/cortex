@@ -175,3 +175,44 @@ pipelines:
           - implement
         gitDiff: true           # Injects `git diff HEAD` from workspace
     decisions: []
+
+  # ── Business Dev-Review-Optimize Chain ──────────────────────────────────────
+  dev_review_optimize_pipeline:
+    name: 业务开发-评审-优化工作流
+    description: "开发项目标准流：1.开发 ➜ 2.增量代码评审与方案输出 ➜ 3.执行优化方案"
+    workspace: /path/to/your/project
+    tasks:
+      - id: develop
+        name: "业务需求开发"
+        agent: coder
+        input: |
+          请在当前项目中开发以下业务需求：
+          [请在此处输入您的具体需求...]
+        dependsOn: []
+        requiresReview: true
+        gitDiff: false
+
+      - id: review
+        name: "代码评审与重构方案"
+        agent: reviewer
+        input: |
+          请对上一个步骤 'develop' 提交的代码进行全方位的评审（请阅读下方的 Git Diff）。
+          分析其代码质量、安全隐患和性能瓶颈。
+          最终请输出一份清晰的重构与优化方案（包括安全加固和性能优化清单），供下一步骤直接参考执行。
+        dependsOn:
+          - develop
+        gitDiff: true
+        requiresReview: false
+
+      - id: optimize
+        name: "执行评审优化方案"
+        agent: coder
+        input: |
+          请认真阅读上一步 'review' 输出的“优化方案列表”以及“重构建议”。
+          对照工作区内的实际代码，把所有的重构与安全加固建议全部实施到项目中。
+          修改完成后，请再次运行测试套件，确保优化没有破坏原有的业务逻辑。
+        dependsOn:
+          - review
+        requiresReview: true
+        gitDiff: false
+    decisions: []
