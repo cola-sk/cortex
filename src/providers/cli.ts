@@ -470,7 +470,17 @@ export class CliProvider implements LLMProvider {
           return;
         }
         if (code !== 0) {
-          const errText = stripAnsi(Buffer.concat(stderr).toString().trim()) || `exit code ${code}`;
+          let errText = stripAnsi(Buffer.concat(stderr).toString().trim()) || `exit code ${code}`;
+          
+          // Clean up progress/informational logs from stderr to reveal the actual error
+          const lines = errText.split('\n');
+          const filteredLines = lines.filter(line => {
+            const trimmed = line.trim();
+            return !trimmed.startsWith('Reading additional input from stdin') &&
+                   !trimmed.startsWith('Thinking');
+          });
+          errText = filteredLines.join('\n').trim() || `exit code ${code}`;
+          
           this._lastToolEvents = [];
           safeReject(new Error(`CLI "${this.command}" exited with error: ${errText}`));
           return;

@@ -549,8 +549,9 @@ app.post('/api/runs/:runId/review', (req, res) => {
     const selectedAgentId = typeof body.agentId === 'string' && body.agentId.trim() ? body.agentId.trim() : undefined;
     if (selectedAgentId) {
       const cfg = readConfig();
-      if (!cfg.agents[selectedAgentId]) {
-        res.status(400).json({ error: `Unknown agent "${selectedAgentId}"` });
+      const targetAgent = cfg.agents[selectedAgentId];
+      if (!targetAgent || !targetAgent.role) {
+        res.status(400).json({ error: `Agent "${selectedAgentId}" must be a configured role agent` });
         return;
       }
     }
@@ -637,9 +638,12 @@ app.post('/api/runs/:runId/continue', (req, res) => {
     }
 
     const agentsCfg = readConfig();
-    if (agentId && !agentsCfg.agents[agentId]) {
-      res.status(400).json({ error: `Unknown agent "${agentId}"` });
-      return;
+    if (agentId) {
+      const targetAgent = agentsCfg.agents[agentId];
+      if (!targetAgent || !targetAgent.role) {
+        res.status(400).json({ error: `Agent "${agentId}" must be a configured role agent` });
+        return;
+      }
     }
 
     const agentMap = new Map<string, Agent>();

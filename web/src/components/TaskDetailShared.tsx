@@ -133,16 +133,24 @@ export function MarkdownWithThinking({
   content,
   className,
   markdownClassName,
+  dark = false,
 }: {
   content: string;
   className?: string;
   markdownClassName?: string;
+  dark?: boolean;
 }) {
   const sections = splitThinkingSections(content);
-  const proseClass = `prose prose-sm max-w-none text-zinc-800 leading-relaxed font-sans
-      prose-headings:text-zinc-900 prose-headings:font-semibold prose-headings:tracking-tight
+  const textClass = dark ? 'text-zinc-300 prose-invert' : 'text-zinc-800';
+  const headingsClass = dark ? 'prose-headings:text-zinc-100' : 'prose-headings:text-zinc-900';
+  const inlineCodeClass = dark 
+    ? 'prose-code:bg-zinc-800/80 prose-code:text-zinc-200 prose-code:border-zinc-700/40' 
+    : 'prose-code:bg-zinc-100 prose-code:text-zinc-850 prose-code:rounded prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[11.5px] prose-code:font-mono-custom prose-code:border prose-code:border-zinc-200/60';
+
+  const proseClass = `prose prose-sm max-w-none ${textClass} leading-relaxed font-sans
+      ${headingsClass} prose-headings:font-semibold prose-headings:tracking-tight
       prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5
-      prose-code:bg-zinc-100 prose-code:text-zinc-850 prose-code:rounded prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[11.5px] prose-code:font-mono-custom prose-code:border prose-code:border-zinc-200/60
+      ${inlineCodeClass}
       prose-pre:bg-[#282c34] prose-pre:text-zinc-100 prose-pre:rounded-lg prose-pre:text-[12.5px] prose-pre:overflow-x-auto prose-pre:!p-4 prose-pre:!my-3 prose-pre:!mx-0 prose-pre:shadow-md prose-pre:border prose-pre:border-zinc-800/80 prose-pre:font-mono-custom
       prose-a:text-indigo-600 prose-blockquote:border-l-4 prose-blockquote:border-l-indigo-300 prose-blockquote:text-zinc-500 prose-blockquote:pl-4 prose-blockquote:italic
       prose-table:text-xs prose-th:bg-zinc-50 prose-td:py-1.5 prose-th:py-2 prose-td:px-3 prose-th:px-3`;
@@ -473,7 +481,7 @@ function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }
             <div>
               <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider mb-1">Input</p>
               <div className="rounded-xl border border-zinc-200/50 bg-zinc-950 p-1 overflow-x-auto max-h-64">
-                <MarkdownWithThinking content={inputMarkdown} />
+                <MarkdownWithThinking content={inputMarkdown} dark />
               </div>
             </div>
             {item.result && (
@@ -484,7 +492,7 @@ function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }
                 <div className={`rounded-xl border max-h-96 overflow-x-auto p-1 bg-zinc-950 ${
                   item.result.isError ? 'border-red-200/50 bg-red-950/20' : 'border-zinc-200/50 bg-zinc-950'
                 }`}>
-                  <MarkdownWithThinking content={outputMarkdown} />
+                  <MarkdownWithThinking content={outputMarkdown} dark />
                 </div>
               </div>
             )}
@@ -538,7 +546,7 @@ function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
               </div>
               {hasDiffBlocks && !hasTextBlocks ? (
                 <div className="px-2 py-2 max-h-[70vh] overflow-auto bg-zinc-950">
-                  <MarkdownWithThinking content={`\`\`\`diff\n${normalized}\n\`\`\``} className="text-xs" />
+                  <MarkdownWithThinking content={`\`\`\`diff\n${normalized}\n\`\`\``} className="text-xs" dark />
                 </div>
               ) : hasDiffBlocks ? (
                 <div className="px-2 py-2 max-h-[70vh] overflow-auto space-y-2 bg-zinc-50">
@@ -549,7 +557,7 @@ function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
                       </div>
                       {block.kind === 'diff' ? (
                         <div className="px-2 py-2 bg-zinc-950 overflow-auto">
-                          <MarkdownWithThinking content={`\`\`\`diff\n${block.content}\n\`\`\``} className="text-xs" />
+                          <MarkdownWithThinking content={`\`\`\`diff\n${block.content}\n\`\`\``} className="text-xs" dark />
                         </div>
                       ) : (
                         <pre className="px-3 py-2 text-[12px] leading-5 text-zinc-700 whitespace-pre-wrap break-words font-mono overflow-auto">

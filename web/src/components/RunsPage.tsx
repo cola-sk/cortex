@@ -456,7 +456,7 @@ function TaskRoundHistory({ task }: { task: RunTaskRecord }) {
                       <span className="font-mono">{round.output.length} characters</span>
                     </p>
                     <div className="text-[11px] font-mono leading-relaxed text-zinc-200/95 max-w-none">
-                      <Markdown content={round.output} />
+                      <Markdown content={round.output} dark />
                     </div>
                   </div>
                 )}
@@ -655,8 +655,8 @@ function splitThinkingSections(input: string): ContentSection[] {
   return sections;
 }
 
-function Markdown({ content, className }: { content: string; className?: string }) {
-  return <MarkdownWithThinking content={content} className={className} />;
+function Markdown({ content, className, dark }: { content: string; className?: string; dark?: boolean }) {
+  return <MarkdownWithThinking content={content} className={className} dark={dark} />;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -769,7 +769,7 @@ function RunDetailReviewPanel({ runId, run, task, agents, onSubmitted }: {
             className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
           >
             <option value="">Use task default</option>
-            {agents.map((a) => (
+            {agents.filter((a) => !!a.role).map((a) => (
               <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
             ))}
           </select>
@@ -890,7 +890,7 @@ function RunDetailContinuePanel({
             className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
           >
             <option value="">Use task default</option>
-            {agents.map((a) => (
+            {agents.filter((a) => !!a.role).map((a) => (
               <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
             ))}
           </select>
