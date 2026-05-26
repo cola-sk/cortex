@@ -8,10 +8,15 @@ import type { ToolEvent } from '../types';
 export type DetailStatus = 'running' | 'done' | 'error' | 'decision' | 'interrupted';
 
 type ContentSection = { kind: 'markdown' | 'thinking'; content: string };
+type TextBlockKind = 'diff' | 'text';
+type TextBlock = { kind: TextBlockKind; content: string };
+type TextEventKind = 'agent' | 'exec' | 'command_result' | 'patch' | 'diff' | 'runtime';
 
 type TimelineItem =
   | { type: 'tool'; use: ToolEvent; result?: ToolEvent; index: number }
   | { type: 'text'; content: string; index: number };
+
+const AUTO_SCROLL_BOTTOM_GAP = 24;
 
 export interface TaskDetailSharedProps {
   workers: ToolEvent[][];
@@ -246,9 +251,148 @@ function looksLikeStandaloneTextBlock(content: string): boolean {
   return /^(Reading additional input from stdin|Goal:|Human feedback|Previous revision history|Based on the above feedback|===|\[SECURITY POLICY)/i.test(trimmed);
 }
 
+function getTextEventMeta(content: string): {
+  kind: TextEventKind;
+  label: string;
+  badgeClass: string;
+  preview: string;
+  secondary: string;
+} {
+  const normalized = normalizeMixedContent(content).trim();
+  const lines = normalized.split('\n').map((line) => line.trim()).filter(Boolean);
+  const first = lines[0] ?? '';
+  const second = lines[1] ?? '';
+  const fallbackPreview = first.slice(0, 120);
+  const fallbackSecondary = second.slice(0, 140);
+
+  if (/^exec$/i.test(first) || /^exec\b/i.test(first)) {
+    return {
+      kind: 'exec',
+      label: 'Exec',
+      badgeClass: 'bg-blue-100 text-blue-700',
+      preview: (second || fallbackPreview || 'exec').slice(0, 120),
+      secondary: lines.slice(2).join(' ').slice(0, 140),
+    };
+  }
+
+  if (/^(succeeded|failed) in\s/i.test(first)) {
+    return {
+      kind: 'command_result',
+      label: 'Result',
+      badgeClass: 'bg-emerald-100 text-emerald-700',
+      preview: first.slice(0, 120),
+      secondary: fallbackSecondary,
+    };
+  }
+
+  if (/^apply patch$/i.test(first) || /^patch:/i.test(first)) {
+    return {
+      kind: 'patch',
+      label: 'Patch',
+      badgeClass: 'bg-amber-100 text-amber-700',
+      preview: first.slice(0, 120),
+      secondary: fallbackSecondary,
+    };
+  }
+
+  if (/^diff --git\s/.test(first)) {
+    return {
+      kind: 'diff',
+      label: 'Diff',
+      badgeClass: 'bg-zinc-800 text-white',
+      preview: first.slice(0, 120),
+      secondary: fallbackSecondary,
+    };
+  }
+
+  if (/^Reading additional input from stdin/i.test(first) || /^OpenAI Codex v/i.test(first)) {
+    return {
+      kind: 'runtime',
+      label: 'Runtime',
+      badgeClass: 'bg-zinc-100 text-zinc-600',
+      preview: first.slice(0, 120),
+      secondary: fallbackSecondary,
+    };
+  }
+
+  return {
+    kind: 'agent',
+    label: 'Agent',
+    badgeClass: 'bg-indigo-100 text-indigo-700',
+    preview: fallbackPreview,
+    secondary: fallbackSecondary,
+  };
+}
+
+function isDiffHeaderLine(line: string): boolean {
+  return (
+    /^diff --git\s/.test(line) ||
+    /^index\s+[0-9a-f]{7,}\.\.[0-9a-f]{7,}(?:\s+\d+)?$/i.test(line) ||
+    /^@@\s/.test(line) ||
+    /^---\s(?:a\/|b\/|\/dev\/null|\S)/.test(line) ||
+    /^\+\+\+\s(?:a\/|b\/|\/dev\/null|\S)/.test(line) ||
+    /^Binary files .+ differ$/.test(line)
+  );
+}
+
+function isDiffPayloadLine(line: string): boolean {
+  return (
+    /^[ +-]/.test(line) ||
+    /^\\ No newline at end of file$/.test(line)
+  );
+}
+
+function splitTextBlocks(content: string): TextBlock[] {
+  if (!content.trim()) return [];
+
+  const lines = content.split('\n');
+  const blocks: Array<{ kind: TextBlockKind; lines: string[] }> = [];
+  let inDiffBlock = false;
+  let hasStrongDiffMarker = false;
+
+  const pushLine = (kind: TextBlockKind, line: string) => {
+    const last = blocks[blocks.length - 1];
+    if (last && last.kind === kind) {
+      last.lines.push(line);
+      return;
+    }
+    blocks.push({ kind, lines: [line] });
+  };
+
+  for (const line of lines) {
+    const strongDiffLine = isDiffHeaderLine(line);
+    if (strongDiffLine) {
+      inDiffBlock = true;
+      hasStrongDiffMarker = true;
+      pushLine('diff', line);
+      continue;
+    }
+
+    if (inDiffBlock) {
+      if (isDiffPayloadLine(line) || !line.trim()) {
+        pushLine('diff', line);
+        continue;
+      }
+      inDiffBlock = false;
+    }
+
+    pushLine('text', line);
+  }
+
+  if (!hasStrongDiffMarker) {
+    return [{ kind: 'text', content }];
+  }
+
+  return blocks
+    .map((block) => ({
+      kind: block.kind,
+      content: block.lines.join('\n').replace(/^\n+|\n+$/g, ''),
+    }))
+    .filter((block) => block.content.trim());
+}
+
 function looksLikeDiffContent(content: string): boolean {
-  if (!content.trim()) return false;
-  return /(^diff --git\s|^index\s+[0-9a-f]+\.\.[0-9a-f]+|^@@\s|^---\s|^\+\+\+\s)/m.test(content);
+  return splitTextBlocks(content).some((block) => block.kind === 'diff');
 }
 
 function shouldMergeTextEvents(previous: string, incoming: string): boolean {
@@ -398,12 +542,20 @@ function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }
 }
 
 function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const normalized = normalizeMixedContent(item.content).trim();
+  const blocks = splitTextBlocks(normalized);
   const lines = normalized.split('\n').filter(Boolean);
-  const preview = lines[0]?.slice(0, 92) ?? '';
+  const textMeta = getTextEventMeta(normalized);
+  const preview = textMeta.preview.slice(0, 92);
+  const secondary = textMeta.secondary.slice(0, 110);
   const lineCount = lines.length;
-  const isDiffBlock = looksLikeDiffContent(normalized);
+  const charCount = normalized.length;
+  const hasDiffBlocks = blocks.some((block) => block.kind === 'diff');
+  const hasTextBlocks = blocks.some((block) => block.kind === 'text');
+  const outputTypeLabel = hasDiffBlocks
+    ? (hasTextBlocks ? 'Mixed Output' : 'Code Diff')
+    : 'Agent Log';
 
   return (
     <div className="flex gap-3">
@@ -413,8 +565,12 @@ function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
       </div>
       <div className="flex-1 min-w-0 pb-2">
         <button onClick={() => setExpanded((e) => !e)} className="w-full flex items-center gap-2 py-1 text-left">
-          <span className="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold bg-indigo-100 text-indigo-700">Agent</span>
-          <span className="text-xs text-zinc-500 truncate flex-1">{preview}{item.content.length > 80 ? '...' : ''}</span>
+          <span className={`shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold ${textMeta.badgeClass}`}>{textMeta.label}</span>
+          <span className="flex-1 min-w-0">
+            <span className="block text-xs text-zinc-600 truncate">{preview}{item.content.length > 80 ? '...' : ''}</span>
+            {secondary && <span className="block text-[10px] text-zinc-400 truncate">{secondary}</span>}
+          </span>
+          <span className="shrink-0 text-[10px] text-zinc-300">{lineCount}L · {charCount}C</span>
           <ChevronRightIcon className={`shrink-0 w-3 h-3 text-zinc-300 transition-transform ${expanded ? 'rotate-90' : ''}`} />
         </button>
         {expanded && (
@@ -422,13 +578,32 @@ function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
             <div className="rounded-lg border border-zinc-200 bg-zinc-50/80 overflow-hidden">
               <div className="px-3 py-1.5 border-b border-zinc-200 bg-white/80 flex items-center justify-between">
                 <span className="text-[10px] uppercase tracking-wider font-semibold text-zinc-500">
-                  {isDiffBlock ? 'Diff Output' : 'Agent Log'}
+                  {outputTypeLabel}
                 </span>
                 <span className="text-[10px] text-zinc-400">{lineCount} lines</span>
               </div>
-              {isDiffBlock ? (
+              {hasDiffBlocks && !hasTextBlocks ? (
                 <div className="px-2 py-2 max-h-[70vh] overflow-auto bg-zinc-950">
                   <MarkdownWithThinking content={`\`\`\`diff\n${normalized}\n\`\`\``} className="text-xs" />
+                </div>
+              ) : hasDiffBlocks ? (
+                <div className="px-2 py-2 max-h-[70vh] overflow-auto space-y-2 bg-zinc-50">
+                  {blocks.map((block, index) => (
+                    <div key={`${block.kind}-${index}`} className="rounded-md border border-zinc-200 bg-white overflow-hidden">
+                      <div className="px-2 py-1 border-b border-zinc-100 bg-zinc-50/70 text-[10px] uppercase tracking-wider font-semibold text-zinc-500">
+                        {block.kind === 'diff' ? 'Code Diff' : 'Text'}
+                      </div>
+                      {block.kind === 'diff' ? (
+                        <div className="px-2 py-2 bg-zinc-950 overflow-auto">
+                          <MarkdownWithThinking content={`\`\`\`diff\n${block.content}\n\`\`\``} className="text-xs" />
+                        </div>
+                      ) : (
+                        <pre className="px-3 py-2 text-[12px] leading-5 text-zinc-700 whitespace-pre-wrap break-words font-mono overflow-auto">
+                          {block.content}
+                        </pre>
+                      )}
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <pre className="px-3 py-2 text-[12px] leading-5 text-zinc-700 whitespace-pre-wrap break-words font-mono max-h-[45vh] overflow-auto">
@@ -443,23 +618,48 @@ function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
   );
 }
 
+function isNearBottom(el: HTMLDivElement, gap = AUTO_SCROLL_BOTTOM_GAP): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= gap;
+}
+
 function WorkerTimeline({ events, status, fullHeight = false }: { events: ToolEvent[]; status: DetailStatus; fullHeight?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isProgrammaticScrollRef = useRef(false);
+  const [autoFollow, setAutoFollow] = useState(true);
   const timeline = buildTimeline(events);
+
+  const handleTimelineScroll = () => {
+    const el = scrollRef.current;
+    if (!el || isProgrammaticScrollRef.current) return;
+    if (isNearBottom(el)) {
+      setAutoFollow((prev) => (prev ? prev : true));
+      return;
+    }
+    if (status === 'running') {
+      setAutoFollow((prev) => (prev ? false : prev));
+    }
+  };
+
+  useEffect(() => {
+    if (status === 'running') setAutoFollow(true);
+  }, [status]);
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el || status !== 'running') return;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
-    if (near) el.scrollTop = el.scrollHeight;
-  }, [events.length, status]);
+    if (!el || status !== 'running' || !autoFollow) return;
+    isProgrammaticScrollRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => {
+      isProgrammaticScrollRef.current = false;
+    });
+  }, [autoFollow, events.length, status]);
 
   if (timeline.length === 0) {
     return <div className="py-10 text-center text-xs text-zinc-300">Waiting for events...</div>;
   }
 
   return (
-    <div ref={scrollRef} className={`overflow-y-auto pr-1 ${fullHeight ? 'h-full min-h-0' : 'max-h-[55vh]'}`}>
+    <div ref={scrollRef} onScroll={handleTimelineScroll} className={`overflow-y-auto pr-1 ${fullHeight ? 'h-full min-h-0' : 'max-h-[55vh]'}`}>
       {timeline.map((item, i) =>
         item.type === 'tool'
           ? <TimelineToolItem key={`t-${item.use.toolUseId ?? i}`} item={item} idx={i} />
@@ -581,13 +781,26 @@ export function TaskDetailShared({
       {workerTabs}
 
       {workerOutput ? (
-        <div className={`overflow-y-auto border border-zinc-200/80 bg-white rounded-lg p-0 leading-relaxed ${
-            fullHeight && !timelineOpen ? 'flex-1 min-h-0' : 'max-h-[60vh]'
-        }`}>
-          <MarkdownWithThinking
-            content={workerOutput}
-            markdownClassName="text-[11px] leading-[1.45] px-1 py-0.5 prose-pre:text-[11px] prose-pre:!my-0 prose-pre:!mx-0 prose-pre:!px-1 prose-pre:!py-1"
-          />
+        <div className="flex flex-col border border-zinc-200/70 rounded-xl overflow-hidden bg-white shadow-sm">
+          {/* Output Document Header */}
+          <div className="bg-zinc-50 border-b border-zinc-150 px-4 py-2.5 flex items-center justify-between">
+            <span className="text-[10px] uppercase tracking-wider font-bold text-zinc-500 flex items-center gap-1.5 select-none">
+              📄 Output Document
+            </span>
+            <span className="text-[10px] text-zinc-400 font-mono">
+              {workerOutput.length} characters
+            </span>
+          </div>
+          
+          {/* Output Document View */}
+          <div className={`overflow-y-auto px-5 py-4 sm:px-6 sm:py-5 leading-relaxed bg-zinc-50/20 ${
+              fullHeight && !timelineOpen ? 'flex-1 min-h-0' : 'max-h-[60vh]'
+          }`}>
+            <MarkdownWithThinking
+              content={workerOutput}
+              markdownClassName="text-xs sm:text-sm text-zinc-700 leading-relaxed max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2"
+            />
+          </div>
         </div>
       ) : (
         !detailText && (

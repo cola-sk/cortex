@@ -10,7 +10,8 @@ import { detectAllTools, detectTool } from '../importers/index.js';
 import { readAppConfig, portFromUrl, DEFAULT_CONFIG } from '../config/appConfig.js';
 import { Agent } from '../core/agent.js';
 import { Runner } from '../core/runner.js';
-import type { Plan, TaskResult, ReviewAction, TaskRound } from '../core/plan.js';
+import type { RunnerRunOptions } from '../core/runner.js';
+import type { Plan, Task, TaskResult, ReviewAction, TaskRound } from '../core/plan.js';
 import type { ToolEvent } from '../core/events.js';
 
 const app = express();
@@ -26,6 +27,7 @@ interface ReviewRecord {
   action: 'approve' | 'revise';
   comment: string;
   targetTaskId?: string;
+  agentId?: string;
   reviewedAt: string;
 }
 
@@ -68,7 +70,43 @@ interface RunRecord {
   durationMs?: number;
   taskCount: number;
   toolCallCount: number;
+  continuedFromRunId?: string;
   tasks: RunTaskRecord[];
+}
+
+function findDownstreamTasks(taskId: string, tasks: Task[]): string[] {
+  const downstream = new Set<string>();
+  const queue = [taskId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const task of tasks) {
+      if (task.dependsOn.includes(current) && !downstream.has(task.id)) {
+        downstream.add(task.id);
+        queue.push(task.id);
+      }
+    }
+  }
+  return [...downstream];
+}
+
+function toTaskRoundRecords(rounds?: RoundRecord[]): TaskRound[] {
+  if (!rounds || rounds.length === 0) return [];
+  return rounds.map((round) => ({
+    round: round.round,
+    input: '',
+    output: round.output,
+    toolEvents: round.toolEvents,
+    finishedAt: round.finishedAt,
+    review: round.review
+      ? {
+        action: round.review.action,
+        comment: round.review.comment,
+        targetTaskId: round.review.targetTaskId,
+        agentId: round.review.agentId,
+        reviewedAt: round.review.reviewedAt,
+      }
+      : undefined,
+  }));
 }
 
 function generateRunId(): string {
@@ -296,6 +334,7 @@ app.get('/api/runs', (_req, res) => {
           durationMs: run.durationMs,
           taskCount: run.taskCount,
           toolCallCount: run.toolCallCount,
+          continuedFromRunId: run.continuedFromRunId,
         }];
       } catch { return []; }
     });
@@ -493,7 +532,7 @@ app.delete('/api/pipelines/:id', (req, res) => {
 app.post('/api/runs/:runId/review', (req, res) => {
   try {
     const { runId } = req.params;
-    const body = req.body as { taskId?: string; action?: string; comment?: string; targetTaskId?: string };
+    const body = req.body as { taskId?: string; action?: string; comment?: string; targetTaskId?: string; agentId?: string };
 
     if (!body.taskId || typeof body.taskId !== 'string') {
       res.status(400).json({ error: 'taskId is required' });
@@ -507,6 +546,14 @@ app.post('/api/runs/:runId/review', (req, res) => {
     }
 
     const mode = reviewModes.get(key) ?? 'review';
+    const selectedAgentId = typeof body.agentId === 'string' && body.agentId.trim() ? body.agentId.trim() : undefined;
+    if (selectedAgentId) {
+      const cfg = readConfig();
+      if (!cfg.agents[selectedAgentId]) {
+        res.status(400).json({ error: `Unknown agent "${selectedAgentId}"` });
+        return;
+      }
+    }
     let review: ReviewAction;
     if (mode === 'interrupt') {
       const comment = body.comment?.trim() ?? '';
@@ -519,6 +566,7 @@ app.post('/api/runs/:runId/review', (req, res) => {
         action: 'revise',
         comment,
         targetTaskId: body.taskId,
+        agentId: selectedAgentId,
       };
     } else {
       if (body.action !== 'approve' && body.action !== 'revise') {
@@ -533,12 +581,353 @@ app.post('/api/runs/:runId/review', (req, res) => {
         action: body.action,
         comment: body.comment ?? '',
         targetTaskId: body.targetTaskId,
+        agentId: selectedAgentId,
       };
     }
     resolver(review);
     reviewResolvers.delete(key);
     reviewModes.delete(key);
     res.json({ success: true, mode });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/runs/:runId/continue — continue from a completed run with comment context
+app.post('/api/runs/:runId/continue', (req, res) => {
+  try {
+    const { runId } = req.params;
+    const body = req.body as { taskId?: string; comment?: string; agentId?: string };
+    const taskId = body.taskId?.trim();
+    const comment = body.comment?.trim() ?? '';
+    const agentId = body.agentId?.trim();
+
+    if (!taskId) {
+      res.status(400).json({ error: 'taskId is required' });
+      return;
+    }
+    if (!comment) {
+      res.status(400).json({ error: 'comment is required' });
+      return;
+    }
+
+    const liveRun = activeRuns.get(runId);
+    const filePath = path.join(RUNS_DIR, `${runId}.json`);
+    const sourceRun = liveRun ?? (fs.existsSync(filePath) ? JSON.parse(fs.readFileSync(filePath, 'utf-8')) as RunRecord : null);
+    if (!sourceRun) {
+      res.status(404).json({ error: `Run "${runId}" not found` });
+      return;
+    }
+    if (liveRun && (liveRun.status === 'running' || liveRun.status === 'awaiting_review' || liveRun.status === 'interrupted')) {
+      res.status(409).json({ error: 'Run is still active. Use review/interrupt flow for live continuation.' });
+      return;
+    }
+
+    const pf = readPipelineFile();
+    const pipelineCfg = pf.pipelines[sourceRun.pipelineId];
+    if (!pipelineCfg) {
+      res.status(404).json({ error: `Pipeline "${sourceRun.pipelineId}" not found` });
+      return;
+    }
+
+    const continuationTask = pipelineCfg.tasks.find((t) => t.id === taskId);
+    if (!continuationTask) {
+      res.status(400).json({ error: `Task "${taskId}" is not part of pipeline "${sourceRun.pipelineId}"` });
+      return;
+    }
+
+    const agentsCfg = readConfig();
+    if (agentId && !agentsCfg.agents[agentId]) {
+      res.status(400).json({ error: `Unknown agent "${agentId}"` });
+      return;
+    }
+
+    const agentMap = new Map<string, Agent>();
+    for (const [agentKey, agentConfig] of Object.entries(agentsCfg.agents)) {
+      let resolvedConfig = agentConfig;
+      if (agentConfig.baseAgent && !agentConfig.provider) {
+        const base = agentsCfg.agents[agentConfig.baseAgent];
+        if (!base?.provider) {
+          res.status(400).json({ error: `Agent "${agentKey}" references baseAgent "${agentConfig.baseAgent}" which has no provider` });
+          return;
+        }
+        resolvedConfig = { ...agentConfig, provider: base.provider };
+      }
+      if (!resolvedConfig.provider) {
+        res.status(400).json({ error: `Agent "${agentKey}" has no provider configured` });
+        return;
+      }
+      agentMap.set(agentKey, new Agent(agentKey, resolvedConfig as typeof agentConfig & { provider: NonNullable<typeof agentConfig.provider> }));
+    }
+
+    const plan: Plan = {
+      goal: sourceRun.goal,
+      tasks: pipelineCfg.tasks,
+      decisions: pipelineCfg.decisions,
+    };
+
+    const sourceTaskMap = new Map(sourceRun.tasks.map((t) => [t.taskId, t]));
+    const rerunSet = new Set<string>([taskId, ...findDownstreamTasks(taskId, plan.tasks as Task[])]);
+    const nowIso = new Date().toISOString();
+    const newRunId = generateRunId();
+
+    const selectedSourceTask = sourceTaskMap.get(taskId);
+    const continuationRounds: RoundRecord[] = [...(selectedSourceTask?.rounds ?? [])];
+    continuationRounds.push({
+      round: continuationRounds.length + 1,
+      output: selectedSourceTask?.output ?? '',
+      toolEvents: selectedSourceTask?.toolEvents,
+      finishedAt: nowIso,
+      review: {
+        action: 'revise',
+        comment,
+        targetTaskId: taskId,
+        ...(agentId ? { agentId } : {}),
+        reviewedAt: nowIso,
+      },
+    });
+
+    const newRun: RunRecord = {
+      id: newRunId,
+      pipelineId: sourceRun.pipelineId,
+      pipelineName: sourceRun.pipelineName,
+      goal: sourceRun.goal,
+      status: 'running',
+      startedAt: nowIso,
+      taskCount: plan.tasks.length,
+      toolCallCount: 0,
+      continuedFromRunId: runId,
+      tasks: plan.tasks.map((task) => {
+        const previous = sourceTaskMap.get(task.id);
+        const defaultAgents = Array.isArray(task.agent) ? task.agent : [task.agent];
+        const assignedAgents = task.id === taskId && agentId ? [agentId] : defaultAgents;
+
+        if (!rerunSet.has(task.id) && previous) {
+          return {
+            ...previous,
+            agents: assignedAgents,
+          };
+        }
+
+        return {
+          taskId: task.id,
+          taskName: task.name,
+          agents: assignedAgents,
+          status: 'pending',
+          ...(task.requiresReview ? { requiresReview: true } : {}),
+          ...(task.id === taskId ? { rounds: continuationRounds } : (previous?.rounds ? { rounds: previous.rounds } : {})),
+        };
+      }),
+    };
+    newRun.toolCallCount = countToolCalls(newRun.tasks);
+
+    saveRun(newRun);
+    activeRuns.set(newRunId, newRun);
+    emitToRunSubscribers(newRunId, 'run:started', { runId: newRunId, continuedFromRunId: runId, taskId });
+
+    const initialResults = new Map<string, TaskResult>();
+    const initialCompletedTaskIds: string[] = [];
+    for (const task of plan.tasks) {
+      if (rerunSet.has(task.id)) continue;
+      const previous = sourceTaskMap.get(task.id);
+      if (!previous) continue;
+      initialCompletedTaskIds.push(task.id);
+      if (typeof previous.output === 'string') {
+        initialResults.set(task.id, {
+          taskId: task.id,
+          outputs: previous.outputs && previous.outputs.length > 0 ? previous.outputs : [previous.output],
+          output: previous.output,
+          ...(previous.error ? { error: previous.error } : {}),
+          ...(previous.toolEvents ? { toolEvents: previous.toolEvents } : {}),
+        });
+      }
+    }
+
+    const initialTaskRounds = new Map<string, TaskRound[]>();
+    initialTaskRounds.set(taskId, toTaskRoundRecords(continuationRounds));
+
+    const runOptions: RunnerRunOptions = {
+      initialResults,
+      initialCompletedTaskIds,
+      initialTaskRounds,
+      taskAgentOverrides: agentId ? { [taskId]: [agentId] } : undefined,
+    };
+
+    const taskStartTimes = new Map<string, number>();
+    const abortController = new AbortController();
+
+    void (async () => {
+      try {
+        const runner = new Runner(agentMap, {
+          onTaskStart: (startedTaskId, taskName, agents, taskAbortController) => {
+            emitToRunSubscribers(newRunId, 'task:start', { taskId: startedTaskId, taskName, agents });
+            const task = newRun.tasks.find((t) => t.taskId === startedTaskId);
+            if (task) {
+              task.status = 'running';
+              task.startedAt = new Date().toISOString();
+              task.finishedAt = undefined;
+              task.durationMs = undefined;
+              task.error = undefined;
+              task.output = '';
+              task.outputs = undefined;
+              task.toolEvents = [];
+              task.workerStatus = agents.length > 1 ? agents.map(() => 'running') : undefined;
+            }
+            taskStartTimes.set(startedTaskId, Date.now());
+            if (taskAbortController) {
+              activeTaskAborts.set(`${newRunId}:${startedTaskId}`, taskAbortController);
+            }
+            flushAndSaveRun(newRun);
+          },
+          onTaskProgress: (progressTaskId, workerIndex, event) => {
+            emitToRunSubscribers(newRunId, 'task:tool_event', { taskId: progressTaskId, workerIndex, event });
+            const task = newRun.tasks.find((t) => t.taskId === progressTaskId);
+            if (task) {
+              if (!task.toolEvents) task.toolEvents = [];
+              while (task.toolEvents.length <= workerIndex) task.toolEvents.push([]);
+              task.toolEvents[workerIndex].push(event);
+            }
+            debouncedSaveRun(newRun);
+          },
+          onWorkerComplete: (workerTaskId, workerIndex, output, error) => {
+            emitToRunSubscribers(newRunId, 'worker:complete', { taskId: workerTaskId, workerIndex, output: output.slice(0, 200), error });
+            const task = newRun.tasks.find((t) => t.taskId === workerTaskId);
+            if (task) {
+              if (!task.workerStatus) task.workerStatus = [];
+              while (task.workerStatus.length <= workerIndex) task.workerStatus.push('running');
+              task.workerStatus[workerIndex] = error ? 'error' : 'done';
+            }
+            flushAndSaveRun(newRun);
+          },
+          onTaskComplete: (completedTaskId, taskName, result) => {
+            activeTaskAborts.delete(`${newRunId}:${completedTaskId}`);
+            emitToRunSubscribers(newRunId, 'task:complete', { taskId: completedTaskId, taskName, output: result.output, outputs: result.outputs, error: result.error });
+            const task = newRun.tasks.find((t) => t.taskId === completedTaskId);
+            if (task) {
+              const isInterrupted = result.error === 'Interrupted by user';
+              task.status = isInterrupted ? 'interrupted' : (result.error ? 'error' : 'done');
+              task.finishedAt = new Date().toISOString();
+              const started = taskStartTimes.get(completedTaskId);
+              if (started) task.durationMs = Date.now() - started;
+              task.output = result.output;
+              if (result.outputs && result.outputs.length > 1) task.outputs = result.outputs;
+              task.error = result.error || undefined;
+              if (result.toolEvents) task.toolEvents = result.toolEvents;
+              newRun.toolCallCount = countToolCalls(newRun.tasks);
+              flushAndSaveRun(newRun);
+            }
+          },
+          onDecisionStart: (decisionId, evaluates) => {
+            emitToRunSubscribers(newRunId, 'decision:start', { decisionId, evaluates });
+          },
+          onDecisionComplete: (decisionId, decision, retrying) => {
+            emitToRunSubscribers(newRunId, 'decision:complete', { decisionId, action: decision.action, reason: decision.reason, retrying });
+          },
+          onReviewRequired: (reviewTaskId, taskName, output, round) => {
+            return new Promise<ReviewAction>((resolve) => {
+              const key = `${newRunId}:${reviewTaskId}`;
+              const task = newRun.tasks.find((t) => t.taskId === reviewTaskId);
+              const mode: PauseMode = task?.error === 'Interrupted by user' ? 'interrupt' : 'review';
+              reviewResolvers.set(key, resolve);
+              reviewModes.set(key, mode);
+              newRun.status = mode === 'interrupt' ? 'interrupted' : 'awaiting_review';
+              if (task) {
+                task.status = mode === 'interrupt' ? 'interrupted' : 'awaiting_review';
+                task.currentRound = round;
+              }
+              flushAndSaveRun(newRun);
+              emitToRunSubscribers(newRunId, 'review:pending', { taskId: reviewTaskId, taskName, output, round, mode });
+            });
+          },
+          onReviewSubmitted: (reviewTaskId, action, round) => {
+            const task = newRun.tasks.find((t) => t.taskId === reviewTaskId);
+            const mode: PauseMode = task?.status === 'interrupted' ? 'interrupt' : 'review';
+            newRun.status = 'running';
+            if (task) {
+              if (!task.rounds) task.rounds = [];
+              task.rounds.push({
+                round,
+                output: task.output ?? '',
+                toolEvents: task.toolEvents,
+                finishedAt: new Date().toISOString(),
+                review: {
+                  action: action.action,
+                  comment: action.comment,
+                  targetTaskId: action.targetTaskId,
+                  agentId: action.agentId,
+                  reviewedAt: new Date().toISOString(),
+                },
+              });
+              if (mode === 'interrupt') {
+                task.status = 'running';
+                task.error = undefined;
+              } else if (action.action === 'approve') {
+                task.status = 'done';
+              } else {
+                task.status = 'pending';
+              }
+            }
+            flushAndSaveRun(newRun);
+            emitToRunSubscribers(newRunId, 'review:submitted', { taskId: reviewTaskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, agentId: action.agentId, round, mode });
+          },
+          onTaskRevision: (revisionTaskId, round) => {
+            const task = newRun.tasks.find((t) => t.taskId === revisionTaskId);
+            if (task) {
+              task.status = 'running';
+              task.currentRound = round;
+            }
+            flushAndSaveRun(newRun);
+            emitToRunSubscribers(newRunId, 'task:revision', { taskId: revisionTaskId, round });
+          },
+          onTaskRollback: (fromTaskId, toTaskId, reason) => {
+            flushAndSaveRun(newRun);
+            emitToRunSubscribers(newRunId, 'task:rollback', { fromTaskId, toTaskId, reason });
+          },
+        }, false, pipelineCfg.workspace);
+
+        const results = await runner.runWithOptions(plan, abortController.signal, runOptions);
+        const hasTaskErrors = newRun.tasks.some((t) => t.status === 'error');
+        newRun.status = hasTaskErrors ? 'error' : 'done';
+        newRun.finishedAt = new Date().toISOString();
+        newRun.durationMs = Date.now() - new Date(nowIso).getTime();
+        newRun.toolCallCount = countToolCalls(newRun.tasks);
+        flushAndSaveRun(newRun);
+
+        const summary: Record<string, { output: string; error?: string }> = {};
+        for (const [key, result] of results) {
+          if (!key.startsWith('__decision_')) {
+            summary[key] = { output: result.output, ...(result.error ? { error: result.error } : {}) };
+          }
+        }
+        emitToRunSubscribers(newRunId, 'complete', { taskCount: plan.tasks.length, results: summary, runId: newRunId });
+      } catch (err) {
+        emitToRunSubscribers(newRunId, 'error', { message: (err as Error).message });
+        if (newRun.status === 'running' || newRun.status === 'awaiting_review' || newRun.status === 'interrupted') {
+          newRun.status = 'error';
+          newRun.finishedAt = new Date().toISOString();
+          newRun.durationMs = Date.now() - new Date(newRun.startedAt).getTime();
+          flushAndSaveRun(newRun);
+        }
+      } finally {
+        activeRuns.delete(newRunId);
+        for (const key of reviewResolvers.keys()) {
+          if (key.startsWith(`${newRunId}:`)) reviewResolvers.delete(key);
+        }
+        for (const key of reviewModes.keys()) {
+          if (key.startsWith(`${newRunId}:`)) reviewModes.delete(key);
+        }
+        for (const key of activeTaskAborts.keys()) {
+          if (key.startsWith(`${newRunId}:`)) activeTaskAborts.delete(key);
+        }
+        const subs = runSubscribers.get(newRunId);
+        if (subs) {
+          for (const sub of subs) { try { sub.end(); } catch {} }
+          runSubscribers.delete(newRunId);
+        }
+      }
+    })();
+
+    res.json({ success: true, runId: newRunId, continuedFromRunId: runId, taskId });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -782,13 +1171,14 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
             output: task.output ?? '',
             toolEvents: task.toolEvents,
             finishedAt: new Date().toISOString(),
-            review: {
-              action: action.action,
-              comment: action.comment,
-              targetTaskId: action.targetTaskId,
-              reviewedAt: new Date().toISOString(),
-            },
-          });
+              review: {
+                action: action.action,
+                comment: action.comment,
+                targetTaskId: action.targetTaskId,
+                agentId: action.agentId,
+                reviewedAt: new Date().toISOString(),
+              },
+            });
           if (mode === 'interrupt') {
             task.status = 'running';
             task.error = undefined;
@@ -799,8 +1189,8 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
           }
         }
         flushAndSaveRun(run!);
-        emit('review:submitted', { taskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, round, mode });
-        emitToRunSubscribers(runId, 'review:submitted', { taskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, round, mode });
+        emit('review:submitted', { taskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, agentId: action.agentId, round, mode });
+        emitToRunSubscribers(runId, 'review:submitted', { taskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, agentId: action.agentId, round, mode });
       },
       onTaskRevision: (taskId, round) => {
         const task = run!.tasks.find((t) => t.taskId === taskId);

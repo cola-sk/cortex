@@ -87,10 +87,24 @@ export const api = {
   getRun: (id: string) => request<RunRecord>(`/api/runs/${encodeURIComponent(id)}`),
 
   /** Submit a human review for a paused task */
-  submitReview: (runId: string, taskId: string, action: 'approve' | 'revise', comment: string, targetTaskId?: string) =>
+  submitReview: (
+    runId: string,
+    taskId: string,
+    action: 'approve' | 'revise',
+    comment: string,
+    targetTaskId?: string,
+    agentId?: string,
+  ) =>
     request<{ success: boolean }>(`/api/runs/${encodeURIComponent(runId)}/review`, {
       method: 'POST',
-      body: JSON.stringify({ taskId, action, comment, targetTaskId }),
+      body: JSON.stringify({ taskId, action, comment, targetTaskId, agentId }),
+    }),
+
+  /** Continue from a completed run with comment context (optionally override current task agent). */
+  continueRun: (runId: string, taskId: string, comment: string, agentId?: string) =>
+    request<{ success: boolean; runId: string }>(`/api/runs/${encodeURIComponent(runId)}/continue`, {
+      method: 'POST',
+      body: JSON.stringify({ taskId, comment, agentId }),
     }),
 
   /** Interrupt a running task in real time */
@@ -204,4 +218,3 @@ export const api = {
     };
   },
 };
-

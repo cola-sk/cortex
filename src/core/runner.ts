@@ -60,6 +60,17 @@ export interface RunnerCallbacks {
   onTaskRollback?: (fromTaskId: string, toTaskId: string, reason: string) => void;
 }
 
+export interface RunnerRunOptions {
+  /** Seed completed task outputs, useful for continuing from a previous run. */
+  initialResults?: Map<string, TaskResult>;
+  /** Seed already-completed task ids, useful for skipping unchanged upstream tasks. */
+  initialCompletedTaskIds?: string[];
+  /** Seed per-task revision rounds. */
+  initialTaskRounds?: Map<string, TaskRound[]>;
+  /** Optional per-task agent overrides for this run session. */
+  taskAgentOverrides?: Record<string, string[]>;
+}
+
 export class Runner {
   private agents: Map<string, Agent>;
   private callbacks: RunnerCallbacks;
@@ -82,10 +93,18 @@ export class Runner {
    *  - Human-in-the-loop review with pause/resume
    */
   async run(plan: Plan, signal?: AbortSignal): Promise<Map<string, TaskResult>> {
-    const results = new Map<string, TaskResult>();
+    return this.runWithOptions(plan, signal);
+  }
+
+  async runWithOptions(plan: Plan, signal?: AbortSignal, options?: RunnerRunOptions): Promise<Map<string, TaskResult>> {
+    const results = new Map<string, TaskResult>(options?.initialResults ?? []);
     const retryCount = new Map<string, number>();
     // Track revision rounds per task
-    const taskRounds = new Map<string, TaskRound[]>();
+    const taskRounds = new Map<string, TaskRound[]>(options?.initialTaskRounds ?? []);
+    const completed = new Set<string>(options?.initialCompletedTaskIds ?? []);
+    const taskAgentOverrides = new Map<string, string[]>(
+      Object.entries(options?.taskAgentOverrides ?? {}).filter(([, agents]) => Array.isArray(agents) && agents.length > 0),
+    );
 
     const decisionCount = plan.decisions?.length ?? 0;
     if (!this.silent) {
@@ -94,8 +113,11 @@ export class Runner {
     }
 
     // Mutable pool of tasks still waiting to run
-    const pending = new Map<string, Task>(plan.tasks.map((t) => [t.id, t]));
-    const completed = new Set<string>();
+    const pending = new Map<string, Task>(
+      plan.tasks
+        .filter((t) => !completed.has(t.id))
+        .map((t) => [t.id, t]),
+    );
 
     // Safety ceiling to prevent infinite retry loops
     const MAX_ITERATIONS = (plan.tasks.length + decisionCount + 1) * 20;
@@ -133,7 +155,7 @@ export class Runner {
       // ---- Execute the ready batch in parallel ----
       await Promise.all(
         ready.map(async (task) => {
-          await this.executeTaskWithReview(task, plan, results, taskRounds, pending, completed, signal);
+          await this.executeTaskWithReview(task, plan, results, taskRounds, pending, completed, signal, taskAgentOverrides);
         }),
       );
 
@@ -258,6 +280,7 @@ export class Runner {
     pending: Map<string, Task>,
     completed: Set<string>,
     signal?: AbortSignal,
+    taskAgentOverrides?: Map<string, string[]>,
   ): Promise<void> {
     const MAX_REVIEW_ROUNDS = 10;
 
@@ -278,7 +301,10 @@ export class Runner {
 
       // Build the input with revision context if applicable
       let fullInput: string;
-      const agentKeys = Array.isArray(task.agent) ? task.agent : [task.agent];
+      const overrideAgents = taskAgentOverrides?.get(task.id);
+      const agentKeys = overrideAgents && overrideAgents.length > 0
+        ? overrideAgents
+        : (Array.isArray(task.agent) ? task.agent : [task.agent]);
       const primaryAgent = this.agents.get(agentKeys[0]);
       const useHistory = primaryAgent?.supportsHistory() ?? false;
       let history: import('../providers/base.js').Message[] = [];
@@ -414,6 +440,7 @@ export class Runner {
             action: review.action,
             comment: review.comment,
             targetTaskId: review.targetTaskId,
+            ...(review.agentId ? { agentId: review.agentId } : {}),
             reviewedAt: new Date().toISOString(),
           },
         };
@@ -431,6 +458,9 @@ export class Runner {
 
         // Revise — determine target
         const targetId = review.targetTaskId ?? task.id;
+        if (review.agentId) {
+          taskAgentOverrides?.set(targetId, [review.agentId]);
+        }
 
         if (targetId !== task.id) {
           // Rollback to upstream task
@@ -455,6 +485,7 @@ export class Runner {
                 action: 'revise',
                 comment: review.comment,
                 targetTaskId: targetId,
+                ...(review.agentId ? { agentId: review.agentId } : {}),
                 reviewedAt: new Date().toISOString(),
               };
             }
@@ -470,6 +501,7 @@ export class Runner {
                 action: 'revise',
                 comment: review.comment,
                 targetTaskId: targetId,
+                ...(review.agentId ? { agentId: review.agentId } : {}),
                 reviewedAt: new Date().toISOString(),
               },
             }]);
@@ -521,4 +553,3 @@ export class Runner {
       .join('\n\n');
   }
 }
-

@@ -111,6 +111,7 @@ export interface ReviewRecord {
   action: 'approve' | 'revise';
   comment: string;
   targetTaskId?: string;
+  agentId?: string;
   reviewedAt: string;
 }
 
@@ -153,6 +154,7 @@ export interface RunSummary {
   durationMs?: number;
   taskCount: number;
   toolCallCount: number;
+  continuedFromRunId?: string;
 }
 
 export interface RunRecord extends RunSummary {

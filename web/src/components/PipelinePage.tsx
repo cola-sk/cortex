@@ -997,7 +997,7 @@ function TaskInspector({
 
       <Field label={t('step.fieldInstruction')} hint={t('step.instructionHint')}>
         <textarea
-          className={`${inputCls} resize-y`}
+          className={`${inputCls} resize`}
           rows={4}
           value={task.input}
           onChange={(e) => setField('input', e.target.value)}
@@ -1151,6 +1151,8 @@ function DecisionInspector({
 
 export interface LogEntry {
   id: string;
+  taskId?: string;
+  round?: number;
   type: RunEventType;
   label: string;
   detail?: string;
@@ -1172,11 +1174,39 @@ export interface LogEntry {
   pauseMode?: 'review' | 'interrupt';
 }
 
+function findLastTaskEntryIndex(
+  entries: LogEntry[],
+  taskId: string,
+  matcher?: (entry: LogEntry) => boolean,
+): number {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry.taskId !== taskId) continue;
+    if (!matcher || matcher(entry)) return i;
+  }
+  return -1;
+}
+
+function nextTaskRound(entries: LogEntry[], taskId: string): number {
+  let maxRound = 0;
+  for (const entry of entries) {
+    if (entry.taskId !== taskId) continue;
+    if ((entry.round ?? 0) > maxRound) maxRound = entry.round ?? 0;
+  }
+  return Math.max(1, maxRound + 1);
+}
+
 function appendTextChunk(base: string, chunk: string): string {
   if (!chunk) return base;
   if (!base) return chunk;
   if (base.endsWith('\n') || chunk.startsWith('\n')) return base + chunk;
   return `${base}\n${chunk}`;
+}
+
+const AUTO_SCROLL_BOTTOM_GAP = 24;
+
+function isNearBottom(el: HTMLDivElement, gap = AUTO_SCROLL_BOTTOM_GAP): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= gap;
 }
 
 function RunView({
@@ -1198,6 +1228,8 @@ function RunView({
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [pausedTaskId, setPausedTaskId] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const isProgrammaticLogScrollRef = useRef(false);
+  const [autoFollowLog, setAutoFollowLog] = useState(true);
 
   const addEntry = (entry: LogEntry) => {
     setLog((prev) => {
@@ -1211,17 +1243,32 @@ function RunView({
     setLog((prev) => prev.map((e) => (e.id === id ? { ...e, ...patch } : e)));
   };
 
+  const handleLogScroll = useCallback(() => {
+    const el = logRef.current;
+    if (!el || isProgrammaticLogScrollRef.current) return;
+    if (isNearBottom(el)) {
+      setAutoFollowLog((prev) => (prev ? prev : true));
+      return;
+    }
+    if (started && !done) {
+      setAutoFollowLog((prev) => (prev ? false : prev));
+    }
+  }, [done, started]);
+
   useEffect(() => {
     const el = logRef.current;
-    if (!el) return;
-    // Only auto-scroll if user is already near the bottom (within 120px)
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    if (isNearBottom) el.scrollTop = el.scrollHeight;
-  }, [log]);
+    if (!el || !started || done || !autoFollowLog) return;
+    isProgrammaticLogScrollRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => {
+      isProgrammaticLogScrollRef.current = false;
+    });
+  }, [autoFollowLog, done, log, started]);
 
   const handleRun = async () => {
     if (!goal.trim()) return;
     setStarted(true);
+    setAutoFollowLog(true);
     setLog([]);
     setResults({});
     setDone(false);
@@ -1235,74 +1282,184 @@ function RunView({
         if (type === 'run:started' as RunEventType) {
           setActiveRunId(d.runId as string);
         } else if (type === 'task:start') {
+          const taskId = d.taskId as string;
+          const taskName = d.taskName as string;
           const agents = d.agents as string[];
-          addEntry({
-            id: d.taskId as string,
-            type,
-            label: `${d.taskName as string}`,
-            detail: `Running via ${agents.join(', ')}`,
-            output: '',
-            agents,
-            toolEvents: [],
-            workerEvents: agents.map(() => []),
-            workerStatus: agents.length > 1 ? agents.map(() => 'running') : undefined,
-            startedAt: Date.now(),
-            status: 'running',
+          let openedEntryId: string | null = null;
+          setLog((prev) => {
+            const pendingIdx = findLastTaskEntryIndex(prev, taskId, (entry) => entry.status === 'pending');
+            if (pendingIdx >= 0) {
+              const next = [...prev];
+              const existing = next[pendingIdx];
+              const round = existing.round ?? nextTaskRound(prev, taskId);
+              const entryId = existing.id || `${taskId}::r${round}`;
+              next[pendingIdx] = {
+                ...existing,
+                id: entryId,
+                type,
+                taskId,
+                round,
+                label: taskName || existing.label,
+                detail: `Running via ${agents.join(', ')}`,
+                output: '',
+                outputs: undefined,
+                streamContent: '',
+                agents,
+                toolEvents: [],
+                workerEvents: agents.map(() => []),
+                workerStatus: agents.length > 1 ? agents.map(() => 'running') : undefined,
+                startedAt: Date.now(),
+                finishedAt: undefined,
+                error: undefined,
+                status: 'running',
+              };
+              openedEntryId = entryId;
+              return next;
+            }
+
+            const activeIdx = findLastTaskEntryIndex(
+              prev,
+              taskId,
+              (entry) => entry.status === 'running' || entry.status === 'awaiting_review' || entry.status === 'interrupted',
+            );
+            if (activeIdx >= 0) {
+              const next = [...prev];
+              const existing = next[activeIdx];
+              const round = existing.round ?? nextTaskRound(prev, taskId);
+              const entryId = existing.id || `${taskId}::r${round}`;
+              next[activeIdx] = {
+                ...existing,
+                id: entryId,
+                type,
+                taskId,
+                round,
+                label: taskName || existing.label,
+                detail: `Running via ${agents.join(', ')}`,
+                output: '',
+                outputs: undefined,
+                streamContent: '',
+                agents,
+                toolEvents: [],
+                workerEvents: agents.map(() => []),
+                workerStatus: agents.length > 1 ? agents.map(() => 'running') : undefined,
+                startedAt: Date.now(),
+                finishedAt: undefined,
+                error: undefined,
+                status: 'running',
+              };
+              openedEntryId = entryId;
+              return next;
+            }
+
+            const round = nextTaskRound(prev, taskId);
+            const entryId = `${taskId}::r${round}`;
+            openedEntryId = entryId;
+            return [
+              ...prev,
+              {
+                id: entryId,
+                taskId,
+                round,
+                type,
+                label: taskName,
+                detail: `Running via ${agents.join(', ')}`,
+                output: '',
+                agents,
+                toolEvents: [],
+                workerEvents: agents.map(() => []),
+                workerStatus: agents.length > 1 ? agents.map(() => 'running') : undefined,
+                startedAt: Date.now(),
+                status: 'running',
+              },
+            ];
           });
-          setModalTaskId(d.taskId as string);
+          if (openedEntryId) setModalTaskId(openedEntryId);
         } else if (type === 'task:tool_event') {
           const event = d.event as ToolEvent;
           const taskId = d.taskId as string;
           const workerIndex = (d.workerIndex as number) ?? 0;
           if (event) {
-            setLog((prev) => prev.map((e) => {
-              if (e.id !== taskId) return e;
-              const newEvents = [...(e.toolEvents ?? []), event];
-              // Per-worker tracking
-              const newWorkerEvents = e.workerEvents ? e.workerEvents.map((w, i) => i === workerIndex ? [...w, event] : w) : [[event]];
-              let newStream = e.streamContent ?? '';
-              let newDetail = e.detail;
-              if (event.type === 'tool_use') {
-                // Don't update detail with tool_use summary — the timeline shows tools.
-                // Just keep the previous detail to avoid flashing.
-              } else if (event.type === 'tool_result') {
-                // Keep quiet — timeline shows results.
-              } else if (event.type === 'text' && event.content) {
+            setLog((prev) => {
+              const idx = findLastTaskEntryIndex(
+                prev,
+                taskId,
+                (entry) =>
+                  entry.status === 'running'
+                  || entry.status === 'awaiting_review'
+                  || entry.status === 'interrupted'
+                  || entry.status === 'pending',
+              );
+              if (idx < 0) return prev;
+              const next = [...prev];
+              const entry = next[idx];
+              const newEvents = [...(entry.toolEvents ?? []), event];
+              const newWorkerEvents = entry.workerEvents
+                ? entry.workerEvents.map((w, i) => (i === workerIndex ? [...w, event] : w))
+                : [[event]];
+              let newStream = entry.streamContent ?? '';
+              let newDetail = entry.detail;
+              if (event.type === 'text' && event.content) {
                 newStream = appendTextChunk(newStream, event.content);
                 newDetail = '● streaming...';
               }
-              return { ...e, toolEvents: newEvents, workerEvents: newWorkerEvents, streamContent: newStream, detail: newDetail };
-            }));
+              next[idx] = {
+                ...entry,
+                toolEvents: newEvents,
+                workerEvents: newWorkerEvents,
+                streamContent: newStream,
+                detail: newDetail,
+              };
+              return next;
+            });
           }
         } else if (type === 'worker:complete') {
+          const taskId = d.taskId as string;
           const workerIndex = (d.workerIndex as number) ?? 0;
           const error = d.error as string | undefined;
-          setLog((prev) => prev.map((e) => {
-            if (e.id !== (d.taskId as string)) return e;
-            const newStatus = [...(e.workerStatus ?? (e.agents ?? []).map(() => 'running' as const))];
+          setLog((prev) => {
+            const idx = findLastTaskEntryIndex(prev, taskId);
+            if (idx < 0) return prev;
+            const next = [...prev];
+            const entry = next[idx];
+            const newStatus = [...(entry.workerStatus ?? (entry.agents ?? []).map(() => 'running' as const))];
+            while (newStatus.length <= workerIndex) newStatus.push('running');
             newStatus[workerIndex] = error ? 'error' : 'done';
-            return { ...e, workerStatus: newStatus };
-          }));
+            next[idx] = { ...entry, workerStatus: newStatus };
+            return next;
+          });
         } else if (type === 'task:complete') {
+          const taskId = d.taskId as string;
           const error = d.error as string | undefined;
           const output = (d.output as string | undefined) ?? '';
           const outputs = d.outputs as string[] | undefined;
-          setLog((prev) => prev.map((e) => e.id === (d.taskId as string)
-            ? {
-              ...e,
+          setLog((prev) => {
+            const idx = findLastTaskEntryIndex(
+              prev,
+              taskId,
+              (entry) =>
+                entry.status === 'running'
+                || entry.status === 'awaiting_review'
+                || entry.status === 'interrupted'
+                || entry.status === 'pending',
+            );
+            if (idx < 0) return prev;
+            const next = [...prev];
+            const entry = next[idx];
+            next[idx] = {
+              ...entry,
               status: error === 'Interrupted by user'
-                ? 'interrupted' as const
+                ? 'interrupted'
                 : error
-                  ? 'error' as const
-                  : 'done' as const,
+                  ? 'error'
+                  : 'done',
               error,
               output,
               outputs,
               detail: error === 'Interrupted by user' ? '■ Interrupted' : error ? error : '✓ Completed',
               finishedAt: Date.now(),
-            }
-            : e
-          ));
+            };
+            return next;
+          });
         } else if (type === 'decision:start') {
           addEntry({
             id: d.decisionId as string,
@@ -1335,67 +1492,129 @@ function RunView({
           const taskId = d.taskId as string;
           const round = (d.round as number) ?? 1;
           const mode = ((d.mode as string | undefined) === 'interrupt' ? 'interrupt' : 'review');
-          setLog((prev) => prev.map((e) => e.id === taskId
-            ? {
-              ...e,
-              status: mode === 'interrupt' ? 'interrupted' as const : 'awaiting_review' as const,
+          setLog((prev) => {
+            const roundIdx = findLastTaskEntryIndex(prev, taskId, (entry) => entry.round === round);
+            const idx = roundIdx >= 0
+              ? roundIdx
+              : findLastTaskEntryIndex(
+                prev,
+                taskId,
+                (entry) =>
+                  entry.status === 'running'
+                  || entry.status === 'awaiting_review'
+                  || entry.status === 'interrupted'
+                  || entry.status === 'pending',
+              );
+            if (idx < 0) return prev;
+            const next = [...prev];
+            const entry = next[idx];
+            next[idx] = {
+              ...entry,
+              status: mode === 'interrupt' ? 'interrupted' : 'awaiting_review',
               reviewPending: true,
               pauseMode: mode,
               currentRound: round,
               detail: mode === 'interrupt' ? `■ Interrupted (round ${round})` : `⏸ Awaiting input (round ${round})`,
-            }
-            : e
-          ));
+            };
+            return next;
+          });
           // Switch from task detail modal to the review panel when human input is required.
           setModalTaskId(null);
           setPausedTaskId(taskId);
           onPauseStateChange(mode);
         } else if (type === 'review:submitted') {
           const taskId = d.taskId as string;
+          const round = (d.round as number) ?? 1;
           const action = d.action as string;
           const mode = ((d.mode as string | undefined) === 'interrupt' ? 'interrupt' : 'review');
-          setLog((prev) => prev.map((e) => e.id === taskId
-            ? {
-              ...e,
+          setLog((prev) => {
+            const roundIdx = findLastTaskEntryIndex(prev, taskId, (entry) => entry.round === round);
+            const idx = roundIdx >= 0 ? roundIdx : findLastTaskEntryIndex(prev, taskId);
+            if (idx < 0) return prev;
+            const next = [...prev];
+            const entry = next[idx];
+            next[idx] = {
+              ...entry,
               status: mode === 'interrupt'
-                ? 'running' as const
-                : e.status,
+                ? 'running'
+                : action === 'approve'
+                  ? 'done'
+                  : 'pending',
               reviewPending: false,
               pauseMode: undefined,
               detail: mode === 'interrupt'
-                ? `✎ Comment received — resuming`
+                ? '✎ Comment received — resuming'
                 : action === 'approve'
                   ? '✓ Approved — continuing'
                   : `↻ Revising (feedback: ${(d.comment as string)?.slice(0, 50)}...)`,
-            }
-            : e
-          ));
+            };
+            return next;
+          });
           setPausedTaskId(null);
           onPauseStateChange(null);
         } else if (type === 'task:revision') {
           const taskId = d.taskId as string;
           const round = (d.round as number) ?? 2;
-          setLog((prev) => prev.map((e) => e.id === taskId
-            ? {
-              ...e,
-              status: 'running' as const,
-              currentRound: round,
-              reviewPending: false,
-              pauseMode: undefined,
-              detail: `↻ Revision round ${round}`,
-              toolEvents: [],
-              workerEvents: e.agents?.map(() => []) ?? [[]],
-              streamContent: '',
-              error: undefined,
+          const entryId = `${taskId}::r${round}`;
+          setLog((prev) => {
+            const existingIdx = findLastTaskEntryIndex(prev, taskId, (entry) => entry.round === round);
+            if (existingIdx >= 0) {
+              const next = [...prev];
+              const existing = next[existingIdx];
+              next[existingIdx] = {
+                ...existing,
+                id: entryId,
+                status: 'pending',
+                currentRound: round,
+                reviewPending: false,
+                pauseMode: undefined,
+                detail: `↻ Revision round ${round} queued`,
+                toolEvents: [],
+                workerEvents: existing.agents?.map(() => []) ?? [[]],
+                streamContent: '',
+                error: undefined,
+                output: '',
+                outputs: undefined,
+                finishedAt: undefined,
+              };
+              return next;
             }
-            : e
-          ));
+
+            const latestIdx = findLastTaskEntryIndex(prev, taskId);
+            const latest = latestIdx >= 0 ? prev[latestIdx] : undefined;
+            const baseLabel = latest?.label?.replace(/\s+\(Round\s+\d+\)$/, '') ?? taskId;
+            const agents = latest?.agents ?? [];
+
+            return [
+              ...prev,
+              {
+                id: entryId,
+                taskId,
+                round,
+                type: 'task:revision',
+                label: `${baseLabel} (Round ${round})`,
+                detail: `↻ Revision round ${round} queued`,
+                output: '',
+                agents,
+                toolEvents: [],
+                workerEvents: agents.length > 0 ? agents.map(() => []) : [[]],
+                workerStatus: agents.length > 1 ? agents.map(() => 'running') : undefined,
+                status: 'pending',
+                currentRound: round,
+              },
+            ];
+          });
+          setModalTaskId(entryId);
         } else if (type === 'task:rollback') {
           const toTaskId = d.toTaskId as string;
-          setLog((prev) => prev.map((e) => e.id === toTaskId
-            ? { ...e, status: 'pending' as const, detail: `↩ Rolling back — ${(d.reason as string)?.slice(0, 60)}` }
-            : e
-          ));
+          setLog((prev) => {
+            const idx = findLastTaskEntryIndex(prev, toTaskId);
+            if (idx < 0) return prev;
+            const next = [...prev];
+            const entry = next[idx];
+            next[idx] = { ...entry, status: 'pending', detail: `↩ Rolling back — ${(d.reason as string)?.slice(0, 60)}` };
+            return next;
+          });
         }
       });
     } catch (e) {
@@ -1441,7 +1660,7 @@ function RunView({
               {t('run.goalDesc')}
             </p>
             <textarea
-              className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize-none"
+              className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize"
               rows={3}
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
@@ -1486,13 +1705,13 @@ function RunView({
               </span>
               {!done && <Spinner />}
             </div>
-            <div ref={logRef} className="divide-y divide-zinc-50 overflow-y-auto">
+            <div ref={logRef} onScroll={handleLogScroll} className="divide-y divide-zinc-50 overflow-y-auto">
               {log.map((entry) => (
                 <LogRow
                   key={entry.id}
                   entry={entry}
                   onOpenDetail={() => setModalTaskId(entry.id)}
-                  onInterrupt={() => handleInterruptTask(entry.id)}
+                  onInterrupt={entry.taskId ? () => handleInterruptTask(entry.taskId as string) : undefined}
                 />
               ))}
               {log.length === 0 && (
@@ -1504,7 +1723,14 @@ function RunView({
 
         {/* Action panel — shown when a task is waiting for human input */}
         {pausedTaskId && activeRunId && (() => {
-          const entry = log.find((e) => e.id === pausedTaskId);
+          const entry = (() => {
+            const idx = findLastTaskEntryIndex(
+              log,
+              pausedTaskId,
+              (item) => item.reviewPending === true || item.status === 'awaiting_review' || item.status === 'interrupted',
+            );
+            return idx >= 0 ? log[idx] : undefined;
+          })();
           if (!entry || !entry.reviewPending) return null;
           return (
             <ReviewPanel
@@ -1658,12 +1884,20 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, mode, o
   const [comment, setComment] = useState('');
   const [action, setAction] = useState<'approve' | 'revise'>(mode === 'interrupt' ? 'revise' : 'approve');
   const [targetTaskId, setTargetTaskId] = useState(taskId);
+  const [agentId, setAgentId] = useState('');
+  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name?: string }>>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isInterrupted = mode === 'interrupt';
 
   // Find upstream tasks for rollback target selector
   const upstreamTasks = pipeline.tasks.filter((t) => t.id !== taskId);
+
+  useEffect(() => {
+    api.getAgents()
+      .then((list) => setAvailableAgents(list.map((a) => ({ id: a.id, name: a.name }))))
+      .catch(() => setAvailableAgents([]));
+  }, []);
 
   const handleSubmit = async () => {
     if ((isInterrupted || action === 'revise') && !comment.trim()) {
@@ -1681,6 +1915,7 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, mode, o
         isInterrupted
           ? taskId
           : action === 'revise' && targetTaskId !== taskId ? targetTaskId : undefined,
+        agentId || undefined,
       );
       onSubmitted();
     } catch (e) {
@@ -1736,12 +1971,26 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, mode, o
 
         {/* Comment / feedback */}
         <textarea
-          className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize-none"
+          className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize"
           rows={3}
           value={comment}
           onChange={(e) => setComment(e.target.value)}
           placeholder={isInterrupted ? '请输入本次中断原因或补充说明，然后继续执行...' : (action === 'approve' ? 'Optional comment...' : 'Describe what needs to change...')}
         />
+
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-zinc-500 shrink-0">Agent:</span>
+          <select
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
+          >
+            <option value="">Use task default</option>
+            {availableAgents.map((a) => (
+              <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
+            ))}
+          </select>
+        </div>
 
         {/* Rollback target (only for revise) */}
         {!isInterrupted && action === 'revise' && upstreamTasks.length > 0 && (
@@ -1821,6 +2070,9 @@ function LogRow({ entry, onOpenDetail, onInterrupt }: {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <p className="text-xs font-semibold text-zinc-800">{entry.label}</p>
+              {entry.round && (
+                <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500">R{entry.round}</span>
+              )}
               {entry.agents && entry.agents.length > 0 && (
                 <span className="text-[10px] text-zinc-400 font-mono">{entry.agents.join(', ')}</span>
               )}
@@ -1995,21 +2247,42 @@ function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
 
 function WorkerTimeline({ events, status }: { events: ToolEvent[]; status: LogEntry['status'] }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isProgrammaticScrollRef = useRef(false);
+  const [autoFollow, setAutoFollow] = useState(true);
   const timeline = buildTimeline(events);
+
+  const handleTimelineScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || isProgrammaticScrollRef.current) return;
+    if (isNearBottom(el)) {
+      setAutoFollow((prev) => (prev ? prev : true));
+      return;
+    }
+    if (status === 'running') {
+      setAutoFollow((prev) => (prev ? false : prev));
+    }
+  }, [status]);
+
+  useEffect(() => {
+    if (status === 'running') setAutoFollow(true);
+  }, [status]);
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el || status !== 'running') return;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
-    if (near) el.scrollTop = el.scrollHeight;
-  }, [events.length, status]);
+    if (!el || status !== 'running' || !autoFollow) return;
+    isProgrammaticScrollRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => {
+      isProgrammaticScrollRef.current = false;
+    });
+  }, [autoFollow, events.length, status]);
 
   if (timeline.length === 0) {
     return <div className="py-10 text-center text-xs text-zinc-300">Waiting for events...</div>;
   }
 
   return (
-    <div ref={scrollRef} className="overflow-y-auto max-h-[55vh] pr-1">
+    <div ref={scrollRef} onScroll={handleTimelineScroll} className="overflow-y-auto max-h-[55vh] pr-1">
       {timeline.map((item, i) =>
         item.type === 'tool'
           ? <TimelineToolItem key={`t-${item.use.toolUseId ?? i}`} item={item} idx={i} />

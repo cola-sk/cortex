@@ -83,6 +83,8 @@ export interface ReviewAction {
   comment: string;
   /** When revising, optionally target an upstream task instead of the current one */
   targetTaskId?: string;
+  /** Optional agent override for the target task revision */
+  agentId?: string;
 }
 
 export interface TaskRound {
@@ -95,7 +97,7 @@ export interface TaskRound {
     action: 'approve' | 'revise';
     comment: string;
     targetTaskId?: string;
+    agentId?: string;
     reviewedAt: string;
   };
 }
-

@@ -144,6 +144,119 @@ export class CliProvider implements LLMProvider {
     return this._lastToolEvents;
   }
 
+  private extractCodexToolResultContent(item: Record<string, unknown>): string {
+    const text =
+      (typeof item.aggregated_output === 'string' && item.aggregated_output) ||
+      (typeof item.output === 'string' && item.output) ||
+      (typeof item.text === 'string' && item.text);
+    if (text) return text;
+    return JSON.stringify(item, null, 2);
+  }
+
+  private normalizeCodexCommandForGuard(command: string): string {
+    const trimmed = command.trim();
+    const shellWrapped = trimmed.replace(/^\/bin\/(?:zsh|bash|sh)\s+-lc\s+/, '').trim();
+    // Handle wrappers like: /bin/zsh -lc 'pwd && ls'
+    return shellWrapped.replace(/^['"]|['"]$/g, '');
+  }
+
+  private parseJsonLineEvents(
+    ev: Record<string, unknown>,
+    nextIndex: () => number,
+  ): { events: ToolEvent[]; resultOutput?: string; hasEvents: boolean } {
+    const out: ToolEvent[] = [];
+    let resultOutput = '';
+    let hasEvents = false;
+
+    if (ev.type === 'assistant') {
+      hasEvents = true;
+      const msg = ev.message as { content?: Array<Record<string, unknown>> };
+      for (const block of msg?.content ?? []) {
+        if (block.type === 'text' && block.text) {
+          out.push({ index: nextIndex(), type: 'text', content: block.text as string });
+        } else if (block.type === 'tool_use') {
+          out.push({
+            index: nextIndex(),
+            type: 'tool_use',
+            name: block.name as string,
+            input: block.input as Record<string, unknown>,
+            toolUseId: block.id as string,
+          });
+        }
+      }
+    } else if (ev.type === 'message' && ev.role === 'assistant' && typeof ev.content === 'string') {
+      hasEvents = true;
+      out.push({ index: nextIndex(), type: 'text', content: ev.content });
+    } else if (ev.type === 'tool_use') {
+      hasEvents = true;
+      out.push({
+        index: nextIndex(),
+        type: 'tool_use',
+        name: ev.tool_name as string,
+        input: (ev.parameters ?? {}) as Record<string, unknown>,
+        toolUseId: ev.tool_id as string,
+      });
+    } else if (ev.type === 'tool') {
+      hasEvents = true;
+      const content = ev.content as Array<{ type: string; text?: string }> | undefined;
+      const text = content?.map((c) => c.text ?? '').join('') ?? String(ev.content ?? '');
+      out.push({
+        index: nextIndex(),
+        type: 'tool_result',
+        content: text,
+        toolUseId: ev.tool_use_id as string,
+        isError: ev.is_error as boolean | undefined,
+      });
+    } else if (ev.type === 'tool_result') {
+      hasEvents = true;
+      out.push({
+        index: nextIndex(),
+        type: 'tool_result',
+        content: ev.output as string,
+        toolUseId: ev.tool_id as string,
+        isError: ev.status !== 'success',
+      });
+    } else if (ev.type === 'result') {
+      hasEvents = true;
+      if (typeof ev.result === 'string') resultOutput = ev.result;
+    } else if ((ev.type === 'item.started' || ev.type === 'item.completed') && ev.item && typeof ev.item === 'object') {
+      const item = ev.item as Record<string, unknown>;
+      const itemType = String(item.type ?? '');
+      const itemId = String(item.id ?? '');
+      if (itemType === 'agent_message') {
+        if (ev.type === 'item.completed' && typeof item.text === 'string' && item.text) {
+          hasEvents = true;
+          out.push({ index: nextIndex(), type: 'text', content: item.text as string });
+        }
+      } else if (ev.type === 'item.started') {
+        hasEvents = true;
+        const input: Record<string, unknown> = {};
+        if (typeof item.command === 'string') input.command = this.normalizeCodexCommandForGuard(item.command);
+        if (item.status != null) input.status = item.status;
+        out.push({
+          index: nextIndex(),
+          type: 'tool_use',
+          name: itemType || 'codex_item',
+          input,
+          toolUseId: itemId || undefined,
+        });
+      } else if (ev.type === 'item.completed') {
+        hasEvents = true;
+        const status = String(item.status ?? '');
+        const exitCode = item.exit_code as number | null | undefined;
+        out.push({
+          index: nextIndex(),
+          type: 'tool_result',
+          content: this.extractCodexToolResultContent(item),
+          toolUseId: itemId || undefined,
+          isError: (typeof exitCode === 'number' && exitCode !== 0) || (status === 'failed'),
+        });
+      }
+    }
+
+    return { events: out, resultOutput, hasEvents };
+  }
+
   /**
    * Attempt to parse CLI stdout as Claude stream-json JSONL.
    * Returns extracted text output + tool events, or null if not stream-json.
@@ -164,59 +277,15 @@ export class CliProvider implements LLMProvider {
       try {
         const ev = JSON.parse(line) as Record<string, unknown>;
 
-        if (ev.type === 'assistant') {
-          hasEvents = true;
-          const msg = ev.message as { content?: Array<Record<string, unknown>> };
-          for (const block of msg?.content ?? []) {
-            if (block.type === 'text' && block.text) {
-              toolEvents.push({ index: idx++, type: 'text', content: block.text as string });
-              textParts.push(block.text as string);
-            } else if (block.type === 'tool_use') {
-              toolEvents.push({
-                index: idx++,
-                type: 'tool_use',
-                name: block.name as string,
-                input: block.input as Record<string, unknown>,
-                toolUseId: block.id as string,
-              });
-            }
+        const parsed = this.parseJsonLineEvents(ev, () => idx++);
+        if (parsed.hasEvents) hasEvents = true;
+        if (parsed.resultOutput) resultOutput = parsed.resultOutput;
+        for (const event of parsed.events) {
+          toolEvents.push(event);
+          if (event.type === 'text' && event.content) {
+            textParts.push(event.content);
+            geminiTextParts.push(event.content);
           }
-        } else if (ev.type === 'message' && ev.role === 'assistant' && typeof ev.content === 'string') {
-          hasEvents = true;
-          toolEvents.push({ index: idx++, type: 'text', content: ev.content });
-          geminiTextParts.push(ev.content);
-        } else if (ev.type === 'tool_use') {
-          hasEvents = true;
-          toolEvents.push({
-            index: idx++,
-            type: 'tool_use',
-            name: ev.tool_name as string,
-            input: (ev.parameters ?? {}) as Record<string, unknown>,
-            toolUseId: ev.tool_id as string,
-          });
-        } else if (ev.type === 'tool') {
-          hasEvents = true;
-          const content = ev.content as Array<{ type: string; text?: string }> | undefined;
-          const text = content?.map((c) => c.text ?? '').join('') ?? String(ev.content ?? '');
-          toolEvents.push({
-            index: idx++,
-            type: 'tool_result',
-            content: text,
-            toolUseId: ev.tool_use_id as string,
-            isError: ev.is_error as boolean | undefined,
-          });
-        } else if (ev.type === 'tool_result') {
-          hasEvents = true;
-          toolEvents.push({
-            index: idx++,
-            type: 'tool_result',
-            content: ev.output as string,
-            toolUseId: ev.tool_id as string,
-            isError: ev.status !== 'success',
-          });
-        } else if (ev.type === 'result') {
-          hasEvents = true;
-          if (ev.result) resultOutput = ev.result as string;
         }
       } catch { /* non-JSON line */ }
     }
@@ -280,7 +349,7 @@ export class CliProvider implements LLMProvider {
         if (options?.cwd) {
           resolvedArgs.push('-C', options.cwd);
         }
-        resolvedArgs.push('exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', effectivePrompt);
+        resolvedArgs.push('exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', effectivePrompt);
       } else {
         // Generic: append prompt as positional arg
         resolvedArgs.push(effectivePrompt);
@@ -331,81 +400,17 @@ export class CliProvider implements LLMProvider {
             if (line.startsWith('{')) {
               try {
                 const ev = JSON.parse(line) as Record<string, unknown>;
-                let streamEvent: ToolEvent | null = null;
-
-                if (ev.type === 'assistant') {
-                  const msg = ev.message as { content?: Array<Record<string, unknown>> };
-                  for (const block of msg?.content ?? []) {
-                    if (block.type === 'text' && block.text) {
-                      streamEvent = { index: streamIdx++, type: 'text', content: block.text as string };
-                    } else if (block.type === 'tool_use') {
-                      streamEvent = {
-                        index: streamIdx++,
-                        type: 'tool_use',
-                        name: block.name as string,
-                        input: block.input as Record<string, unknown>,
-                        toolUseId: block.id as string,
-                      };
-                    }
-                    if (streamEvent) {
-                      // Active-Kill Sandbox Guardrail for Claude-style tool use
-                      if (streamEvent.type === 'tool_use' && options?.cwd && !explicitlyRequestsExternalAccess(userContent, options.cwd)) {
-                        const workspacePath = normalizeCwd(options.cwd);
-                        if (workspacePath && isAttemptingUnauthorizedAccess(streamEvent.name ?? '', streamEvent.input || {}, workspacePath)) {
-                          child.kill('SIGKILL');
-                          safeReject(new Error(`[SECURITY VIOLATION] Agent attempted to access unauthorized path outside the workspace: ${JSON.stringify(streamEvent.input)}. Process killed.`));
-                          return;
-                        }
-                      }
-                      options.onStreamEvent(streamEvent);
-                      handledAsJson = true;
-                    }
-                  }
-                } else if (ev.type === 'message' && ev.role === 'assistant' && typeof ev.content === 'string') {
-                  streamEvent = { index: streamIdx++, type: 'text', content: ev.content };
-                  options.onStreamEvent(streamEvent);
-                  handledAsJson = true;
-                } else if (ev.type === 'tool_use') {
-                  // Active-Kill Sandbox Guardrail for Gemini-style tool use
-                  const toolName = ev.tool_name as string;
-                  const toolInput = (ev.parameters ?? {}) as Record<string, unknown>;
-                  if (options?.cwd && !explicitlyRequestsExternalAccess(userContent, options.cwd)) {
+                const parsed = this.parseJsonLineEvents(ev, () => streamIdx++);
+                for (const streamEvent of parsed.events) {
+                  // Active-Kill Sandbox Guardrail for structured tool use
+                  if (streamEvent.type === 'tool_use' && options?.cwd && !explicitlyRequestsExternalAccess(userContent, options.cwd)) {
                     const workspacePath = normalizeCwd(options.cwd);
-                    if (workspacePath && isAttemptingUnauthorizedAccess(toolName, toolInput, workspacePath)) {
+                    if (workspacePath && isAttemptingUnauthorizedAccess(streamEvent.name ?? '', streamEvent.input || {}, workspacePath)) {
                       child.kill('SIGKILL');
-                      safeReject(new Error(`[SECURITY VIOLATION] Agent attempted to access unauthorized path outside the workspace: ${JSON.stringify(toolInput)}. Process killed.`));
+                      safeReject(new Error(`[SECURITY VIOLATION] Agent attempted to access unauthorized path outside the workspace: ${JSON.stringify(streamEvent.input)}. Process killed.`));
                       return;
                     }
                   }
-                  streamEvent = {
-                    index: streamIdx++,
-                    type: 'tool_use',
-                    name: toolName,
-                    input: toolInput,
-                    toolUseId: ev.tool_id as string,
-                  };
-                  options.onStreamEvent(streamEvent);
-                  handledAsJson = true;
-                } else if (ev.type === 'tool') {
-                  const content = ev.content as Array<{ type: string; text?: string }> | undefined;
-                  const text = content?.map((c) => c.text ?? '').join('') ?? String(ev.content ?? '');
-                  streamEvent = {
-                    index: streamIdx++,
-                    type: 'tool_result',
-                    content: text,
-                    toolUseId: ev.tool_use_id as string,
-                    isError: ev.is_error as boolean | undefined,
-                  };
-                  options.onStreamEvent(streamEvent);
-                  handledAsJson = true;
-                } else if (ev.type === 'tool_result') {
-                  streamEvent = {
-                    index: streamIdx++,
-                    type: 'tool_result',
-                    content: ev.output as string,
-                    toolUseId: ev.tool_id as string,
-                    isError: ev.status !== 'success',
-                  };
                   options.onStreamEvent(streamEvent);
                   handledAsJson = true;
                 }
