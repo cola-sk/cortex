@@ -39,7 +39,7 @@ export class ClaudeProvider implements LLMProvider {
 
     // Use streaming when onStreamEvent callback is provided
     if (options.onStreamEvent) {
-      const stream = this.client.messages.stream(createParams);
+      const stream = this.client.messages.stream(createParams, { signal: options.signal });
 
       let fullContent = '';
       let eventIdx = 0;
@@ -69,7 +69,7 @@ export class ClaudeProvider implements LLMProvider {
     }
 
     // Non-streaming fallback
-    const response = await this.client.messages.create(createParams);
+    const response = await this.client.messages.create(createParams, { signal: options.signal });
 
     const block = response.content[0];
     if (block.type !== 'text') {

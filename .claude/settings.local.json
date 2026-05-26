@@ -9,7 +9,8 @@
       "Bash(curl -s -X DELETE http://localhost:47821/api/pipelines/pipe_mp56pdip_gina)",
       "Bash(lsof -ti:47821)",
       "Bash(xargs kill -9)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(git push *)"
     ],
     "additionalDirectories": [
       "/Users/liuzhe.x/Pictures/ai"

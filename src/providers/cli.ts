@@ -37,6 +37,80 @@ function normalizeCwd(cwd?: string): string | undefined {
   return path.resolve(trimmed);
 }
 
+/** Check if the task explicitly requests accessing paths outside the workspace */
+function explicitlyRequestsExternalAccess(userContent: string, workspacePath?: string): boolean {
+  if (!workspacePath) return false;
+  
+  // Find all absolute paths in userContent (starting with / on unix, or drive letters on windows)
+  const absPathRegex = /(?:\s|^)(\/[a-zA-Z0-9_\.\-]+(?:\/[a-zA-Z0-9_\.\-]+)*)/g;
+  let match;
+  while ((match = absPathRegex.exec(userContent)) !== null) {
+    const matchedPath = match[1];
+    // Check if matchedPath is outside the workspace
+    const relative = path.relative(workspacePath, matchedPath);
+    const isInside = !relative.startsWith('..') && !path.isAbsolute(relative);
+    if (!isInside) {
+      return true; // Explicitly requested access to a path outside the workspace
+    }
+  }
+  
+  // Semantic keywords requesting external or out-of-workspace directory access
+  const keywords = [
+    'other directory', 'external directory', 'outside of', 'cross-directory', 
+    'system directory', 'home directory', 'slash', 'root folder',
+    '其它目录', '外部目录', '工作区之外', '跨目录', '系统目录', '家目录', '根目录'
+  ];
+  const lowercaseContent = userContent.toLowerCase();
+  if (keywords.some(kw => lowercaseContent.includes(kw))) {
+    return true;
+  }
+  
+  return false;
+}
+
+/** Physically check if the tool parameters are attempting to access paths outside the workspace */
+function isAttemptingUnauthorizedAccess(toolName: string, input: any, workspacePath: string): boolean {
+  if (!toolName || !input) return false;
+  
+  // 1. Validate file path parameters
+  const filePathKeys = ['file_path', 'path', 'filepath', 'file', 'target', 'dest', 'source', 'src'];
+  for (const key of filePathKeys) {
+    const val = input[key];
+    if (typeof val === 'string' && val.trim()) {
+      // Resolve path (could be relative or absolute)
+      const resolved = path.isAbsolute(val) ? path.resolve(val) : path.resolve(workspacePath, val);
+      const relative = path.relative(workspacePath, resolved);
+      const isInside = !relative.startsWith('..') && !path.isAbsolute(relative);
+      // Allow exact match with workspace directory itself
+      if (!isInside && resolved !== workspacePath) {
+        return true; // Path is physically outside the workspace!
+      }
+    }
+  }
+  
+  // 2. Validate bash/command execution parameters
+  const cmdKeys = ['command', 'cmd', 'script', 'args'];
+  for (const key of cmdKeys) {
+    const val = input[key];
+    const checkStr = Array.isArray(val) ? val.join(' ') : (typeof val === 'string' ? val : '');
+    if (checkStr.trim()) {
+      // Check if command references any absolute paths outside the workspace
+      const absPathRegex = /(?:\s|^)(\/[a-zA-Z0-9_\.\-]+(?:\/[a-zA-Z0-9_\.\-]+)*)/g;
+      let match;
+      while ((match = absPathRegex.exec(checkStr)) !== null) {
+        const matchedPath = match[1];
+        const relative = path.relative(workspacePath, matchedPath);
+        const isInside = !relative.startsWith('..') && !path.isAbsolute(relative);
+        if (!isInside && matchedPath !== workspacePath) {
+          return true; // Command is trying to access an external absolute path!
+        }
+      }
+    }
+  }
+  
+  return false;
+}
+
 /** Strip ANSI escape codes from terminal output */
 function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex
@@ -155,11 +229,26 @@ export class CliProvider implements LLMProvider {
   }
 
   async chat(messages: Message[], options?: ChatOptions): Promise<string> {
-    const systemContent = messages.find((m) => m.role === 'system')?.content ?? '';
+    let systemContent = messages.find((m) => m.role === 'system')?.content ?? '';
     const userContent = messages
       .filter((m) => m.role === 'user')
       .map((m) => m.content)
       .join('\n\n');
+
+    // Security Constraint: Lock CLI agent to the active workspace unless the task explicitly requests external path access
+    if (options?.cwd) {
+      const workspacePath = normalizeCwd(options.cwd);
+      if (workspacePath && !explicitlyRequestsExternalAccess(userContent, workspacePath)) {
+        systemContent = `${systemContent}\n\n` +
+          `[SECURITY POLICY - WORKSPACE LOCK]\n` +
+          `- You are strictly restricted to operate ONLY within the active workspace directory: "${workspacePath}".\n` +
+          `- Do NOT read, write, create, or execute any commands in directories outside of "${workspacePath}".\n` +
+          `- All file operations (read, write, list) and shell commands must be relative to or inside "${workspacePath}".\n` +
+          `- Unless explicitly requested in your prompt to access a specific external path, you must not access any default home sandbox (~/.codex or ~/.cortex) or system directories.\n` +
+          `- If you need to write temporary files, create a temporary folder INSIDE "${workspacePath}".\n` +
+          `- If you cannot fulfill the request within "${workspacePath}", explain this limitation to the user.`;
+      }
+    }
 
     const hasSystemPlaceholder = this.argTemplates.some((a) => a.includes('{{SYSTEM}}'));
     const hasPromptPlaceholder = this.argTemplates.some((a) => a.includes('{{PROMPT}}'));
@@ -187,8 +276,11 @@ export class CliProvider implements LLMProvider {
       } else if (cmd === 'gemini') {
         resolvedArgs.push('-p', effectivePrompt, '--output-format', 'stream-json', '--yolo');
       } else if (cmd === 'codex') {
-        // Codex CLI: use exec subcommand with positional prompt
-        resolvedArgs.push('exec', effectivePrompt);
+        // Codex CLI: use -C to specify working root, then exec subcommand with positional prompt
+        if (options?.cwd) {
+          resolvedArgs.push('-C', options.cwd);
+        }
+        resolvedArgs.push('exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', effectivePrompt);
       } else {
         // Generic: append prompt as positional arg
         resolvedArgs.push(effectivePrompt);
@@ -196,6 +288,10 @@ export class CliProvider implements LLMProvider {
     }
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const safeResolve = (val: string) => { if (!settled) { settled = true; resolve(val); } };
+      const safeReject = (err: Error) => { if (!settled) { settled = true; reject(err); } };
+
       const child = spawn(this.command, resolvedArgs, {
         cwd: normalizeCwd(options?.cwd),
         env: {
@@ -252,6 +348,15 @@ export class CliProvider implements LLMProvider {
                       };
                     }
                     if (streamEvent) {
+                      // Active-Kill Sandbox Guardrail for Claude-style tool use
+                      if (streamEvent.type === 'tool_use' && options?.cwd && !explicitlyRequestsExternalAccess(userContent, options.cwd)) {
+                        const workspacePath = normalizeCwd(options.cwd);
+                        if (workspacePath && isAttemptingUnauthorizedAccess(streamEvent.name ?? '', streamEvent.input || {}, workspacePath)) {
+                          child.kill('SIGKILL');
+                          safeReject(new Error(`[SECURITY VIOLATION] Agent attempted to access unauthorized path outside the workspace: ${JSON.stringify(streamEvent.input)}. Process killed.`));
+                          return;
+                        }
+                      }
                       options.onStreamEvent(streamEvent);
                       handledAsJson = true;
                     }
@@ -261,11 +366,22 @@ export class CliProvider implements LLMProvider {
                   options.onStreamEvent(streamEvent);
                   handledAsJson = true;
                 } else if (ev.type === 'tool_use') {
+                  // Active-Kill Sandbox Guardrail for Gemini-style tool use
+                  const toolName = ev.tool_name as string;
+                  const toolInput = (ev.parameters ?? {}) as Record<string, unknown>;
+                  if (options?.cwd && !explicitlyRequestsExternalAccess(userContent, options.cwd)) {
+                    const workspacePath = normalizeCwd(options.cwd);
+                    if (workspacePath && isAttemptingUnauthorizedAccess(toolName, toolInput, workspacePath)) {
+                      child.kill('SIGKILL');
+                      safeReject(new Error(`[SECURITY VIOLATION] Agent attempted to access unauthorized path outside the workspace: ${JSON.stringify(toolInput)}. Process killed.`));
+                      return;
+                    }
+                  }
                   streamEvent = {
                     index: streamIdx++,
                     type: 'tool_use',
-                    name: ev.tool_name as string,
-                    input: (ev.parameters ?? {}) as Record<string, unknown>,
+                    name: toolName,
+                    input: toolInput,
                     toolUseId: ev.tool_id as string,
                   };
                   options.onStreamEvent(streamEvent);
@@ -317,14 +433,14 @@ export class CliProvider implements LLMProvider {
       child.on('error', (err) => {
         const e = err as NodeJS.ErrnoException;
         if (e.code === 'ENOENT') {
-          reject(new Error(
+          safeReject(new Error(
             `CLI "${this.command}" not found in PATH. ` +
             `Ensure it is installed and available to the server process. ` +
             `Current PATH: ${buildCliPath()}`,
           ));
           return;
         }
-        reject(new Error(`CLI "${this.command}" failed to start: ${err.message}`));
+        safeReject(new Error(`CLI "${this.command}" failed to start: ${err.message}`));
       });
 
       // Abort support: kill child when signal fires
@@ -345,26 +461,26 @@ export class CliProvider implements LLMProvider {
       child.on('close', (code, signal) => {
         // SIGTERM (exit 143) means the process was intentionally killed — treat as abort
         if (signal === 'SIGTERM' || code === 143) {
-          reject(new Error('Aborted'));
+          safeReject(new Error('Aborted'));
           return;
         }
         if (code !== 0) {
           const errText = stripAnsi(Buffer.concat(stderr).toString().trim()) || `exit code ${code}`;
           this._lastToolEvents = [];
-          reject(new Error(`CLI "${this.command}" exited with error: ${errText}`));
+          safeReject(new Error(`CLI "${this.command}" exited with error: ${errText}`));
           return;
         }
         const rawOutput = stripAnsi(Buffer.concat(stdout).toString().trim());
         const parsed = this.tryParseStreamJson(rawOutput);
         if (parsed) {
           this._lastToolEvents = parsed.toolEvents;
-          resolve(parsed.output);
+          safeResolve(parsed.output);
         } else {
           this._lastToolEvents = [];
           // Some CLIs (e.g. codex) write progress to stderr and only a brief result to stdout.
           // If stdout is empty, fall back to stderr content.
           const output = rawOutput || stripAnsi(Buffer.concat(stderr).toString().trim());
-          resolve(output);
+          safeResolve(output);
         }
       });
     });

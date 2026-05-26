@@ -126,7 +126,7 @@ export interface RunTaskRecord {
   taskId: string;
   taskName: string;
   agents: string[];
-  status: 'pending' | 'running' | 'done' | 'error' | 'awaiting_review';
+  status: 'pending' | 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted';
   requiresReview?: boolean;
   currentRound?: number;
   rounds?: RoundRecord[];
@@ -147,7 +147,7 @@ export interface RunSummary {
   pipelineId: string;
   pipelineName: string;
   goal: string;
-  status: 'running' | 'done' | 'error' | 'awaiting_review';
+  status: 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted';
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;

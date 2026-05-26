@@ -29,6 +29,8 @@ interface ReviewRecord {
   reviewedAt: string;
 }
 
+type PauseMode = 'review' | 'interrupt';
+
 interface RoundRecord {
   round: number;
   output: string;
@@ -41,7 +43,7 @@ interface RunTaskRecord {
   taskId: string;
   taskName: string;
   agents: string[];
-  status: 'pending' | 'running' | 'done' | 'error' | 'awaiting_review';
+  status: 'pending' | 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted';
   requiresReview?: boolean;
   currentRound?: number;
   rounds?: RoundRecord[];
@@ -60,7 +62,7 @@ interface RunRecord {
   pipelineId: string;
   pipelineName: string;
   goal: string;
-  status: 'running' | 'done' | 'error' | 'awaiting_review';
+  status: 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted';
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;
@@ -87,6 +89,10 @@ const activeRuns = new Map<string, RunRecord>();
 const runSubscribers = new Map<string, Set<express.Response>>();
 // Per-run review resolvers: key = "runId:taskId"
 const reviewResolvers = new Map<string, (review: ReviewAction) => void>();
+// Per-run pause mode for human interaction: key = "runId:taskId"
+const reviewModes = new Map<string, PauseMode>();
+// Per-task active abort controllers: key = "runId:taskId"
+const activeTaskAborts = new Map<string, AbortController>();
 
 function emitToRunSubscribers(runId: string, type: string, data: unknown): void {
   const subs = runSubscribers.get(runId);
@@ -493,15 +499,6 @@ app.post('/api/runs/:runId/review', (req, res) => {
       res.status(400).json({ error: 'taskId is required' });
       return;
     }
-    if (body.action !== 'approve' && body.action !== 'revise') {
-      res.status(400).json({ error: 'action must be "approve" or "revise"' });
-      return;
-    }
-    if (body.action === 'revise' && (!body.comment || !body.comment.trim())) {
-      res.status(400).json({ error: 'comment is required when action is "revise"' });
-      return;
-    }
-
     const key = `${runId}:${body.taskId}`;
     const resolver = reviewResolvers.get(key);
     if (!resolver) {
@@ -509,13 +506,55 @@ app.post('/api/runs/:runId/review', (req, res) => {
       return;
     }
 
-    const review: ReviewAction = {
-      action: body.action,
-      comment: body.comment ?? '',
-      targetTaskId: body.targetTaskId,
-    };
+    const mode = reviewModes.get(key) ?? 'review';
+    let review: ReviewAction;
+    if (mode === 'interrupt') {
+      const comment = body.comment?.trim() ?? '';
+      if (!comment) {
+        res.status(400).json({ error: 'comment is required to resume an interrupted task' });
+        return;
+      }
+      review = {
+        // Interrupted tasks always continue via the revise path for the same task.
+        action: 'revise',
+        comment,
+        targetTaskId: body.taskId,
+      };
+    } else {
+      if (body.action !== 'approve' && body.action !== 'revise') {
+        res.status(400).json({ error: 'action must be "approve" or "revise"' });
+        return;
+      }
+      if (body.action === 'revise' && (!body.comment || !body.comment.trim())) {
+        res.status(400).json({ error: 'comment is required when action is "revise"' });
+        return;
+      }
+      review = {
+        action: body.action,
+        comment: body.comment ?? '',
+        targetTaskId: body.targetTaskId,
+      };
+    }
     resolver(review);
     reviewResolvers.delete(key);
+    reviewModes.delete(key);
+    res.json({ success: true, mode });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /api/runs/:runId/tasks/:taskId/interrupt — interrupt a running task
+app.post('/api/runs/:runId/tasks/:taskId/interrupt', (req, res) => {
+  try {
+    const { runId, taskId } = req.params;
+    const key = `${runId}:${taskId}`;
+    const controller = activeTaskAborts.get(key);
+    if (!controller) {
+      res.status(404).json({ error: `Task "${taskId}" in run "${runId}" is not currently running or cannot be interrupted` });
+      return;
+    }
+    controller.abort();
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -538,7 +577,13 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
   res.flushHeaders();
 
   const emit = (event: string, data: unknown) => {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    if (!res.destroyed && !res.writableEnded) {
+      try {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {
+        // Ignore write failures to closed client sockets
+      }
+    }
   };
 
   let run: RunRecord | null = null;
@@ -549,7 +594,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
   const doAbort = () => {
     // Guard: don't abort if pipeline already completed normally
     if (pipelineFinished) return;
-    if (!aborted && run && (run.status === 'running' || run.status === 'awaiting_review')) {
+    if (!aborted && run && (run.status === 'running' || run.status === 'awaiting_review' || run.status === 'interrupted')) {
       aborted = true;
       abortController.abort();
       run.status = 'error';
@@ -565,14 +610,11 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     }
   };
 
-  // Use res.on('close') instead of req.on('close') — the response stream closing
-  // is a more reliable indicator that the client disconnected.
-  // Also guard against premature close events by verifying res.writableFinished.
+  // When the client disconnects (e.g. page refresh or closed tab),
+  // we do NOT abort the running pipeline. The execution will continue in the background
+  // and the client can seamlessly reconnect to its stream when the page loads.
   res.on('close', () => {
-    if (!res.writableFinished) {
-      // Client disconnected before we finished writing
-      doAbort();
-    }
+    // No-op: Do not abort the background run.
   });
 
   // Forward SIGTERM to running child processes
@@ -646,7 +688,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     const taskStartTimes = new Map<string, number>();
 
     const runner = new Runner(agentMap, {
-      onTaskStart: (taskId, taskName, agents) => {
+      onTaskStart: (taskId, taskName, agents, abortController) => {
         emit('task:start', { taskId, taskName, agents });
         emitToRunSubscribers(runId, 'task:start', { taskId, taskName, agents });
         const task = run!.tasks.find((t) => t.taskId === taskId);
@@ -656,6 +698,9 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
           if (agents.length > 1) task.workerStatus = agents.map(() => 'running');
         }
         taskStartTimes.set(taskId, Date.now());
+        if (abortController) {
+          activeTaskAborts.set(`${runId}:${taskId}`, abortController);
+        }
         flushAndSaveRun(run!);
       },
       onTaskProgress: (taskId, workerIndex, event) => {
@@ -682,11 +727,13 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         flushAndSaveRun(run!);
       },
       onTaskComplete: (taskId, taskName, result: TaskResult) => {
+        activeTaskAborts.delete(`${runId}:${taskId}`);
         emit('task:complete', { taskId, taskName, output: result.output, outputs: result.outputs, error: result.error });
         emitToRunSubscribers(runId, 'task:complete', { taskId, taskName, output: result.output, outputs: result.outputs, error: result.error });
         const task = run!.tasks.find((t) => t.taskId === taskId);
         if (task) {
-          task.status = result.error ? 'error' : 'done';
+          const isInterrupted = result.error === 'Interrupted by user';
+          task.status = isInterrupted ? 'interrupted' : (result.error ? 'error' : 'done');
           task.finishedAt = new Date().toISOString();
           const started = taskStartTimes.get(taskId);
           if (started) task.durationMs = Date.now() - started;
@@ -709,22 +756,25 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
       onReviewRequired: (taskId, taskName, output, round) => {
         return new Promise<ReviewAction>((resolve) => {
           const key = `${runId}:${taskId}`;
-          reviewResolvers.set(key, resolve);
-          // Update run status
-          run!.status = 'awaiting_review';
           const task = run!.tasks.find((t) => t.taskId === taskId);
+          const mode: PauseMode = task?.error === 'Interrupted by user' ? 'interrupt' : 'review';
+          reviewResolvers.set(key, resolve);
+          reviewModes.set(key, mode);
+          // Update run status
+          run!.status = mode === 'interrupt' ? 'interrupted' : 'awaiting_review';
           if (task) {
-            task.status = 'awaiting_review';
+            task.status = mode === 'interrupt' ? 'interrupted' : 'awaiting_review';
             task.currentRound = round;
           }
           flushAndSaveRun(run!);
-          emit('review:pending', { taskId, taskName, output, round });
-          emitToRunSubscribers(runId, 'review:pending', { taskId, taskName, output, round });
+          emit('review:pending', { taskId, taskName, output, round, mode });
+          emitToRunSubscribers(runId, 'review:pending', { taskId, taskName, output, round, mode });
         });
       },
       onReviewSubmitted: (taskId, action, round) => {
-        run!.status = 'running';
         const task = run!.tasks.find((t) => t.taskId === taskId);
+        const mode: PauseMode = task?.status === 'interrupted' ? 'interrupt' : 'review';
+        run!.status = 'running';
         if (task) {
           if (!task.rounds) task.rounds = [];
           task.rounds.push({
@@ -739,15 +789,18 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
               reviewedAt: new Date().toISOString(),
             },
           });
-          if (action.action === 'approve') {
+          if (mode === 'interrupt') {
+            task.status = 'running';
+            task.error = undefined;
+          } else if (action.action === 'approve') {
             task.status = 'done';
           } else {
             task.status = 'pending';
           }
         }
         flushAndSaveRun(run!);
-        emit('review:submitted', { taskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, round });
-        emitToRunSubscribers(runId, 'review:submitted', { taskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, round });
+        emit('review:submitted', { taskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, round, mode });
+        emitToRunSubscribers(runId, 'review:submitted', { taskId, action: action.action, comment: action.comment, targetTaskId: action.targetTaskId, round, mode });
       },
       onTaskRevision: (taskId, round) => {
         const task = run!.tasks.find((t) => t.taskId === taskId);
@@ -796,7 +849,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     if (!aborted) {
       emit('error', { message: (err as Error).message });
       if (run) emitToRunSubscribers(run.id, 'error', { message: (err as Error).message });
-      if (run && (run.status === 'running' || run.status === 'awaiting_review')) {
+      if (run && (run.status === 'running' || run.status === 'awaiting_review' || run.status === 'interrupted')) {
         run.status = 'error';
         run.finishedAt = new Date().toISOString();
         run.durationMs = Date.now() - new Date(run.startedAt).getTime();
@@ -811,6 +864,13 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
       for (const key of reviewResolvers.keys()) {
         if (key.startsWith(`${run.id}:`)) reviewResolvers.delete(key);
       }
+      for (const key of reviewModes.keys()) {
+        if (key.startsWith(`${run.id}:`)) reviewModes.delete(key);
+      }
+      // Clean up any active task abort controllers for this run
+      for (const key of activeTaskAborts.keys()) {
+        if (key.startsWith(`${run.id}:`)) activeTaskAborts.delete(key);
+      }
       // Close all run subscribers
       const subs = runSubscribers.get(run.id);
       if (subs) {
@@ -820,7 +880,9 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     }
   }
 
-  res.end();
+  if (!res.destroyed && !res.writableEnded) {
+    res.end();
+  }
 });
 
 // SPA fallback
@@ -846,7 +908,7 @@ app.listen(PORT, () => {
         try {
           const fp = path.join(runsDir, file);
           const data = JSON.parse(fs.readFileSync(fp, 'utf-8'));
-          if (data.status === 'running' || data.status === 'awaiting_review') {
+          if (data.status === 'running' || data.status === 'awaiting_review' || data.status === 'interrupted') {
             data.status = 'error';
             data.finishedAt = new Date().toISOString();
             data.durationMs = Date.now() - new Date(data.startedAt).getTime();

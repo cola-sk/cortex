@@ -47,7 +47,7 @@ function getGitDiff(cwd?: string): string {
 }
 
 export interface RunnerCallbacks {
-  onTaskStart?: (taskId: string, taskName: string, agents: string[]) => void;
+  onTaskStart?: (taskId: string, taskName: string, agents: string[], abortController?: AbortController) => void;
   onTaskProgress?: (taskId: string, workerIndex: number, event: import('./events.js').ToolEvent) => void;
   onWorkerComplete?: (taskId: string, workerIndex: number, output: string, error?: string) => void;
   onTaskComplete?: (taskId: string, taskName: string, result: TaskResult) => void;
@@ -317,7 +317,19 @@ export class Runner {
         fullInput = assemblePrompt(goalPrefix, upstreamContext, task.input);
       }
 
-      this.callbacks.onTaskStart?.(task.id, task.name, agentKeys);
+      const taskAbortController = new AbortController();
+      let cleanupSignal: (() => void) | undefined;
+      if (signal) {
+        if (signal.aborted) {
+          taskAbortController.abort();
+        } else {
+          const onAbort = () => taskAbortController.abort();
+          signal.addEventListener('abort', onAbort);
+          cleanupSignal = () => signal.removeEventListener('abort', onAbort);
+        }
+      }
+
+      this.callbacks.onTaskStart?.(task.id, task.name, agentKeys, taskAbortController);
 
       // Run all assigned agents in parallel (multi-worker)
       const workerResults = await Promise.all(
@@ -334,20 +346,33 @@ export class Runner {
               onStreamEvent: (event) => {
                 this.callbacks.onTaskProgress?.(task.id, idx, event);
               },
-              signal,
+              signal: taskAbortController.signal,
             });
             const toolEvents = agent.getLastToolEvents();
             if (!this.silent) console.log(`  ✓ [${label}] ${output.length} chars${toolEvents.length ? ` | ${toolEvents.filter(e => e.type === 'tool_use').length} tool calls` : ''}`);
             this.callbacks.onWorkerComplete?.(task.id, idx, output);
             return { output, toolEvents };
           } catch (err) {
-            const error = err instanceof Error ? err.message : String(err);
+            const isPipelineAborted = signal?.aborted ?? false;
+            const isTaskInterrupted = taskAbortController.signal.aborted && !isPipelineAborted;
+            const error = isTaskInterrupted
+              ? 'Interrupted by user'
+              : (err instanceof Error ? err.message : String(err));
+
             if (!this.silent) console.error(`  ✗ [${label}] ${error}`);
             this.callbacks.onWorkerComplete?.(task.id, idx, '', error);
-            return { output: '', error, toolEvents: [] };
+
+            let toolEvents: import('./events.js').ToolEvent[] = [];
+            try {
+              toolEvents = agent.getLastToolEvents();
+            } catch {}
+
+            return { output: '', error, toolEvents };
           }
         }),
       );
+
+      if (cleanupSignal) cleanupSignal();
 
       const outputs = workerResults.map((r) => r.output);
       const errors = workerResults.map((r) => r.error).filter(Boolean);
@@ -368,11 +393,14 @@ export class Runner {
       results.set(task.id, taskResult);
       this.callbacks.onTaskComplete?.(task.id, task.name, taskResult);
 
+      const isInterrupted = workerResults.some((r) => r.error === 'Interrupted by user');
+      const shouldReview = (task.requiresReview || isInterrupted) && this.callbacks.onReviewRequired && (!taskResult.error || isInterrupted);
+
       // Check if this task requires human review
-      if (task.requiresReview && this.callbacks.onReviewRequired && !taskResult.error) {
+      if (shouldReview) {
         if (!this.silent) console.log(`  ⏸ [${task.id}] Awaiting human review (round ${currentRound})...`);
 
-        const review = await this.callbacks.onReviewRequired(task.id, task.name, combinedOutput, currentRound);
+        const review = await this.callbacks.onReviewRequired!(task.id, task.name, combinedOutput, currentRound);
         this.callbacks.onReviewSubmitted?.(task.id, review, currentRound);
 
         // Record this round
@@ -395,6 +423,9 @@ export class Runner {
         if (review.action === 'approve') {
           if (!this.silent) console.log(`  ✓ [${task.id}] Approved — continuing`);
           completed.add(task.id);
+          if (taskResult.error) {
+            delete taskResult.error;
+          }
           return;
         }
 

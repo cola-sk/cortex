@@ -5,7 +5,7 @@ import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark.css';
 import type { ToolEvent } from '../types';
 
-export type DetailStatus = 'running' | 'done' | 'error' | 'decision';
+export type DetailStatus = 'running' | 'done' | 'error' | 'decision' | 'interrupted';
 
 type ContentSection = { kind: 'markdown' | 'thinking'; content: string };
 
@@ -79,10 +79,70 @@ function formatJsonLikeText(text: string): string | null {
   return null;
 }
 
+function guessLanguageFromCodeText(text: string): string {
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return 'text';
+
+  const commandLineCount = lines.filter((line) =>
+    /^(?:\$|#)?\s*(npm|pnpm|yarn|bun|node|npx|git|ls|cd|cat|echo|curl|wget|python|pip|go|cargo|docker|kubectl|helm|make|cmake|uv|pytest|java|javac|mvn|gradle|apt|brew)\b/i.test(line)
+  ).length;
+  if (commandLineCount >= Math.max(2, Math.ceil(lines.length * 0.5))) return 'bash';
+
+  const htmlLikeCount = lines.filter((line) => /<\/?[a-z][\w-]*(\s[^>]*)?>/i.test(line)).length;
+  if (htmlLikeCount >= Math.max(2, Math.ceil(lines.length * 0.4))) return 'html';
+
+  const pythonLikeCount = lines.filter((line) =>
+    /^def\s+\w+\(|^class\s+\w+|^from\s+\w+\s+import|^import\s+\w+|:\s*$/.test(line)
+  ).length;
+  if (pythonLikeCount >= Math.max(2, Math.ceil(lines.length * 0.35))) return 'python';
+
+  const tsLikeCount = lines.filter((line) =>
+    /\binterface\s+\w+|\btype\s+\w+\s*=|:\s*(string|number|boolean|unknown|any|Record<|Array<|Promise<)/.test(line)
+  ).length;
+  if (tsLikeCount >= Math.max(1, Math.ceil(lines.length * 0.25))) return 'typescript';
+
+  const jsLikeCount = lines.filter((line) =>
+    /\b(const|let|var|function|class|import|export|return)\b|=>|[{};]/.test(line)
+  ).length;
+  if (jsLikeCount >= Math.max(2, Math.ceil(lines.length * 0.35))) return 'javascript';
+
+  const yamlLikeCount = lines.filter((line) => /^[\w"-]+\s*:\s*.+$/.test(line) && !/[{};]/.test(line)).length;
+  if (yamlLikeCount >= Math.max(2, Math.ceil(lines.length * 0.6))) return 'yaml';
+
+  return 'text';
+}
+
+function formatCodeLikeText(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (trimmed.includes('```')) return null;
+
+  const lines = trimmed.split('\n');
+  const nonEmptyLines = lines.map((line) => line.trim()).filter(Boolean);
+  if (nonEmptyLines.length < 2) return null;
+
+  const codeIndicatorCount = nonEmptyLines.filter((line) =>
+    /[{};]/.test(line) ||
+    /\b(const|let|var|function|class|import|export|return|if|else|for|while|switch|case|def|from|SELECT|INSERT|UPDATE|DELETE)\b/.test(line) ||
+    /^<\/?[a-z][\w-]*(\s[^>]*)?>/i.test(line) ||
+    /^(?:\$|#)?\s*(npm|pnpm|yarn|bun|node|npx|git|ls|cd|cat|echo|curl|wget|python|pip|go|cargo|docker|kubectl|helm|make|cmake|uv|pytest|java|javac|mvn|gradle|apt|brew)\b/i.test(line)
+  ).length;
+
+  const sentenceLikeCount = nonEmptyLines.filter((line) =>
+    /[.!?。！？]$/.test(line) && line.split(/\s+/).length >= 6
+  ).length;
+
+  if (codeIndicatorCount < Math.max(2, Math.ceil(nonEmptyLines.length * 0.45))) return null;
+  if (sentenceLikeCount > Math.ceil(nonEmptyLines.length * 0.4)) return null;
+
+  const lang = guessLanguageFromCodeText(trimmed);
+  return `\`\`\`${lang}\n${trimmed}\n\`\`\``;
+}
+
 function prepareDisplayContent(input: string): string {
   const normalized = normalizeMixedContent(input);
   if (/<(thinking|think)>/i.test(normalized)) return normalized;
-  return formatJsonLikeText(normalized) ?? normalized;
+  return formatJsonLikeText(normalized) ?? formatCodeLikeText(normalized) ?? normalized;
 }
 
 function splitThinkingSections(input: string): ContentSection[] {
@@ -110,14 +170,23 @@ function splitThinkingSections(input: string): ContentSection[] {
   return sections;
 }
 
-export function MarkdownWithThinking({ content, className }: { content: string; className?: string }) {
+export function MarkdownWithThinking({
+  content,
+  className,
+  markdownClassName,
+}: {
+  content: string;
+  className?: string;
+  markdownClassName?: string;
+}) {
   const sections = splitThinkingSections(content);
-  const proseClass = `prose prose-xs max-w-none text-zinc-700 leading-relaxed
-      prose-headings:text-zinc-800 prose-headings:font-semibold
-      prose-code:bg-zinc-100 prose-code:text-zinc-700 prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:text-[11px]
-      prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:rounded-lg prose-pre:text-xs prose-pre:overflow-x-auto
-      prose-a:text-indigo-600 prose-blockquote:border-l-indigo-300 prose-blockquote:text-zinc-500
-      prose-table:text-xs prose-th:bg-zinc-50 prose-td:py-1`;
+  const proseClass = `prose prose-sm max-w-none text-zinc-800 leading-relaxed
+      prose-headings:text-zinc-900 prose-headings:font-semibold prose-headings:tracking-tight
+      prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5
+      prose-code:bg-zinc-100 prose-code:text-zinc-800 prose-code:rounded prose-code:px-1.5 prose-code:py-0.5 prose-code:text-[12px]
+      prose-pre:bg-zinc-900 prose-pre:text-zinc-100 prose-pre:rounded-md prose-pre:text-[12px] prose-pre:overflow-x-auto prose-pre:!px-1 prose-pre:!py-1 prose-pre:!my-0 prose-pre:!mx-0 prose-pre:shadow-sm
+      prose-a:text-indigo-600 prose-blockquote:border-l-4 prose-blockquote:border-l-indigo-300 prose-blockquote:text-zinc-500 prose-blockquote:pl-4 prose-blockquote:italic
+      prose-table:text-xs prose-th:bg-zinc-50 prose-td:py-1.5 prose-th:py-2 prose-td:px-3 prose-th:px-3`;
 
   return (
     <div className={`space-y-2 ${className ?? ''}`}>
@@ -126,7 +195,7 @@ export function MarkdownWithThinking({ content, className }: { content: string; 
           return (
             <details key={`think-${idx}`} className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2">
               <summary className="cursor-pointer select-none text-[11px] font-semibold text-amber-700">Thinking</summary>
-              <div className={`mt-2 ${proseClass} prose-amber text-amber-900`}>
+              <div className={`mt-2 ${proseClass} prose-amber text-amber-900 ${markdownClassName ?? ''}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{section.content}</ReactMarkdown>
               </div>
             </details>
@@ -134,7 +203,7 @@ export function MarkdownWithThinking({ content, className }: { content: string; 
         }
 
         return (
-          <div key={`md-${idx}`} className={proseClass}>
+          <div key={`md-${idx}`} className={`${proseClass} ${markdownClassName ?? ''}`}>
             <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{section.content}</ReactMarkdown>
           </div>
         );
@@ -171,6 +240,39 @@ function appendTextChunk(base: string, chunk: string): string {
   return `${base}\n${chunk}`;
 }
 
+function looksLikeStandaloneTextBlock(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+  return /^(Reading additional input from stdin|Goal:|Human feedback|Previous revision history|Based on the above feedback|===|\[SECURITY POLICY)/i.test(trimmed);
+}
+
+function looksLikeDiffContent(content: string): boolean {
+  if (!content.trim()) return false;
+  return /(^diff --git\s|^index\s+[0-9a-f]+\.\.[0-9a-f]+|^@@\s|^---\s|^\+\+\+\s)/m.test(content);
+}
+
+function shouldMergeTextEvents(previous: string, incoming: string): boolean {
+  const prev = previous.trim();
+  const next = incoming.trim();
+  if (!prev || !next) return true;
+
+  // Keep diff chunks contiguous so users can view the whole patch in one section.
+  if (looksLikeDiffContent(previous) || looksLikeDiffContent(incoming)) {
+    return previous.length + incoming.length < 120_000;
+  }
+
+  if (looksLikeStandaloneTextBlock(next)) return false;
+  if (previous.length > 1800 || incoming.length > 900) return false;
+
+  const nextStartsNewSection = /^([A-Z][\w -]{2,32}:|\[[^\]]+\]|===)/.test(next);
+  if (nextStartsNewSection) return false;
+
+  const prevEndsSentence = /[.!?;:]$/.test(prev);
+  if (prevEndsSentence && next.length > 120) return false;
+
+  return true;
+}
+
 /** Check if a text event is an internal CLI protocol message (e.g. Claude Code stream-json system/assistant/user envelopes) */
 function isCliProtocolJson(content: string): boolean {
   const trimmed = content.trim();
@@ -199,7 +301,11 @@ function buildTimeline(events: ToolEvent[]): TimelineItem[] {
       if (!content.trim()) continue;
       const last = items[items.length - 1];
       if (last && last.type === 'text') {
-        last.content = appendTextChunk(last.content, content);
+        if (shouldMergeTextEvents(last.content, content)) {
+          last.content = appendTextChunk(last.content, content);
+        } else {
+          items.push({ type: 'text', content, index: idx++ });
+        }
       } else {
         items.push({ type: 'text', content, index: idx++ });
       }
@@ -208,9 +314,46 @@ function buildTimeline(events: ToolEvent[]): TimelineItem[] {
   return items;
 }
 
+function getToolLanguage(toolName?: string, input?: Record<string, unknown>): string {
+  if (!toolName) return 'text';
+  const name = toolName.toLowerCase();
+  
+  if (name.includes('bash') || name.includes('shell') || name.includes('command') || name.includes('run_command')) {
+    return 'bash';
+  }
+  
+  if (input) {
+    const filePath = String(input.TargetFile || input.file_path || input.AbsolutePath || input.path || '');
+    if (filePath) {
+      const ext = filePath.split('.').pop()?.toLowerCase();
+      if (ext === 'ts' || ext === 'tsx') return 'typescript';
+      if (ext === 'js' || ext === 'jsx') return 'javascript';
+      if (ext === 'json') return 'json';
+      if (ext === 'vue' || ext === 'html') return 'html';
+      if (ext === 'css') return 'css';
+      if (ext === 'py') return 'python';
+      if (ext === 'go') return 'go';
+      if (ext === 'sh') return 'bash';
+      if (ext === 'yaml' || ext === 'yml') return 'yaml';
+      if (ext === 'md') return 'markdown';
+    }
+  }
+  
+  return 'text';
+}
+
 function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }; idx: number }) {
   const [expanded, setExpanded] = useState(false);
   const summary = getToolSummaryText(item.use);
+  
+  const lang = getToolLanguage(item.use.name, item.use.input);
+  const inputMarkdown = item.use.input 
+    ? `\`\`\`json\n${JSON.stringify(item.use.input, null, 2)}\n\`\`\``
+    : `\`\`\`text\n${summary}\n\`\`\n`;
+  const outputMarkdown = item.result 
+    ? `\`\`\`${lang}\n${item.result.content || '(empty)'}\n\`\`\``
+    : '';
+
   return (
     <div className="flex gap-3">
       <div className="flex flex-col items-center w-5 shrink-0">
@@ -228,21 +371,23 @@ function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }
           <ChevronRightIcon className={`shrink-0 w-3 h-3 text-zinc-300 transition-transform ${expanded ? 'rotate-90' : ''}`} />
         </button>
         {expanded && (
-          <div className="mt-1 space-y-2 pl-1">
+          <div className="mt-1 space-y-2.5 pl-1">
             <div>
               <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider mb-1">Input</p>
-              <pre className="text-xs text-zinc-600 whitespace-pre-wrap font-mono leading-relaxed max-h-64 overflow-y-auto bg-zinc-50 rounded p-2">
-                {item.use.input ? JSON.stringify(item.use.input, null, 2) : summary}
-              </pre>
+              <div className="rounded-xl border border-zinc-200/50 bg-zinc-950 p-1 overflow-x-auto max-h-64">
+                <MarkdownWithThinking content={inputMarkdown} />
+              </div>
             </div>
             {item.result && (
               <div>
                 <p className={`text-[10px] font-medium uppercase tracking-wider mb-1 ${item.result.isError ? 'text-red-400' : 'text-zinc-400'}`}>
                   Output{item.result.isError ? ' (error)' : ''}
                 </p>
-                <pre className={`text-xs whitespace-pre-wrap font-mono leading-relaxed max-h-64 overflow-y-auto rounded p-2 ${item.result.isError ? 'bg-red-50 text-red-700' : 'bg-zinc-50 text-zinc-600'}`}>
-                  {item.result.content || '(empty)'}
-                </pre>
+                <div className={`rounded-xl border max-h-96 overflow-x-auto p-1 bg-zinc-950 ${
+                  item.result.isError ? 'border-red-200/50 bg-red-950/20' : 'border-zinc-200/50 bg-zinc-950'
+                }`}>
+                  <MarkdownWithThinking content={outputMarkdown} />
+                </div>
               </div>
             )}
           </div>
@@ -254,7 +399,11 @@ function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }
 
 function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
   const [expanded, setExpanded] = useState(true);
-  const preview = item.content.replace(/```[a-z]*\n?/ig, '').trim().split('\n')[0]?.slice(0, 80) ?? '';
+  const normalized = normalizeMixedContent(item.content).trim();
+  const lines = normalized.split('\n').filter(Boolean);
+  const preview = lines[0]?.slice(0, 92) ?? '';
+  const lineCount = lines.length;
+  const isDiffBlock = looksLikeDiffContent(normalized);
 
   return (
     <div className="flex gap-3">
@@ -269,8 +418,24 @@ function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
           <ChevronRightIcon className={`shrink-0 w-3 h-3 text-zinc-300 transition-transform ${expanded ? 'rotate-90' : ''}`} />
         </button>
         {expanded && (
-          <div className="mt-2 pl-1">
-            <MarkdownWithThinking content={item.content} className="text-xs" />
+          <div className="mt-2">
+            <div className="rounded-lg border border-zinc-200 bg-zinc-50/80 overflow-hidden">
+              <div className="px-3 py-1.5 border-b border-zinc-200 bg-white/80 flex items-center justify-between">
+                <span className="text-[10px] uppercase tracking-wider font-semibold text-zinc-500">
+                  {isDiffBlock ? 'Diff Output' : 'Agent Log'}
+                </span>
+                <span className="text-[10px] text-zinc-400">{lineCount} lines</span>
+              </div>
+              {isDiffBlock ? (
+                <div className="px-2 py-2 max-h-[70vh] overflow-auto bg-zinc-950">
+                  <MarkdownWithThinking content={`\`\`\`diff\n${normalized}\n\`\`\``} className="text-xs" />
+                </div>
+              ) : (
+                <pre className="px-3 py-2 text-[12px] leading-5 text-zinc-700 whitespace-pre-wrap break-words font-mono max-h-[45vh] overflow-auto">
+                  {normalized}
+                </pre>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -390,18 +555,25 @@ export function TaskDetailShared({
   // Multi-worker: worker tabs, each tab shows that worker's output + that worker's timeline
   // Single-worker: output + collapsible timeline (only if has tool events)
   return (
-    <div className={`space-y-3 ${fullHeight ? 'h-full min-h-0 flex flex-col' : ''}`}>
+    <div className={`space-y-2 ${fullHeight ? 'h-full min-h-0 flex flex-col' : ''}`}>
       {/* Error banner */}
       {detailText && status === 'error' && (
-        <div className="rounded-lg p-3 bg-red-50 text-red-700">
+        <div className="rounded-xl border border-red-200 bg-red-50/70 p-4 text-red-800 shadow-sm border-l-4 border-l-red-500">
           <MarkdownWithThinking content={detailText} className="text-xs" />
         </div>
       )}
 
       {/* Decision banner */}
       {detailText && status === 'decision' && (
-        <div className="rounded-lg p-3 bg-amber-50 text-amber-800">
+        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-amber-900 shadow-sm border-l-4 border-l-amber-500">
           <MarkdownWithThinking content={detailText} className="text-xs" />
+        </div>
+      )}
+
+      {/* Interrupted banner */}
+      {status === 'interrupted' && (
+        <div className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 text-zinc-700 shadow-sm border-l-4 border-l-zinc-400">
+          <p className="text-xs font-medium">任务已中断，提交评论后可继续执行。</p>
         </div>
       )}
 
@@ -409,14 +581,17 @@ export function TaskDetailShared({
       {workerTabs}
 
       {workerOutput ? (
-        <div className={`text-xs whitespace-pre-wrap leading-relaxed overflow-y-auto rounded-lg p-3 ${
-            fullHeight && !timelineOpen ? 'flex-1 min-h-0' : 'max-h-[55vh]'
-        } bg-zinc-50`}>
-          <MarkdownWithThinking content={workerOutput} />
+        <div className={`overflow-y-auto border border-zinc-200/80 bg-white rounded-lg p-0 leading-relaxed ${
+            fullHeight && !timelineOpen ? 'flex-1 min-h-0' : 'max-h-[60vh]'
+        }`}>
+          <MarkdownWithThinking
+            content={workerOutput}
+            markdownClassName="text-[11px] leading-[1.45] px-1 py-0.5 prose-pre:text-[11px] prose-pre:!my-0 prose-pre:!mx-0 prose-pre:!px-1 prose-pre:!py-1"
+          />
         </div>
       ) : (
         !detailText && (
-          <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-5 text-center text-xs text-zinc-400">
+          <div className="rounded-xl border border-dashed border-zinc-200 bg-white px-3 py-6 text-center text-xs text-zinc-400">
             No output.
           </div>
         )
@@ -438,7 +613,7 @@ export function TaskDetailShared({
             </span>
           </button>
           {timelineOpen && (
-            <div className={`mt-2 ${fullHeight ? 'flex-1 min-h-0' : ''}`}>
+            <div className={`mt-1 ${fullHeight ? 'flex-1 min-h-0' : ''}`}>
               <WorkerTimeline events={detailEvents} status={status} fullHeight={fullHeight} />
             </div>
           )}

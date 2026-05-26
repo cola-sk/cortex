@@ -93,6 +93,12 @@ export const api = {
       body: JSON.stringify({ taskId, action, comment, targetTaskId }),
     }),
 
+  /** Interrupt a running task in real time */
+  interruptTask: (runId: string, taskId: string) =>
+    request<{ success: boolean }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/interrupt`, {
+      method: 'POST',
+    }),
+
   /** Run a pipeline via SSE. Calls onEvent for each event; resolves when stream ends. */
   async runPipeline(
     id: string,

@@ -35,7 +35,7 @@ export class OpenAICompatProvider implements LLMProvider {
         temperature: options.temperature,
         messages: mappedMessages,
         stream: true,
-      });
+      }, { signal: options.signal });
 
       let fullContent = '';
       let eventIdx = 0;
@@ -72,7 +72,7 @@ export class OpenAICompatProvider implements LLMProvider {
       max_tokens: options.maxTokens ?? 8096,
       temperature: options.temperature,
       messages: mappedMessages,
-    });
+    }, { signal: options.signal });
 
     const choice = response.choices[0];
     if (!choice?.message?.content) {

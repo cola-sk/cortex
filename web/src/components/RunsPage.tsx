@@ -25,6 +25,7 @@ function statusColors(status: string) {
   if (status === 'done') return 'bg-emerald-100 text-emerald-700';
   if (status === 'error') return 'bg-red-100 text-red-600';
   if (status === 'awaiting_review') return 'bg-amber-100 text-amber-700';
+  if (status === 'interrupted') return 'bg-zinc-100 text-zinc-700';
   return 'bg-blue-100 text-blue-600';
 }
 
@@ -32,7 +33,17 @@ function statusDot(status: string) {
   if (status === 'done') return 'bg-emerald-400';
   if (status === 'error') return 'bg-red-400';
   if (status === 'awaiting_review') return 'bg-amber-400 animate-pulse';
+  if (status === 'interrupted') return 'bg-zinc-400';
   return 'bg-blue-400 animate-pulse';
+}
+
+function statusLabel(status: RunSummary['status'] | RunTaskRecord['status']): string {
+  if (status === 'running') return 'running';
+  if (status === 'done') return 'done';
+  if (status === 'error') return 'error';
+  if (status === 'awaiting_review') return 'awaiting_input';
+  if (status === 'interrupted') return 'interrupted';
+  return status;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,6 +86,34 @@ function getToolSummary(event: ToolEvent): string {
   return JSON.stringify(inp);
 }
 
+function getToolLanguage(toolName?: string, input?: Record<string, unknown>): string {
+  if (!toolName) return 'text';
+  const name = toolName.toLowerCase();
+  
+  if (name.includes('bash') || name.includes('shell') || name.includes('command') || name.includes('run_command')) {
+    return 'bash';
+  }
+  
+  if (input) {
+    const filePath = String(input.TargetFile || input.file_path || input.AbsolutePath || input.path || '');
+    if (filePath) {
+      const ext = filePath.split('.').pop()?.toLowerCase();
+      if (ext === 'ts' || ext === 'tsx') return 'typescript';
+      if (ext === 'js' || ext === 'jsx') return 'javascript';
+      if (ext === 'json') return 'json';
+      if (ext === 'vue' || ext === 'html') return 'html';
+      if (ext === 'css') return 'css';
+      if (ext === 'py') return 'python';
+      if (ext === 'go') return 'go';
+      if (ext === 'sh') return 'bash';
+      if (ext === 'yaml' || ext === 'yml') return 'yaml';
+      if (ext === 'md') return 'markdown';
+    }
+  }
+  
+  return 'text';
+}
+
 function ToolEventPair({ use, result, index }: {
   use: ToolEvent;
   result?: ToolEvent;
@@ -82,6 +121,14 @@ function ToolEventPair({ use, result, index }: {
 }) {
   const [expanded, setExpanded] = useState(false);
   const summary = getToolSummary(use);
+
+  const lang = getToolLanguage(use.name, use.input);
+  const inputMarkdown = use.input 
+    ? `\`\`\`json\n${JSON.stringify(use.input, null, 2)}\n\`\`\``
+    : `\`\`\`text\n${summary}\n\`\`\n`;
+  const outputMarkdown = result 
+    ? `\`\`\`${lang}\n${result.content || '(empty)'}\n\`\`\``
+    : '';
 
   return (
     <div className="border border-zinc-100 rounded-lg overflow-hidden">
@@ -104,9 +151,9 @@ function ToolEventPair({ use, result, index }: {
           {/* Input */}
           <div className="px-3 py-2">
             <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider mb-1">Input</p>
-            <pre className="text-xs text-zinc-600 whitespace-pre-wrap font-mono leading-relaxed max-h-40 overflow-y-auto bg-zinc-50 rounded p-2">
-              {summary || JSON.stringify(use.input, null, 2)}
-            </pre>
+            <div className="rounded-xl border border-zinc-200/50 bg-zinc-950 p-1 overflow-x-auto max-h-64">
+              <Markdown content={inputMarkdown} />
+            </div>
           </div>
           {/* Output */}
           {result && (
@@ -114,9 +161,11 @@ function ToolEventPair({ use, result, index }: {
               <p className={`text-[10px] font-medium uppercase tracking-wider mb-1 ${result.isError ? 'text-red-400' : 'text-zinc-400'}`}>
                 Output{result.isError ? ' (error)' : ''}
               </p>
-              <pre className={`text-xs whitespace-pre-wrap font-mono leading-relaxed max-h-48 overflow-y-auto rounded p-2 ${result.isError ? 'bg-red-50 text-red-700' : 'bg-zinc-50 text-zinc-600'}`}>
-                {result.content || '(empty)'}
-              </pre>
+              <div className={`rounded-xl border max-h-96 overflow-x-auto p-1 bg-zinc-950 ${
+                result.isError ? 'border-red-200/50 bg-red-950/20' : 'border-zinc-200/50 bg-zinc-950'
+              }`}>
+                <Markdown content={outputMarkdown} />
+              </div>
             </div>
           )}
         </div>
@@ -161,7 +210,12 @@ function ToolEventList({ events }: { events: ToolEvent[] }) {
 }
 
 function TaskDetailPanel({ task, fullHeight = false }: { task: RunTaskRecord; fullHeight?: boolean }) {
-  const status: DetailStatus = task.status === 'pending' ? 'running' : task.status;
+  const status: DetailStatus =
+    task.status === 'pending'
+      ? 'running'
+      : task.status === 'awaiting_review'
+        ? 'running'
+        : task.status;
   const output = task.output ?? '';
   const detail = task.error ?? '';
   // Preserve full execution detail after completion as well.
@@ -192,37 +246,50 @@ function TaskDetailDialog({ task, onClose }: { task: RunTaskRecord; onClose: () 
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center p-3 pt-4 bg-black/40 backdrop-blur-sm" onClick={onClose}>
+    <>
+      {/* Backdrop overlay */}
+      <div 
+        className="fixed inset-0 z-40 bg-zinc-900/20 backdrop-blur-[2px] transition-opacity" 
+        onClick={onClose} 
+      />
+      
+      {/* Slide-over Drawer Panel */}
       <div
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl h-[calc(100vh-2rem)] flex flex-col overflow-hidden"
+        className="fixed inset-y-0 right-0 z-50 bg-white border-l border-zinc-200/80 shadow-2xl w-full max-w-2xl h-full flex flex-col overflow-hidden transform transition-transform duration-300 ease-out"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="border-b border-zinc-100 px-5 py-4 flex items-start gap-3 shrink-0 sticky top-0 z-10 bg-white">
+        {/* Header */}
+        <div className="border-b border-zinc-200 bg-white px-4 py-3 flex items-start gap-3 shrink-0 shadow-sm">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-zinc-800">{task.taskName}</span>
-              {task.status === 'done' && <span className="text-emerald-500 text-xs">✓ Done</span>}
-              {task.status === 'running' && <span className="text-blue-500 text-xs">● Running</span>}
-              {task.status === 'error' && <span className="text-red-500 text-xs">✗ Error</span>}
+            <div className="flex items-center gap-2.5">
+              <span className="text-base font-semibold text-zinc-900 leading-snug">{task.taskName}</span>
+              {task.status === 'done' && <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">✓ Done</span>}
+              {task.status === 'running' && <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20">● Running</span>}
+              {task.status === 'interrupted' && <span className="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-700 ring-1 ring-inset ring-zinc-300">■ Interrupted</span>}
+              {task.status === 'error' && <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 ring-1 ring-inset ring-red-600/20">✗ Error</span>}
             </div>
-            <div className="flex items-center gap-3 mt-1">
-              {task.durationMs != null && <span className="text-[11px] text-zinc-400">⏱ {formatDuration(task.durationMs)}</span>}
-              {toolCallCount > 0 && <span className="text-[11px] text-zinc-400">🔧 {toolCallCount} tool calls</span>}
-              <span className="text-[11px] text-zinc-400">{task.agents.join(', ')}</span>
+            <div className="flex items-center flex-wrap gap-3 mt-1.5 text-xs text-zinc-500">
+              {task.durationMs != null && <span className="flex items-center gap-1">⏱ {formatDuration(task.durationMs)}</span>}
+              {toolCallCount > 0 && <span className="flex items-center gap-1">🔧 {toolCallCount} tool calls</span>}
+              <span className="flex items-center gap-1">👥 {task.agents.join(', ')}</span>
             </div>
           </div>
-          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 transition-colors shrink-0 p-1">
+          <button 
+            onClick={onClose} 
+            className="rounded-lg p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-all shrink-0"
+            title="关闭"
+          >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
             </svg>
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5 py-4">
+        <div className="flex-1 overflow-y-auto px-1.5 py-1">
           <TaskDetailPanel task={task} fullHeight />
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -230,7 +297,7 @@ function TaskDetailDialog({ task, onClose }: { task: RunTaskRecord; onClose: () 
 // Task record row
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskRow({ task }: { task: RunTaskRecord }) {
+function TaskRow({ task, onInterrupt }: { task: RunTaskRecord; onInterrupt?: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
   
@@ -240,7 +307,7 @@ function TaskRow({ task }: { task: RunTaskRecord }) {
   return (
     <>
     <div className={`rounded-xl border overflow-hidden transition-all ${
-      task.status === 'error' ? 'border-red-200' : 'border-zinc-200'
+      task.status === 'error' ? 'border-red-200' : task.status === 'interrupted' ? 'border-zinc-300' : 'border-zinc-200'
     }`}>
       <div className="w-full flex items-center gap-3 px-4 py-3 bg-white hover:bg-zinc-50 transition-colors text-left">
         <button
@@ -253,6 +320,18 @@ function TaskRow({ task }: { task: RunTaskRecord }) {
         </button>
 
         <div className="flex items-center gap-2 shrink-0">
+          {task.status === 'running' && onInterrupt && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onInterrupt();
+              }}
+              className="flex items-center justify-center w-5 h-5 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 transition-all shadow-sm group shrink-0"
+              title="中断任务"
+            >
+              <span className="w-1.5 h-1.5 bg-red-500 rounded-[0.5px] group-hover:scale-90 transition-transform" />
+            </button>
+          )}
           <button
             onClick={() => setShowModal(true)}
             className="text-xs text-indigo-600 font-medium hover:text-indigo-800 hover:underline"
@@ -342,19 +421,26 @@ function RunDetailReviewPanel({ runId, task, onSubmitted }: {
   onSubmitted: () => void;
 }) {
   const [comment, setComment] = useState('');
-  const [action, setAction] = useState<'approve' | 'revise'>('approve');
+  const [action, setAction] = useState<'approve' | 'revise'>(task.status === 'interrupted' ? 'revise' : 'approve');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isInterrupted = task.status === 'interrupted';
 
   const handleSubmit = async () => {
-    if (action === 'revise' && !comment.trim()) {
-      setError('Please provide feedback when requesting a revision.');
+    if ((isInterrupted || action === 'revise') && !comment.trim()) {
+      setError(isInterrupted ? '请填写评论后继续执行。' : 'Please provide feedback when requesting a revision.');
       return;
     }
     setSubmitting(true);
     setError(null);
     try {
-      await api.submitReview(runId, task.taskId, action, comment.trim());
+      await api.submitReview(
+        runId,
+        task.taskId,
+        isInterrupted ? 'revise' : action,
+        comment.trim(),
+        isInterrupted ? task.taskId : undefined,
+      );
       onSubmitted();
     } catch (e) {
       setError((e as Error).message);
@@ -366,8 +452,10 @@ function RunDetailReviewPanel({ runId, task, onSubmitted }: {
   return (
     <div className="bg-white rounded-xl border-2 border-amber-300 overflow-hidden shadow-sm">
       <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-2">
-        <span className="text-amber-600 text-sm">⏸</span>
-        <span className="text-xs font-semibold text-amber-800">Review: {task.taskName}</span>
+        <span className="text-amber-600 text-sm">{isInterrupted ? '■' : '⏸'}</span>
+        <span className="text-xs font-semibold text-amber-800">
+          {isInterrupted ? `已中断：${task.taskName}` : `Review: ${task.taskName}`}
+        </span>
         <span className="text-[10px] text-amber-500 ml-auto">Round {task.currentRound ?? 1}</span>
       </div>
       <div className="px-4 py-3 space-y-3">
@@ -376,34 +464,36 @@ function RunDetailReviewPanel({ runId, task, onSubmitted }: {
             <Markdown content={task.output} />
           </div>
         )}
-        <div className="flex gap-2">
-          <button
-            onClick={() => setAction('approve')}
-            className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
-              action === 'approve'
-                ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
-            }`}
-          >
-            ✓ Approve & Continue
-          </button>
-          <button
-            onClick={() => setAction('revise')}
-            className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
-              action === 'revise'
-                ? 'bg-amber-50 border-amber-300 text-amber-700'
-                : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
-            }`}
-          >
-            ↻ Request Revision
-          </button>
-        </div>
+        {!isInterrupted && (
+          <div className="flex gap-2">
+            <button
+              onClick={() => setAction('approve')}
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
+                action === 'approve'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                  : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
+              }`}
+            >
+              ✓ Approve & Continue
+            </button>
+            <button
+              onClick={() => setAction('revise')}
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
+                action === 'revise'
+                  ? 'bg-amber-50 border-amber-300 text-amber-700'
+                  : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
+              }`}
+            >
+              ↻ Request Revision
+            </button>
+          </div>
+        )}
         <textarea
           className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize-none"
           rows={3}
           value={comment}
           onChange={(e) => setComment(e.target.value)}
-          placeholder={action === 'approve' ? 'Optional comment...' : 'Describe what needs to change...'}
+          placeholder={isInterrupted ? '请输入本次中断原因或补充说明，然后继续执行...' : (action === 'approve' ? 'Optional comment...' : 'Describe what needs to change...')}
         />
         {error && <p className="text-xs text-red-500">{error}</p>}
         <div className="flex justify-end">
@@ -411,12 +501,20 @@ function RunDetailReviewPanel({ runId, task, onSubmitted }: {
             onClick={handleSubmit}
             disabled={submitting}
             className={`rounded-lg px-4 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50 ${
-              action === 'approve'
+              isInterrupted
+                ? 'bg-indigo-600 hover:bg-indigo-500'
+                : action === 'approve'
                 ? 'bg-emerald-600 hover:bg-emerald-500'
                 : 'bg-amber-600 hover:bg-amber-500'
             }`}
           >
-            {submitting ? 'Submitting...' : action === 'approve' ? '✓ Approve' : '↻ Submit Revision'}
+            {submitting
+              ? 'Submitting...'
+              : isInterrupted
+                ? '✎ 提交评论并继续'
+                : action === 'approve'
+                  ? '✓ Approve'
+                  : '↻ Submit Revision'}
           </button>
         </div>
       </div>
@@ -424,8 +522,8 @@ function RunDetailReviewPanel({ runId, task, onSubmitted }: {
   );
 }
 
-function RunDetail({ run, onReviewSubmitted }: { run: RunRecord; onReviewSubmitted: () => void }) {
-  const awaitingTask = run.tasks.find((t) => t.status === 'awaiting_review');
+function RunDetail({ run, onReviewSubmitted, onInterruptTask }: { run: RunRecord; onReviewSubmitted: () => void; onInterruptTask?: (taskId: string) => void }) {
+  const awaitingTask = run.tasks.find((t) => t.status === 'awaiting_review' || t.status === 'interrupted');
 
   return (
     <div className="h-full overflow-y-auto">
@@ -436,7 +534,7 @@ function RunDetail({ run, onReviewSubmitted }: { run: RunRecord; onReviewSubmitt
             <div className="flex items-center gap-2 mb-1">
               <span className="text-xs font-mono text-zinc-400">{run.pipelineId}</span>
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusColors(run.status)}`}>
-                {run.status}
+                {statusLabel(run.status)}
               </span>
             </div>
             <h2 className="text-sm font-semibold text-zinc-800 leading-snug">{run.pipelineName}</h2>
@@ -473,7 +571,7 @@ function RunDetail({ run, onReviewSubmitted }: { run: RunRecord; onReviewSubmitt
       {/* Tasks */}
       <div className="px-5 py-4 space-y-3">
         {run.tasks.map((task) => (
-          <TaskRow key={task.taskId} task={task} />
+          <TaskRow key={task.taskId} task={task} onInterrupt={onInterruptTask ? () => onInterruptTask(task.taskId) : undefined} />
         ))}
       </div>
     </div>
@@ -499,7 +597,7 @@ function RunCard({ run, selected, onClick }: {
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-semibold text-zinc-700 truncate flex-1">{run.pipelineName}</span>
         <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusColors(run.status)}`}>
-          {run.status}
+          {statusLabel(run.status)}
         </span>
       </div>
       <p className="text-xs text-zinc-400 truncate leading-snug">{run.goal}</p>
@@ -545,6 +643,18 @@ export function RunsPage() {
     }
   }, [selectedId]);
 
+  const handleInterruptTask = async (taskId: string) => {
+    if (!selectedId) return;
+    try {
+      await api.interruptTask(selectedId, taskId);
+      const detail = await api.getRun(selectedId);
+      setSelectedRun(detail);
+    } catch (e) {
+      console.error('Failed to interrupt task:', e);
+      alert('Failed to interrupt task: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+
   useEffect(() => { load(); }, [load]);
 
   // Apply SSE event to the selected run in-place
@@ -585,7 +695,9 @@ export function RunsPage() {
       } else if (type === 'task:complete') {
         const task = run.tasks.find((t) => t.taskId === d.taskId);
         if (task) {
-          task.status = d.error ? 'error' : 'done';
+          task.status = (d.error as string | undefined) === 'Interrupted by user'
+            ? 'interrupted'
+            : d.error ? 'error' : 'done';
           task.finishedAt = new Date().toISOString();
           task.output = (d.output as string) ?? '';
           task.outputs = d.outputs as string[] | undefined;
@@ -598,17 +710,22 @@ export function RunsPage() {
         run.status = 'error';
         run.finishedAt = new Date().toISOString();
       } else if (type === 'review:pending') {
-        run.status = 'awaiting_review';
+        const mode = (d.mode as string | undefined) ?? 'review';
+        run.status = mode === 'interrupt' ? 'interrupted' : 'awaiting_review';
         const task = run.tasks.find((t) => t.taskId === d.taskId);
         if (task) {
-          task.status = 'awaiting_review';
+          task.status = mode === 'interrupt' ? 'interrupted' : 'awaiting_review';
           task.currentRound = (d.round as number) ?? 1;
         }
       } else if (type === 'review:submitted') {
         run.status = 'running';
         const task = run.tasks.find((t) => t.taskId === d.taskId);
         if (task) {
-          task.status = (d.action as string) === 'approve' ? 'done' : 'running';
+          const mode = (d.mode as string | undefined) ?? 'review';
+          task.status = mode === 'interrupt'
+            ? 'running'
+            : (d.action as string) === 'approve' ? 'done' : 'running';
+          if (mode === 'interrupt') task.error = undefined;
         }
       } else if (type === 'task:revision') {
         const task = run.tasks.find((t) => t.taskId === d.taskId);
@@ -656,8 +773,8 @@ export function RunsPage() {
     api.getRun(selectedId)
       .then((run) => {
         setSelectedRun(run);
-        // If the run is still running or awaiting review, subscribe to SSE for live updates
-        if (run.status === 'running' || run.status === 'awaiting_review') {
+        // If the run is still active or waiting for input, subscribe to SSE for live updates
+        if (run.status === 'running' || run.status === 'awaiting_review' || run.status === 'interrupted') {
           sseRef.current = api.subscribeRun(selectedId, applyRunEvent);
         }
       })
@@ -713,12 +830,16 @@ export function RunsPage() {
         {loadingDetail ? (
           <div className="flex justify-center py-20"><Spinner /></div>
         ) : selectedRun ? (
-          <RunDetail run={selectedRun} onReviewSubmitted={() => {
-            // Refresh the run detail after review submission
-            if (selectedId) {
-              api.getRun(selectedId).then(setSelectedRun).catch(() => {});
-            }
-          }} />
+          <RunDetail
+            run={selectedRun}
+            onReviewSubmitted={() => {
+              // Refresh the run detail after review submission
+              if (selectedId) {
+                api.getRun(selectedId).then(setSelectedRun).catch(() => {});
+              }
+            }}
+            onInterruptTask={handleInterruptTask}
+          />
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-center px-8">
             <div className="text-4xl mb-4 opacity-20">🔍</div>

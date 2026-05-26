@@ -141,7 +141,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
   const [editing, setEditing] = useState<Pipeline | null>(null);
   const [running, setRunning] = useState<Pipeline | null>(null);
   const [runActive, setRunActive] = useState(false);
-  const [runAwaitingReview, setRunAwaitingReview] = useState(false);
+  const [runPauseMode, setRunPauseMode] = useState<'review' | 'interrupt' | null>(null);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
   const showToast = (msg: string, ok = true) => {
@@ -200,11 +200,11 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
     } catch (e) { showToast((e as Error).message, false); }
   };
 
-  const handleRun = (p: Pipeline) => { setRunning(p); setRunActive(true); setRunAwaitingReview(false); setView('run'); };
+  const handleRun = (p: Pipeline) => { setRunning(p); setRunActive(true); setRunPauseMode(null); setView('run'); };
 
   const handleRunBack = () => { setView('list'); };
-  const handleRunDone = () => { setRunActive(false); setRunAwaitingReview(false); };
-  const handleDismissRun = () => { if (runAwaitingReview) return; setRunning(null); setRunActive(false); };
+  const handleRunDone = () => { setRunActive(false); setRunPauseMode(null); };
+  const handleDismissRun = () => { if (runPauseMode) return; setRunning(null); setRunActive(false); };
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -229,9 +229,9 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
             pipeline={running}
             onBack={handleRunBack}
             onDone={handleRunDone}
-            onReviewStateChange={(awaiting) => {
-              setRunAwaitingReview(awaiting);
-              if (awaiting) setView('run');
+            onPauseStateChange={(mode) => {
+              setRunPauseMode(mode);
+              if (mode) setView('run');
             }}
           />
         </div>
@@ -242,23 +242,35 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
         {/* Running pipeline banner */}
         {running && (
           <div className={`mb-6 flex items-center gap-3 rounded-xl border px-4 py-3 cursor-pointer transition-colors ${
-            runAwaitingReview
+            runPauseMode
               ? 'border-amber-300 bg-amber-50 hover:border-amber-400'
               : 'border-indigo-200 bg-indigo-50 hover:border-indigo-300'
           }`} onClick={() => setView('run')}>
             <span className={`shrink-0 w-2 h-2 rounded-full ${
-              runAwaitingReview ? 'bg-amber-500 animate-pulse' : runActive ? 'bg-indigo-500 animate-pulse' : 'bg-emerald-500'
+              runPauseMode === 'interrupt'
+                ? 'bg-zinc-500'
+                : runPauseMode === 'review'
+                  ? 'bg-amber-500 animate-pulse'
+                  : runActive
+                    ? 'bg-indigo-500 animate-pulse'
+                    : 'bg-emerald-500'
             }`} />
             <div className="flex-1 min-w-0">
-              <span className={`text-xs font-semibold ${runAwaitingReview ? 'text-amber-700' : 'text-indigo-700'}`}>{running.name}</span>
-              <span className={`ml-2 text-[10px] ${runAwaitingReview ? 'text-amber-500' : 'text-indigo-400'}`}>
-                {runAwaitingReview ? '⏸ Awaiting Review' : runActive ? 'Running...' : 'Completed'}
+              <span className={`text-xs font-semibold ${runPauseMode ? 'text-amber-700' : 'text-indigo-700'}`}>{running.name}</span>
+              <span className={`ml-2 text-[10px] ${runPauseMode ? 'text-amber-500' : 'text-indigo-400'}`}>
+                {runPauseMode === 'interrupt'
+                  ? '■ Interrupted'
+                  : runPauseMode === 'review'
+                    ? '⏸ Awaiting Input'
+                    : runActive
+                      ? 'Running...'
+                      : 'Completed'}
               </span>
             </div>
-            <span className={`text-xs font-medium ${runAwaitingReview ? 'text-amber-600' : 'text-indigo-500'}`}>
-              {runAwaitingReview ? 'Review →' : 'View →'}
+            <span className={`text-xs font-medium ${runPauseMode ? 'text-amber-600' : 'text-indigo-500'}`}>
+              {runPauseMode === 'interrupt' ? 'Comment →' : runPauseMode ? 'Input →' : 'View →'}
             </span>
-            {!runAwaitingReview && (
+            {!runPauseMode && (
               <button
                 onClick={(e) => { e.stopPropagation(); handleDismissRun(); }}
                 className="text-indigo-300 hover:text-indigo-500 transition-colors p-0.5"
@@ -1152,11 +1164,12 @@ export interface LogEntry {
   workerStatus?: ('running' | 'done' | 'error')[];
   startedAt?: number;
   finishedAt?: number;
-  status: 'running' | 'done' | 'error' | 'decision' | 'awaiting_review' | 'pending';
+  status: 'running' | 'done' | 'error' | 'decision' | 'awaiting_review' | 'interrupted' | 'pending';
   // Review fields
   requiresReview?: boolean;
   currentRound?: number;
   reviewPending?: boolean;
+  pauseMode?: 'review' | 'interrupt';
 }
 
 function appendTextChunk(base: string, chunk: string): string {
@@ -1167,7 +1180,12 @@ function appendTextChunk(base: string, chunk: string): string {
 }
 
 function RunView({
-  pipeline, onBack, onDone, onReviewStateChange }: { pipeline: Pipeline; onBack: () => void; onDone: () => void; onReviewStateChange: (awaiting: boolean) => void }) {
+  pipeline, onBack, onDone, onPauseStateChange }: {
+    pipeline: Pipeline;
+    onBack: () => void;
+    onDone: () => void;
+    onPauseStateChange: (mode: 'review' | 'interrupt' | null) => void;
+  }) {
   const { t } = useTranslation();
   const [goal, setGoal] = useState('');
   const [started, setStarted] = useState(false);
@@ -1178,7 +1196,7 @@ function RunView({
   const [modalTaskId, setModalTaskId] = useState<string | null>(null);
   const [modalOutput, setModalOutput] = useState<{ title: string; content: string } | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [reviewingTaskId, setReviewingTaskId] = useState<string | null>(null);
+  const [pausedTaskId, setPausedTaskId] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   const addEntry = (entry: LogEntry) => {
@@ -1208,6 +1226,8 @@ function RunView({
     setResults({});
     setDone(false);
     setFatalError(null);
+    setPausedTaskId(null);
+    onPauseStateChange(null);
 
     try {
       await api.runPipeline(pipeline.id, goal, (type, data) => {
@@ -1270,11 +1290,15 @@ function RunView({
           setLog((prev) => prev.map((e) => e.id === (d.taskId as string)
             ? {
               ...e,
-              status: error ? 'error' as const : 'done' as const,
+              status: error === 'Interrupted by user'
+                ? 'interrupted' as const
+                : error
+                  ? 'error' as const
+                  : 'done' as const,
               error,
               output,
               outputs,
-              detail: error ? error : '✓ Completed',
+              detail: error === 'Interrupted by user' ? '■ Interrupted' : error ? error : '✓ Completed',
               finishedAt: Date.now(),
             }
             : e
@@ -1300,38 +1324,70 @@ function RunView({
           const runId = d.runId as string | undefined;
           if (runId) setActiveRunId(runId);
           setDone(true);
+          onPauseStateChange(null);
           onDone();
         } else if (type === 'error') {
           setFatalError(d.message as string);
           setDone(true);
+          onPauseStateChange(null);
           onDone();
         } else if (type === 'review:pending') {
           const taskId = d.taskId as string;
           const round = (d.round as number) ?? 1;
+          const mode = ((d.mode as string | undefined) === 'interrupt' ? 'interrupt' : 'review');
           setLog((prev) => prev.map((e) => e.id === taskId
-            ? { ...e, status: 'awaiting_review' as const, reviewPending: true, currentRound: round, detail: `⏸ Awaiting review (round ${round})` }
+            ? {
+              ...e,
+              status: mode === 'interrupt' ? 'interrupted' as const : 'awaiting_review' as const,
+              reviewPending: true,
+              pauseMode: mode,
+              currentRound: round,
+              detail: mode === 'interrupt' ? `■ Interrupted (round ${round})` : `⏸ Awaiting input (round ${round})`,
+            }
             : e
           ));
           // Switch from task detail modal to the review panel when human input is required.
           setModalTaskId(null);
-          setReviewingTaskId(taskId);
-          onReviewStateChange(true);
+          setPausedTaskId(taskId);
+          onPauseStateChange(mode);
         } else if (type === 'review:submitted') {
           const taskId = d.taskId as string;
           const action = d.action as string;
+          const mode = ((d.mode as string | undefined) === 'interrupt' ? 'interrupt' : 'review');
           setLog((prev) => prev.map((e) => e.id === taskId
-            ? { ...e, reviewPending: false, detail: action === 'approve' ? '✓ Approved — continuing' : `↻ Revising (feedback: ${(d.comment as string)?.slice(0, 50)}...)` }
+            ? {
+              ...e,
+              status: mode === 'interrupt'
+                ? 'running' as const
+                : e.status,
+              reviewPending: false,
+              pauseMode: undefined,
+              detail: mode === 'interrupt'
+                ? `✎ Comment received — resuming`
+                : action === 'approve'
+                  ? '✓ Approved — continuing'
+                  : `↻ Revising (feedback: ${(d.comment as string)?.slice(0, 50)}...)`,
+            }
             : e
           ));
-          if (action === 'approve') {
-            setReviewingTaskId(null);
-            onReviewStateChange(false);
-          }
+          setPausedTaskId(null);
+          onPauseStateChange(null);
         } else if (type === 'task:revision') {
           const taskId = d.taskId as string;
           const round = (d.round as number) ?? 2;
           setLog((prev) => prev.map((e) => e.id === taskId
-            ? { ...e, status: 'running' as const, currentRound: round, reviewPending: false, detail: `↻ Revision round ${round}`, toolEvents: [], workerEvents: e.agents?.map(() => []) ?? [[]], streamContent: '' }
+            ? {
+              ...e,
+              status: 'running' as const,
+              currentRound: round,
+              reviewPending: false,
+              pauseMode: undefined,
+              detail: `↻ Revision round ${round}`,
+              toolEvents: [],
+              workerEvents: e.agents?.map(() => []) ?? [[]],
+              streamContent: '',
+              error: undefined,
+            }
             : e
           ));
         } else if (type === 'task:rollback') {
@@ -1345,7 +1401,18 @@ function RunView({
     } catch (e) {
       setFatalError((e as Error).message);
       setDone(true);
+      onPauseStateChange(null);
       onDone();
+    }
+  };
+
+  const handleInterruptTask = async (taskId: string) => {
+    if (!activeRunId) return;
+    try {
+      await api.interruptTask(activeRunId, taskId);
+    } catch (e) {
+      console.error('Failed to interrupt task:', e);
+      alert('Failed to interrupt task: ' + (e instanceof Error ? e.message : String(e)));
     }
   };
 
@@ -1381,14 +1448,23 @@ function RunView({
               {...{ placeholder: t('run.goalPlaceholder') }}
               autoFocus
             />
-            <div className="mt-3 flex justify-end">
-              <button
-                onClick={handleRun}
-                disabled={!goal.trim()}
-                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                ▶ {t('run.startRun').replace('▶ ', '')}
-              </button>
+            <div className="mt-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <span className="text-[11px] text-zinc-400 font-medium flex items-center gap-1.5 flex-wrap">
+                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0" />
+                实际运行根目录 (workspace):
+                <span className="font-mono text-zinc-500 bg-zinc-100 rounded px-1.5 py-0.5 border border-zinc-200/50 break-all select-all">
+                  {pipeline.workspace?.trim() ? pipeline.workspace : '默认系统工作区 (~/.cortex/workspace)'}
+                </span>
+              </span>
+              <div className="flex justify-end shrink-0">
+                <button
+                  onClick={handleRun}
+                  disabled={!goal.trim()}
+                  className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  ▶ {t('run.startRun').replace('▶ ', '')}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1416,6 +1492,7 @@ function RunView({
                   key={entry.id}
                   entry={entry}
                   onOpenDetail={() => setModalTaskId(entry.id)}
+                  onInterrupt={() => handleInterruptTask(entry.id)}
                 />
               ))}
               {log.length === 0 && (
@@ -1425,19 +1502,23 @@ function RunView({
           </div>
         )}
 
-        {/* Review panel — shown when a task is awaiting review */}
-        {reviewingTaskId && activeRunId && (() => {
-          const entry = log.find((e) => e.id === reviewingTaskId);
+        {/* Action panel — shown when a task is waiting for human input */}
+        {pausedTaskId && activeRunId && (() => {
+          const entry = log.find((e) => e.id === pausedTaskId);
           if (!entry || !entry.reviewPending) return null;
           return (
             <ReviewPanel
               runId={activeRunId}
-              taskId={reviewingTaskId}
+              taskId={pausedTaskId}
               taskName={entry.label}
               output={entry.output ?? entry.streamContent ?? ''}
               round={entry.currentRound ?? 1}
               pipeline={pipeline}
-              onSubmitted={() => setReviewingTaskId(null)}
+              mode={entry.pauseMode ?? 'review'}
+              onSubmitted={() => {
+                setPausedTaskId(null);
+                onPauseStateChange(null);
+              }}
             />
           );
         })()}
@@ -1564,27 +1645,29 @@ function Markdown({ content, className }: { content: string; className?: string 
 // ReviewPanel — human review UI for paused tasks
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, onSubmitted }: {
+function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, mode, onSubmitted }: {
   runId: string;
   taskId: string;
   taskName: string;
   output: string;
   round: number;
   pipeline: Pipeline;
+  mode: 'review' | 'interrupt';
   onSubmitted: () => void;
 }) {
   const [comment, setComment] = useState('');
-  const [action, setAction] = useState<'approve' | 'revise'>('approve');
+  const [action, setAction] = useState<'approve' | 'revise'>(mode === 'interrupt' ? 'revise' : 'approve');
   const [targetTaskId, setTargetTaskId] = useState(taskId);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isInterrupted = mode === 'interrupt';
 
   // Find upstream tasks for rollback target selector
   const upstreamTasks = pipeline.tasks.filter((t) => t.id !== taskId);
 
   const handleSubmit = async () => {
-    if (action === 'revise' && !comment.trim()) {
-      setError('Please provide feedback when requesting a revision.');
+    if ((isInterrupted || action === 'revise') && !comment.trim()) {
+      setError(isInterrupted ? '请填写评论后继续执行。' : 'Please provide feedback when requesting a revision.');
       return;
     }
     setSubmitting(true);
@@ -1593,9 +1676,11 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, onSubmi
       await api.submitReview(
         runId,
         taskId,
-        action,
+        isInterrupted ? 'revise' : action,
         comment.trim(),
-        action === 'revise' && targetTaskId !== taskId ? targetTaskId : undefined,
+        isInterrupted
+          ? taskId
+          : action === 'revise' && targetTaskId !== taskId ? targetTaskId : undefined,
       );
       onSubmitted();
     } catch (e) {
@@ -1608,8 +1693,10 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, onSubmi
   return (
     <div className="bg-white rounded-xl border-2 border-amber-300 overflow-hidden shadow-sm">
       <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-2">
-        <span className="text-amber-600 text-sm">⏸</span>
-        <span className="text-xs font-semibold text-amber-800">Review: {taskName}</span>
+        <span className="text-amber-600 text-sm">{isInterrupted ? '■' : '⏸'}</span>
+        <span className="text-xs font-semibold text-amber-800">
+          {isInterrupted ? `已中断：${taskName}` : `Review: ${taskName}`}
+        </span>
         <span className="text-[10px] text-amber-500 ml-auto">Round {round}</span>
       </div>
 
@@ -1622,28 +1709,30 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, onSubmi
         )}
 
         {/* Action selector */}
-        <div className="flex gap-2">
-          <button
-            onClick={() => setAction('approve')}
-            className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
-              action === 'approve'
-                ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
-            }`}
-          >
-            ✓ Approve & Continue
-          </button>
-          <button
-            onClick={() => setAction('revise')}
-            className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
-              action === 'revise'
-                ? 'bg-amber-50 border-amber-300 text-amber-700'
-                : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
-            }`}
-          >
-            ↻ Request Revision
-          </button>
-        </div>
+        {!isInterrupted && (
+          <div className="flex gap-2">
+            <button
+              onClick={() => setAction('approve')}
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
+                action === 'approve'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                  : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
+              }`}
+            >
+              ✓ Approve & Continue
+            </button>
+            <button
+              onClick={() => setAction('revise')}
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
+                action === 'revise'
+                  ? 'bg-amber-50 border-amber-300 text-amber-700'
+                  : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
+              }`}
+            >
+              ↻ Request Revision
+            </button>
+          </div>
+        )}
 
         {/* Comment / feedback */}
         <textarea
@@ -1651,11 +1740,11 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, onSubmi
           rows={3}
           value={comment}
           onChange={(e) => setComment(e.target.value)}
-          placeholder={action === 'approve' ? 'Optional comment...' : 'Describe what needs to change...'}
+          placeholder={isInterrupted ? '请输入本次中断原因或补充说明，然后继续执行...' : (action === 'approve' ? 'Optional comment...' : 'Describe what needs to change...')}
         />
 
         {/* Rollback target (only for revise) */}
-        {action === 'revise' && upstreamTasks.length > 0 && (
+        {!isInterrupted && action === 'revise' && upstreamTasks.length > 0 && (
           <div className="flex items-center gap-2 text-xs">
             <span className="text-zinc-500 shrink-0">Revise target:</span>
             <select
@@ -1681,12 +1770,20 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, onSubmi
             onClick={handleSubmit}
             disabled={submitting}
             className={`rounded-lg px-4 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50 ${
-              action === 'approve'
+              isInterrupted
+                ? 'bg-indigo-600 hover:bg-indigo-500'
+                : action === 'approve'
                 ? 'bg-emerald-600 hover:bg-emerald-500'
                 : 'bg-amber-600 hover:bg-amber-500'
             }`}
           >
-            {submitting ? 'Submitting...' : action === 'approve' ? '✓ Approve' : '↻ Submit Revision'}
+            {submitting
+              ? 'Submitting...'
+              : isInterrupted
+                ? '✎ 提交评论并继续'
+                : action === 'approve'
+                  ? '✓ Approve'
+                  : '↻ Submit Revision'}
           </button>
         </div>
       </div>
@@ -1698,14 +1795,15 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, onSubmi
 // LogRow
 // ─────────────────────────────────────────────────────────────────────────────
 
-function LogRow({ entry, onOpenDetail }: {
+function LogRow({ entry, onOpenDetail, onInterrupt }: {
   entry: LogEntry;
   onOpenDetail: () => void;
+  onInterrupt?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const toolCallCount = (entry.toolEvents ?? []).filter((e) => e.type === 'tool_use').length;
-  const icons: Record<LogEntry['status'], string> = { running: '◌', done: '✓', error: '✗', decision: '⬡', awaiting_review: '⏸', pending: '↩' };
-  const colors: Record<LogEntry['status'], string> = { running: 'text-zinc-400', done: 'text-emerald-500', error: 'text-red-500', decision: 'text-amber-500', awaiting_review: 'text-amber-500', pending: 'text-zinc-300' };
+  const icons: Record<LogEntry['status'], string> = { running: '◌', done: '✓', error: '✗', decision: '⬡', awaiting_review: '⏸', interrupted: '■', pending: '↩' };
+  const colors: Record<LogEntry['status'], string> = { running: 'text-zinc-400', done: 'text-emerald-500', error: 'text-red-500', decision: 'text-amber-500', awaiting_review: 'text-amber-500', interrupted: 'text-zinc-500', pending: 'text-zinc-300' };
   const durationMs = entry.startedAt ? (entry.finishedAt ?? Date.now()) - entry.startedAt : undefined;
   const previewText = entry.status === 'running'
     ? '● streaming...'
@@ -1740,6 +1838,18 @@ function LogRow({ entry, onOpenDetail }: {
           )}
           {durationMs != null && durationMs > 0 && (
             <span className="text-[10px] text-zinc-400">{formatDurationShort(durationMs)}</span>
+          )}
+          {entry.status === 'running' && onInterrupt && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onInterrupt();
+              }}
+              className="flex items-center justify-center w-6 h-6 rounded-md bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 transition-all shadow-sm group shrink-0 ml-2 animate-pulse"
+              title="中断任务"
+            >
+              <span className="w-2 h-2 bg-red-500 rounded-[1px] group-hover:scale-90 transition-transform" />
+            </button>
           )}
           <button onClick={onOpenDetail} className="text-xs text-indigo-600 font-medium ml-2 hover:text-indigo-800">
             Detail ↗
@@ -1972,7 +2082,7 @@ function OutputModal({ title, content, onClose }: { title: string; content: stri
         onClick={e => e.stopPropagation()}
       >
         {/* Modal header */}
-        <div className="border-b border-zinc-100 px-5 py-4 flex items-center justify-between shrink-0 sticky top-0 z-10 bg-white">
+        <div className="border-b border-zinc-100 px-4 py-3 flex items-center justify-between shrink-0 sticky top-0 z-10 bg-white">
           <h2 className="text-sm font-semibold text-zinc-800 truncate">{title}</h2>
           <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 transition-colors shrink-0 p-1">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -1982,7 +2092,7 @@ function OutputModal({ title, content, onClose }: { title: string; content: stri
         </div>
 
         {/* Markdown content */}
-        <div className="flex-1 overflow-y-auto px-5 py-4">
+        <div className="flex-1 overflow-y-auto px-3 py-2">
           <Markdown content={content} />
         </div>
       </div>
@@ -1991,9 +2101,6 @@ function OutputModal({ title, content, onClose }: { title: string; content: stri
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TaskDetailModal — modal overlay with tabs for parallel workers + timeline
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function TaskDetailModal({ entry, onClose }: { entry: LogEntry; onClose: () => void }) {
   const workers = getEntryWorkers(entry);
   const toolCallCount = (entry.toolEvents ?? []).filter(e => e.type === 'tool_use').length;
@@ -2008,39 +2115,51 @@ export function TaskDetailModal({ entry, onClose }: { entry: LogEntry; onClose: 
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center p-3 pt-4 bg-black/40 backdrop-blur-sm" onClick={onClose}>
+    <>
+      {/* Backdrop overlay */}
+      <div 
+        className="fixed inset-0 z-40 bg-zinc-900/20 backdrop-blur-[2px] transition-opacity" 
+        onClick={onClose} 
+      />
+      
+      {/* Slide-over Drawer Panel */}
       <div
-        className={`bg-white rounded-2xl shadow-2xl w-full ${isMultiWorker ? 'max-w-6xl' : 'max-w-3xl'} h-[calc(100vh-2rem)] flex flex-col overflow-hidden`}
+        className={`fixed inset-y-0 right-0 z-50 bg-white border-l border-zinc-200 shadow-2xl w-full ${
+          isMultiWorker ? 'max-w-4xl' : 'max-w-2xl'
+        } h-full flex flex-col overflow-hidden transform transition-transform duration-300 ease-out`}
         onClick={e => e.stopPropagation()}
       >
-        {/* Modal header */}
-        <div className="border-b border-zinc-100 px-5 py-4 flex items-start gap-3 shrink-0 sticky top-0 z-10 bg-white">
+        {/* Header */}
+        <div className="border-b border-zinc-200 bg-white px-4 py-3 flex items-start gap-3 shrink-0 shadow-sm">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-zinc-800">{entry.label}</span>
+            <div className="flex items-center gap-2.5">
+              <span className="text-base font-semibold text-zinc-900 leading-snug">{entry.label}</span>
               {entry.status === 'running' && <Spinner />}
-              {entry.status === 'done' && <span className="text-emerald-500 text-xs">✓ Done</span>}
-              {entry.status === 'error' && <span className="text-red-500 text-xs">✗ Error</span>}
+              {entry.status === 'done' && <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">✓ Done</span>}
+              {entry.status === 'error' && <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 ring-1 ring-inset ring-red-600/20">✗ Error</span>}
             </div>
-            <div className="flex items-center gap-3 mt-1">
-              {durationMs != null && durationMs > 0 && <span className="text-[11px] text-zinc-400">⏱ {formatDurationShort(durationMs)}</span>}
-              {toolCallCount > 0 && <span className="text-[11px] text-zinc-400">🔧 {toolCallCount} tool calls</span>}
-              <span className="text-[11px] text-zinc-400">{(entry.toolEvents ?? []).length} events</span>
-              {isMultiWorker && <span className="text-[11px] text-zinc-400">👥 {workers.length} workers</span>}
+            <div className="flex items-center flex-wrap gap-3 mt-1.5 text-xs text-zinc-500">
+              {durationMs != null && durationMs > 0 && <span className="flex items-center gap-1">⏱ {formatDurationShort(durationMs)}</span>}
+              {toolCallCount > 0 && <span className="flex items-center gap-1">🔧 {toolCallCount} tool calls</span>}
+              <span className="flex items-center gap-1">👥 {entry.agents?.join(', ') || 'worker'}</span>
             </div>
           </div>
-          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 transition-colors shrink-0 p-1">
+          <button 
+            onClick={onClose} 
+            className="rounded-lg p-1.5 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-all shrink-0"
+            title="关闭"
+          >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
             </svg>
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5 py-4">
+        <div className="flex-1 overflow-y-auto px-1.5 py-1">
           <TaskDetailContent entry={entry} fullHeight />
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
