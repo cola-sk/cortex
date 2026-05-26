@@ -9,7 +9,7 @@ A multi-agent CI engine that composes AI models into visual pipelines with paral
 [中文文档](README.zh-CN.md)
 
 <p align="center">
-  <img src="public/screenshot-pipeline.png" alt="Pipeline editor with plan → implement → review workflow" width="780">
+  <img src="public/workflow.png" alt="Cortex pipeline execution flow with multi-branch lineage and human steering" width="780">
 </p>
 
 ## Overview
@@ -27,28 +27,34 @@ Cortex orchestrates multiple AI agents (Claude, Codex, Gemini, local models, cus
 
 ### Screenshots
 
-**Model Connections** — auto-detect local CLI tools, manage API providers
+**Execution Lineage & DAG Map** — track multi-branch task flows, visualize run statuses, and steer execution with a real-time human-in-the-loop input gateway.
+
+<p align="center">
+  <img src="public/workflow.png" alt="Cortex interactive multi-branch workflow lineage map and human-in-the-loop execution" width="780">
+</p>
+
+**Action Timeline & Logs** — inspect the granular agent thoughts, tool usages, output snapshots, and chronological operator reviews/decisions across each iteration round.
+
+<p align="center">
+  <img src="public/action-timeline.png" alt="Chronological action timeline with tool outputs and human reviews" width="780">
+</p>
+
+**Visual Pipeline Builder** — design task graphs with sequential dependency chains, parallel workers, and conditional decision checkpoints.
+
+<p align="center">
+  <img src="public/screenshot-pipeline.png" alt="Pipeline editor with plan → implement → review workflow" width="780">
+</p>
+
+**Model Connections** — auto-detect local CLI tools and manage external API providers.
 
 <p align="center">
   <img src="public/screenshot-models.png" alt="Model connections page with imported CLI tools and API providers" width="780">
 </p>
 
-**Role Agents** — define agents by role (Orchestrator, Worker, Reviewer, Decider) with system prompts
+**Role Agents** — define specialized agents by role (Orchestrator, Worker, Reviewer, Decider) and bind them to model connections.
 
 <p align="center">
   <img src="public/screenshot-agents.png" alt="Role agents page with model bindings" width="780">
-</p>
-
-**Review Gateway** — human-in-the-loop quality checkpoint: the Reviewer agent produces analysis, then the operator decides to approve or request revision
-
-<p align="center">
-  <img src="public/screenshot-review.png" alt="Review gateway with Approve & Continue and Request Revision actions" width="780">
-</p>
-
-**Run History** — browse past executions, filter by status, and inspect per-task outputs with full tool-call timelines
-
-<p align="center">
-  <img src="public/screenshot-runs.png" alt="Run history page with execution list and task detail panels" width="780">
 </p>
 
 ## Quick Start
