@@ -1426,7 +1426,7 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
                           {(isError || isTerminated || task.status === 'interrupted') && onContinueStarted && (
                             <button
                               onClick={(e) => { e.stopPropagation(); setReRunTask(task); }}
-                              className="flex items-center justify-center rounded bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 hover:border-indigo-300 p-0.5 text-indigo-600 transition-colors shadow-sm cursor-pointer active:scale-95"
+className="flex items-center justify-center rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 p-0.5 text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
                               title="重跑当前失败任务"
                             >
                               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
