@@ -89,6 +89,7 @@ const resources = {
       "run.running": "⚡ Running…",
       "run.complete": "✓ Run complete",
       "run.failed": "✗ Run failed",
+      "run.terminated": "■ Run terminated",
       "run.error": "Error: ",
       "run.results": "Results",
       // Agent modal
@@ -158,9 +159,12 @@ const resources = {
       "common.cancel": "Cancel",
       "common.delete": "Delete",
       "common.edit": "Edit",
+      "common.copy": "Copy",
       "common.back": "Back",
       "common.del": "Del",
       "common.clickToConfig": "Click a step or decision point to configure it",
+      // Pipeline Naming
+      "pipeline.copyOf": "{{name}} (Copy)",
       // Default names (used in JS logic, not JSX)
       "step.defaultName": "New Step",
       "decision.defaultName": "Quality Gate",
@@ -254,6 +258,7 @@ const resources = {
       "run.running": "⚡ 运行中…",
       "run.complete": "✓ 运行完成",
       "run.failed": "✗ 运行失败",
+      "run.terminated": "■ 已终止",
       "run.error": "错误：",
       "run.results": "结果",
       // Agent modal
@@ -323,9 +328,12 @@ const resources = {
       "common.cancel": "取消",
       "common.delete": "删除",
       "common.edit": "编辑",
+      "common.copy": "复制",
       "common.back": "返回",
       "common.del": "删",
       "common.clickToConfig": "点击步骤或决策点进行配置",
+      // Pipeline Naming
+      "pipeline.copyOf": "{{name}} (副本)",
       // Default names (used in JS logic)
       "step.defaultName": "新步骤",
       "decision.defaultName": "质量门禁",

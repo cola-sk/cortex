@@ -157,6 +157,10 @@ export interface RunSummary {
   taskCount: number;
   toolCallCount: number;
   continuedFromRunId?: string;
+  continuationTaskId?: string;
+  continuationTaskName?: string;
+  continuationType?: 'continue' | 'branch';
+  continuationRound?: number;
 }
 
 export interface RunRecord extends RunSummary {

@@ -21,7 +21,8 @@ function formatTime(iso?: string): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function statusColors(status: string) {
+function statusColors(status: string, error?: string) {
+  if (error === 'Skipped due to previous task failure') return 'bg-zinc-100 text-zinc-500';
   if (status === 'done') return 'bg-emerald-100 text-emerald-700';
   if (status === 'terminated') return 'bg-zinc-200 text-zinc-700';
   if (status === 'error') return 'bg-red-100 text-red-600';
@@ -31,7 +32,8 @@ function statusColors(status: string) {
   return 'bg-blue-100 text-blue-600';
 }
 
-function statusDot(status: string) {
+function statusDot(status: string, error?: string) {
+  if (error === 'Skipped due to previous task failure') return 'bg-zinc-300';
   if (status === 'done') return 'bg-emerald-400';
   if (status === 'terminated') return 'bg-zinc-500';
   if (status === 'error') return 'bg-red-400';
@@ -41,7 +43,8 @@ function statusDot(status: string) {
   return 'bg-blue-400 animate-pulse';
 }
 
-function statusLabel(status: RunSummary['status'] | RunTaskRecord['status']): string {
+function statusLabel(status: RunSummary['status'] | RunTaskRecord['status'], error?: string): string {
+  if (error === 'Skipped due to previous task failure') return 'skipped';
   if (status === 'running') return 'running';
   if (status === 'done') return 'done';
   if (status === 'terminated') return 'terminated';
@@ -59,71 +62,70 @@ function isTerminationNoopMessage(message?: string): boolean {
     || message.includes('Run already finished');
 }
 
-function groupRunsByLineage(runs: RunSummary[], collapsedRuns: Set<string>): Array<{
-  run: RunSummary;
-  depth: number;
-  hasChild: boolean;
-  deepestStatus?: RunSummary['status'];
-  collapsed?: boolean;
-}> {
-  const runMap = new Map<string, RunSummary>();
-  runs.forEach(r => runMap.set(r.id, r));
+type GroupedRunItem =
+  | { type: 'group'; pipelineId: string; pipelineName: string; runCount: number; isCollapsed: boolean }
+  | { type: 'run'; run: RunSummary; depth: number; hasChild: boolean; collapsed: boolean };
 
-  const childrenMap = new Map<string, RunSummary[]>();
+function buildGroupedRunList(
+  runs: RunSummary[],
+  collapsedPipelines: Set<string>,
+  collapsedRuns: Set<string>,
+): GroupedRunItem[] {
+  const pipelineGroups = new Map<string, { pipelineName: string; runs: RunSummary[] }>();
   runs.forEach(r => {
-    if (r.continuedFromRunId) {
-      const list = childrenMap.get(r.continuedFromRunId) || [];
-      list.push(r);
-      childrenMap.set(r.continuedFromRunId, list);
-    }
+    const group = pipelineGroups.get(r.pipelineId) || { pipelineName: r.pipelineName, runs: [] };
+    group.runs.push(r);
+    pipelineGroups.set(r.pipelineId, group);
   });
 
-  childrenMap.forEach((list) => {
-    list.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
+  const sortedPipelines = Array.from(pipelineGroups.entries()).sort((a, b) => {
+    const latestA = Math.max(...a[1].runs.map(r => new Date(r.startedAt).getTime()));
+    const latestB = Math.max(...b[1].runs.map(r => new Date(r.startedAt).getTime()));
+    return latestB - latestA;
   });
 
-  const roots = runs.filter(r => !r.continuedFromRunId || !runMap.has(r.continuedFromRunId));
-  roots.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+  const result: GroupedRunItem[] = [];
 
-  const result: Array<{
-    run: RunSummary;
-    depth: number;
-    hasChild: boolean;
-    deepestStatus?: RunSummary['status'];
-    collapsed?: boolean;
-  }> = [];
+  for (const [pipelineId, { pipelineName, runs: pRuns }] of sortedPipelines) {
+    const isCollapsed = collapsedPipelines.has(pipelineId);
+    result.push({ type: 'group', pipelineId, pipelineName, runCount: pRuns.length, isCollapsed });
+    if (isCollapsed) continue;
 
-  function getDeepestStatus(runId: string): RunSummary['status'] {
-    const children = childrenMap.get(runId) || [];
-    if (children.length === 0) {
-      return runMap.get(runId)?.status ?? 'terminated';
-    }
-    const latestChild = children[children.length - 1];
-    return getDeepestStatus(latestChild.id);
-  }
-  
-  function traverse(run: RunSummary, depth: number, isParentCollapsed: boolean) {
-    if (isParentCollapsed) return;
+    const pRunMap = new Map<string, RunSummary>();
+    pRuns.forEach(r => pRunMap.set(r.id, r));
 
-    const children = childrenMap.get(run.id) || [];
-    const isCollapsed = collapsedRuns.has(run.id);
-
-    result.push({
-      run,
-      depth,
-      hasChild: children.length > 0,
-      deepestStatus: children.length > 0 ? getDeepestStatus(run.id) : undefined,
-      collapsed: isCollapsed,
+    // Only 'continue' (重跑) runs nest under their direct parent.
+    // 'branch' runs break the chain and appear at depth 0.
+    const continueChildrenMap = new Map<string, RunSummary[]>();
+    pRuns.forEach(r => {
+      if (r.continuedFromRunId && pRunMap.has(r.continuedFromRunId) && r.continuationType === 'continue') {
+        const list = continueChildrenMap.get(r.continuedFromRunId) || [];
+        list.push(r);
+        continueChildrenMap.set(r.continuedFromRunId, list);
+      }
     });
+    continueChildrenMap.forEach(list =>
+      list.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+    );
 
-    children.forEach(child => {
-      traverse(child, depth + 1, isCollapsed);
-    });
+    // Root runs: everything that is NOT a 'continue' child of another run in this pipeline
+    const rootRuns = pRuns.filter(r =>
+      !r.continuedFromRunId ||
+      !pRunMap.has(r.continuedFromRunId) ||
+      r.continuationType !== 'continue'
+    );
+    rootRuns.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+
+    function traverse(run: RunSummary, depth: number, parentCollapsed: boolean) {
+      if (parentCollapsed) return;
+      const children = continueChildrenMap.get(run.id) || [];
+      const isColl = collapsedRuns.has(run.id);
+      result.push({ type: 'run', run, depth, hasChild: children.length > 0, collapsed: isColl });
+      children.forEach(child => traverse(child, depth + 1, isColl));
+    }
+
+    rootRuns.forEach(root => traverse(root, 0, false));
   }
-
-  roots.forEach(root => {
-    traverse(root, 0, false);
-  });
 
   return result;
 }
@@ -574,6 +576,7 @@ function TaskDetailDialog({
   }, [onClose]);
 
   const showContinuePanel = run && agents && onContinueStarted && (task.status === 'error' || task.status === 'interrupted' || task.status === 'terminated');
+  const showBranchPanel = run && agents && onContinueStarted && task.status === 'done';
 
   return (
     <>
@@ -658,6 +661,20 @@ function TaskDetailDialog({
             />
           </div>
         )}
+
+        {showBranchPanel && run && (
+          <div className="border-t border-zinc-150 bg-zinc-50 px-4 py-4 shrink-0 shadow-lg">
+            <RunDetailBranchPanel
+              run={run}
+              agents={agents}
+              task={task}
+              onStarted={(newRunId) => {
+                onContinueStarted(newRunId);
+                onClose();
+              }}
+            />
+          </div>
+        )}
       </div>
     </>
   );
@@ -689,14 +706,14 @@ function TaskRow({
   return (
     <>
     <div className={`rounded-xl border overflow-hidden transition-all ${
-      task.status === 'error' ? 'border-red-200' : task.status === 'interrupted' ? 'border-zinc-300' : 'border-zinc-200'
+      task.status === 'error' && task.error !== 'Skipped due to previous task failure' ? 'border-red-200' : task.status === 'interrupted' ? 'border-zinc-300' : 'border-zinc-200'
     }`}>
       <div className="w-full flex items-center gap-3 px-4 py-3 bg-white hover:bg-zinc-50 transition-colors text-left">
         <button
           onClick={() => setExpanded((e) => !e)}
           className="flex-1 min-w-0 flex items-center gap-3 text-left"
         >
-          <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot(task.status)}`} />
+          <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot(task.status, task.error)}`} />
           <span className="flex-1 text-sm font-semibold text-zinc-800 truncate">{task.taskName}</span>
           <ChevronIcon className={`w-3 h-3 text-zinc-300 transition-transform ${expanded ? 'rotate-90' : ''}`} />
         </button>
@@ -1202,6 +1219,97 @@ function RunDetailContinuePanel({
   );
 }
 
+function RunDetailBranchPanel({
+  run,
+  agents,
+  onStarted,
+  task,
+}: {
+  run: RunRecord;
+  agents: Agent[];
+  onStarted: (newRunId: string) => void;
+  task: RunTaskRecord;
+}) {
+  const currentTaskId = task.taskId;
+  const [comment, setComment] = useState('');
+  const [agentId, setAgentId] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleBranch = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const activeComment = comment.trim();
+      const data = await api.branchRun(run.id, currentTaskId, activeComment || undefined, agentId || undefined);
+      onStarted(data.runId);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border-2 border-emerald-200 overflow-hidden shadow-sm transition-all hover:border-emerald-300">
+      <div className="border-b border-emerald-100 bg-emerald-50 px-4 py-3 flex items-center gap-2">
+        <span className="text-emerald-600 text-sm">🌱</span>
+        <span className="text-xs font-semibold text-emerald-800">
+          基于当前成功任务创建分支执行（仅重跑此任务及下游）
+        </span>
+      </div>
+      <div className="px-4 py-3 space-y-3">
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-zinc-500 shrink-0">当前基石任务:</span>
+          <span className="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50/50 px-2 py-1 text-xs font-medium text-emerald-800">
+            {task.taskName} ({task.taskId})
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-zinc-500 shrink-0">指派智能体:</span>
+          <select
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-300"
+          >
+            <option value="">
+              使用任务默认 {(() => {
+                const defaultAgentId = task.agents?.[0];
+                const defaultAgent = defaultAgentId ? agents.find((a) => a.id === defaultAgentId) : null;
+                return defaultAgent ? `(${defaultAgent.name || defaultAgent.id})` : (defaultAgentId ? `(${defaultAgentId})` : '');
+              })()}
+            </option>
+            {agents.filter((a) => !!a.role).map((a) => (
+              <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
+            ))}
+          </select>
+        </div>
+
+        <textarea
+          className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-300 resize"
+          rows={3}
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          placeholder="补充本次分支执行的修正方向或新指令（选填）。若留空，智能体将从头独立重新运行此步骤；若填写评论，智能体将在上一次产出基础上进行增量修改并向后执行下游步骤..."
+        />
+
+        {error && <p className="text-xs text-red-500">{error}</p>}
+
+        <div className="flex justify-end">
+          <button
+            onClick={handleBranch}
+            disabled={submitting}
+            className="rounded-lg bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-xs font-semibold text-white transition-all shadow-sm active:scale-95 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+          >
+            <span>{submitting ? 'Starting...' : '🌱 创建分支并执行'}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface WorkflowDAGMapProps {
   run: RunRecord;
   pipelines: Pipeline[];
@@ -1226,12 +1334,13 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask 
             {/* Horizontal Row of Tasks in this dependency level */}
             <div className="flex flex-wrap justify-center gap-4 w-full">
               {group.tasks.map((task) => {
+                const isSkippedDueToFailure = task.error === 'Skipped due to previous task failure';
                 const isAwaiting = task.status === 'awaiting_review' || task.status === 'interrupted';
                 const isRunning = task.status === 'running';
                 const isDone = task.status === 'done';
-                const isError = task.status === 'error';
+                const isError = task.status === 'error' && !isSkippedDueToFailure;
                 const isTerminated = task.status === 'terminated';
-                const isSkipped = task.status === 'skipped';
+                const isSkipped = task.status === 'skipped' || isSkippedDueToFailure;
                 const isPending = task.status === 'pending';
 
                 let bgClass = 'bg-white/80 border-zinc-200 text-zinc-800';
@@ -1284,7 +1393,7 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask 
                                 }
                               }}
                               className="flex items-center justify-center gap-1 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 px-1.5 py-0.5 text-[9px] font-bold text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
-                              title="终止任务"
+                                title="终止任务"
                             >
                               <span className="w-1.5 h-1.5 bg-red-500 rounded-[1px] animate-pulse" />
                               <span>终止</span>
@@ -1299,7 +1408,7 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask 
                             isError ? 'bg-red-100/60 text-red-700' :
                             'bg-zinc-100 text-zinc-600'
                           }`}>
-                            {statusLabel(task.status)}
+                            {isSkippedDueToFailure ? 'skipped' : statusLabel(task.status)}
                           </span>
                         </div>
                       )}
@@ -1715,59 +1824,57 @@ function RunDetail({
 // Run list card
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RunCard({ run, selected, onClick, onDelete, hasChild, deepestStatus, collapsed, onToggleCollapse }: {
+function RunCard({ run, selected, onClick, onDelete, hasChild, collapsed, onToggleCollapse, isChild }: {
   run: RunSummary;
   selected: boolean;
   onClick: () => void;
   onDelete: () => void;
   hasChild?: boolean;
-  deepestStatus?: RunSummary['status'];
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  isChild?: boolean;
 }) {
-  const finalStatus = hasChild && collapsed && deepestStatus ? deepestStatus : run.status;
-
   return (
     <div
       onClick={onClick}
-      className={`w-full group relative flex flex-col gap-1 pl-3 pr-4 py-3 text-left border-b border-zinc-100 hover:bg-zinc-50 cursor-pointer transition-colors ${
-        selected ? 'bg-indigo-50/50 border-l-2 border-l-indigo-400' : ''
+      className={`w-full group relative flex flex-col gap-0.5 pl-2 pr-4 py-2.5 text-left hover:bg-zinc-50 cursor-pointer transition-colors ${
+        selected ? 'bg-indigo-50/50 border-l-2 border-l-indigo-400' : 'border-l-2 border-l-transparent'
       }`}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          <div className="w-[18px] h-[18px] flex items-center justify-center shrink-0 select-none">
-            {hasChild && onToggleCollapse ? (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleCollapse();
-                }}
-                className="p-0.5 rounded hover:bg-zinc-200/50 text-zinc-400 hover:text-zinc-600 transition-colors shrink-0"
-                title={collapsed ? "Expand tree" : "Collapse tree"}
-              >
-                <svg 
-                  className={`w-3.5 h-3.5 transition-transform ${collapsed ? '' : 'rotate-90'}`}
-                  fill="none" 
-                  viewBox="0 0 24 24" 
-                  stroke="currentColor" 
-                  strokeWidth="3"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                </svg>
-              </button>
-            ) : null}
-          </div>
-          <span className="text-xs font-semibold text-zinc-700 truncate flex-1">{run.pipelineName}</span>
+      {/* Line 1: [collapse btn] goal + status */}
+      <div className="flex items-center gap-1">
+        <div className="w-5 h-5 flex items-center justify-center shrink-0">
+          {hasChild ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
+              className="p-0.5 rounded hover:bg-zinc-200/60 text-zinc-400 hover:text-zinc-600 transition-colors"
+            >
+              <svg className={`w-3 h-3 transition-transform ${collapsed ? '' : 'rotate-90'}`}
+                fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          ) : null}
         </div>
-        <div className="flex items-center gap-1 shrink-0 pr-6 group-hover:pr-1 transition-all">
-          <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusColors(finalStatus)}`}>
-            {statusLabel(finalStatus)}
-          </span>
-        </div>
+        <p className={`text-xs truncate leading-snug flex-1 pr-1 ${
+          isChild ? 'text-zinc-500' : 'text-zinc-700 font-medium'
+        }`}>{run.goal}</p>
+        <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusColors(run.status)}`}>
+          {statusLabel(run.status)}
+        </span>
       </div>
-      <p className="text-xs text-zinc-400 truncate leading-snug pr-6">{run.goal}</p>
-      <div className="flex items-center gap-2 text-[10px] text-zinc-300 mt-0.5">
+      {/* Line 2: type badge (if any) + time info */}
+      <div className="flex items-center gap-1.5 text-[10px] text-zinc-300 pl-6">
+        {run.continuationType && (
+          <span className={`shrink-0 inline-flex items-center rounded px-1 py-0.5 text-[9px] font-bold ${
+            run.continuationType === 'branch'
+              ? 'bg-emerald-50 border border-emerald-200 text-emerald-700'
+              : 'bg-indigo-50 border border-indigo-200 text-indigo-700'
+          }`}>
+            {run.continuationType === 'branch' ? '🌱 分支' : '↻ 重跑'}
+            {run.continuationTaskName ? `: ${run.continuationTaskName} (R${run.continuationRound})` : ''}
+          </span>
+        )}
         <span>{formatTime(run.startedAt)}</span>
         <span>·</span>
         <span>{formatDuration(run.durationMs)}</span>
@@ -1787,10 +1894,10 @@ function RunCard({ run, selected, onClick, onDelete, hasChild, deepestStatus, co
             onDelete();
           }
         }}
-        className="absolute right-2 bottom-2 text-zinc-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-1 rounded hover:bg-red-50"
+        className="absolute right-1.5 top-1.5 text-zinc-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-1 rounded hover:bg-red-50"
         title="Delete run"
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
           <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
         </svg>
       </button>
@@ -1812,16 +1919,25 @@ export function RunsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<RunRecord | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [collapsedPipelines, setCollapsedPipelines] = useState<Set<string>>(new Set());
   const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set());
   const sseRef = useRef<{ abort: () => void } | null>(null);
 
   const toggleCollapse = useCallback((runId: string) => {
-    setCollapsedRuns((prev) => {
+    setCollapsedRuns(prev => {
       const next = new Set(prev);
-      if (next.has(runId)) {
-        next.delete(runId);
+      next.has(runId) ? next.delete(runId) : next.add(runId);
+      return next;
+    });
+  }, []);
+
+  const togglePipelineCollapse = useCallback((pipelineId: string) => {
+    setCollapsedPipelines((prev) => {
+      const next = new Set(prev);
+      if (next.has(pipelineId)) {
+        next.delete(pipelineId);
       } else {
-        next.add(runId);
+        next.add(pipelineId);
       }
       return next;
     });
@@ -2096,30 +2212,48 @@ export function RunsPage() {
               <p className="text-xs text-zinc-400">{t('runs.empty', 'No runs yet. Execute a pipeline to see history here.')}</p>
             </div>
           ) : (
-            groupRunsByLineage(runs, collapsedRuns).map(({ run, depth, hasChild, deepestStatus, collapsed }) => (
-              <div key={run.id} className="flex items-stretch border-b border-zinc-100/50 hover:bg-zinc-50/30">
-                {depth > 0 && (
-                  <div 
-                    className="flex shrink-0 items-center justify-end text-zinc-300/80 font-mono font-bold select-none text-[11px]"
-                    style={{ width: `${depth * 42}px` }}
+            buildGroupedRunList(runs, collapsedPipelines, collapsedRuns).map((item) => {
+              if (item.type === 'group') {
+                return (
+                  <div
+                    key={`g-${item.pipelineId}`}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-50 border-b border-zinc-100 cursor-pointer hover:bg-zinc-100/60 select-none sticky top-0 z-10"
+                    onClick={() => togglePipelineCollapse(item.pipelineId)}
                   >
-                    └─
+                    <svg
+                      className={`w-3 h-3 text-zinc-400 transition-transform shrink-0 ${item.isCollapsed ? '' : 'rotate-90'}`}
+                      fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span className="text-[11px] font-semibold text-zinc-500 truncate flex-1">{item.pipelineName}</span>
+                    <span className="text-[10px] text-zinc-300 shrink-0">{item.runCount}</span>
                   </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <RunCard
-                    run={run}
-                    selected={selectedId === run.id}
-                    onDelete={() => handleDeleteRun(run.id)}
-                    onClick={() => setSelectedId(run.id)}
-                    hasChild={hasChild}
-                    deepestStatus={deepestStatus}
-                    collapsed={collapsed}
-                    onToggleCollapse={() => toggleCollapse(run.id)}
-                  />
+                );
+              }
+              const { run, depth, hasChild, collapsed } = item;
+              return (
+                <div key={run.id} className="flex items-stretch border-b border-zinc-100/50">
+                  {depth > 0 && (
+                    <div className="flex shrink-0 self-stretch" style={{ width: '14px' }}>
+                      <div className="ml-3 border-l-2 border-zinc-200 self-stretch" />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <RunCard
+                      run={run}
+                      selected={selectedId === run.id}
+                      onDelete={() => handleDeleteRun(run.id)}
+                      onClick={() => setSelectedId(run.id)}
+                      hasChild={hasChild}
+                      collapsed={collapsed}
+                      onToggleCollapse={() => toggleCollapse(run.id)}
+                      isChild={depth > 0}
+                    />
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

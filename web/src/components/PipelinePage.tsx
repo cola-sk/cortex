@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Agent, Pipeline, PipelineTask, PipelineDecision, RunEventType, ToolEvent } from '../types';
 import { api } from '../api';
 import { useTranslation } from 'react-i18next';
-import { TaskDetailShared, MarkdownWithThinking } from './TaskDetailShared';
+import { TaskDetailShared, MarkdownWithThinking, formatAgentInfo } from './TaskDetailShared';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Templates
@@ -175,6 +175,24 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
 
   const handleEdit = (p: Pipeline) => { setEditing(p); setView('editor'); };
 
+  const handleCopy = async (p: Pipeline) => {
+    try {
+      const { id, ...rest } = p;
+      const copyName = t('pipeline.copyOf', { name: p.name });
+      const newPipeline = {
+        ...rest,
+        name: copyName,
+        tasks: p.tasks.map((t) => ({ ...t, dependsOn: [...t.dependsOn] })),
+        decisions: p.decisions.map((d) => ({ ...d, evaluates: [...d.evaluates] })),
+      };
+      await api.createPipeline(newPipeline);
+      showToast(`Copied to "${copyName}"`);
+      await load();
+    } catch (e) {
+      showToast((e as Error).message, false);
+    }
+  };
+
   const handleDelete = async (id: string) => {
     if (!window.confirm(`Delete pipeline "${id}"?`)) return;
     try {
@@ -341,6 +359,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
                       key={p.id}
                       pipeline={p}
                       onEdit={() => handleEdit(p)}
+                      onCopy={() => handleCopy(p)}
                       onDelete={() => handleDelete(p.id)}
                       onRun={() => handleRun(p)}
                     />
@@ -395,10 +414,11 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function PipelineCard({
-  pipeline, onEdit, onDelete, onRun }: {
+  pipeline, onEdit, onDelete, onCopy, onRun }: {
   pipeline: Pipeline;
   onEdit: () => void;
   onDelete: () => void;
+  onCopy: () => void;
   onRun: () => void;
 }) {
   const { t } = useTranslation();
@@ -429,6 +449,9 @@ function PipelineCard({
         </button>
         <button onClick={onEdit} className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:border-zinc-400 hover:text-zinc-800 transition-colors">
           {t('common.edit')}
+        </button>
+        <button onClick={onCopy} className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:border-zinc-400 hover:text-zinc-800 transition-colors">
+          {t('common.copy')}
         </button>
         <button onClick={onDelete} className="rounded-lg border border-red-100 px-3 py-1.5 text-xs font-medium text-red-400 hover:border-red-300 hover:text-red-500 transition-colors">
           {t('common.del')}
@@ -1166,7 +1189,8 @@ export interface LogEntry {
   workerStatus?: ('running' | 'done' | 'error')[];
   startedAt?: number;
   finishedAt?: number;
-  status: 'running' | 'done' | 'error' | 'decision' | 'awaiting_review' | 'interrupted' | 'pending';
+  status: 'running' | 'done' | 'error' | 'decision' | 'awaiting_review' | 'interrupted' | 'pending' | 'terminated' | 'skipped';
+  input?: string;
   // Review fields
   requiresReview?: boolean;
   currentRound?: number;
@@ -1199,14 +1223,24 @@ function nextTaskRound(entries: LogEntry[], taskId: string): number {
 function appendTextChunk(base: string, chunk: string): string {
   if (!chunk) return base;
   if (!base) return chunk;
-  if (base.endsWith('\n') || chunk.startsWith('\n')) return base + chunk;
-  return `${base}\n${chunk}`;
+  return base + chunk;
 }
 
 const AUTO_SCROLL_BOTTOM_GAP = 24;
 
 function isNearBottom(el: HTMLDivElement, gap = AUTO_SCROLL_BOTTOM_GAP): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= gap;
+}
+
+function isTerminationMessage(message?: string): boolean {
+  return !!message && /terminated|aborted|interrupted/i.test(message);
+}
+
+function isTerminationNoopMessage(message?: string): boolean {
+  if (!message) return false;
+  return message.includes('No pending review for run')
+    || message.includes('is not currently active or cannot be terminated')
+    || message.includes('Run already finished');
 }
 
 function RunView({
@@ -1223,6 +1257,7 @@ function RunView({
   const [log, setLog] = useState<LogEntry[]>([]);
   const [results, setResults] = useState<Record<string, { output: string; error?: string }>>({});
   const [fatalError, setFatalError] = useState<string | null>(null);
+  const [terminatedMessage, setTerminatedMessage] = useState<string | null>(null);
   const [modalTaskId, setModalTaskId] = useState<string | null>(null);
   const [modalOutput, setModalOutput] = useState<{ title: string; content: string } | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -1273,6 +1308,7 @@ function RunView({
     setResults({});
     setDone(false);
     setFatalError(null);
+    setTerminatedMessage(null);
     setPausedTaskId(null);
     onPauseStateChange(null);
 
@@ -1285,6 +1321,7 @@ function RunView({
           const taskId = d.taskId as string;
           const taskName = d.taskName as string;
           const agents = d.agents as string[];
+          const input = d.input as string | undefined;
           let openedEntryId: string | null = null;
           setLog((prev) => {
             const pendingIdx = findLastTaskEntryIndex(prev, taskId, (entry) => entry.status === 'pending');
@@ -1312,6 +1349,7 @@ function RunView({
                 finishedAt: undefined,
                 error: undefined,
                 status: 'running',
+                input: input || existing.input,
               };
               openedEntryId = entryId;
               return next;
@@ -1346,6 +1384,7 @@ function RunView({
                 finishedAt: undefined,
                 error: undefined,
                 status: 'running',
+                input: input || existing.input,
               };
               openedEntryId = entryId;
               return next;
@@ -1370,6 +1409,7 @@ function RunView({
                 workerStatus: agents.length > 1 ? agents.map(() => 'running') : undefined,
                 startedAt: Date.now(),
                 status: 'running',
+                input,
               },
             ];
           });
@@ -1445,17 +1485,26 @@ function RunView({
             if (idx < 0) return prev;
             const next = [...prev];
             const entry = next[idx];
+            const isTerminated = isTerminationMessage(error);
             next[idx] = {
               ...entry,
               status: error === 'Interrupted by user'
                 ? 'interrupted'
+                : isTerminated
+                  ? 'terminated'
                 : error
                   ? 'error'
                   : 'done',
               error,
               output,
               outputs,
-              detail: error === 'Interrupted by user' ? '■ Interrupted' : error ? error : '✓ Completed',
+              detail: error === 'Interrupted by user'
+                ? '■ Interrupted'
+                : isTerminated
+                  ? '■ Terminated'
+                  : error
+                    ? error
+                    : '✓ Completed',
               finishedAt: Date.now(),
             };
             return next;
@@ -1484,7 +1533,37 @@ function RunView({
           onPauseStateChange(null);
           onDone();
         } else if (type === 'error') {
-          setFatalError(d.message as string);
+          const message = d.message as string;
+          if (isTerminationMessage(message)) {
+            setTerminatedMessage(message || 'Run terminated by user');
+            setFatalError(null);
+            setLog((prev) => prev.map((entry) => {
+              if (entry.status === 'pending') {
+                return {
+                  ...entry,
+                  status: 'skipped',
+                  detail: '○ Skipped (run terminated)',
+                  error: undefined,
+                  finishedAt: entry.finishedAt ?? Date.now(),
+                };
+              }
+              if (entry.status === 'running' || entry.status === 'awaiting_review' || entry.status === 'interrupted') {
+                return {
+                  ...entry,
+                  status: 'terminated',
+                  detail: '■ Terminated by user',
+                  error: message || 'Terminated by user',
+                  finishedAt: entry.finishedAt ?? Date.now(),
+                  reviewPending: false,
+                  pauseMode: undefined,
+                };
+              }
+              return entry;
+            }));
+          } else {
+            setFatalError(message);
+            setTerminatedMessage(null);
+          }
           setDone(true);
           onPauseStateChange(null);
           onDone();
@@ -1601,6 +1680,7 @@ function RunView({
                 workerStatus: agents.length > 1 ? agents.map(() => 'running') : undefined,
                 status: 'pending',
                 currentRound: round,
+                input: latest?.input,
               },
             ];
           });
@@ -1630,8 +1710,17 @@ function RunView({
     try {
       await api.interruptTask(activeRunId, taskId);
     } catch (e) {
-      console.error('Failed to interrupt task:', e);
-      alert('Failed to interrupt task: ' + (e instanceof Error ? e.message : String(e)));
+      const message = e instanceof Error ? e.message : String(e);
+      if (isTerminationNoopMessage(message)) {
+        setTerminatedMessage((prev) => prev ?? 'Run terminated by user');
+        setFatalError(null);
+        setDone(true);
+        onPauseStateChange(null);
+        onDone();
+        return;
+      }
+      console.error('Failed to terminate run:', e);
+      setFatalError(`Failed to terminate run: ${message}`);
     }
   };
 
@@ -1701,7 +1790,11 @@ function RunView({
           <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
             <div className="border-b border-zinc-100 px-4 py-3 flex items-center justify-between">
               <span className="text-xs font-semibold text-zinc-600">
-                {done ? (fatalError ? t('run.failed') : t('run.complete')) : t('run.running')}
+                {done
+                  ? (terminatedMessage
+                    ? t('run.terminated')
+                    : (fatalError ? t('run.failed') : t('run.complete')))
+                  : t('run.running')}
               </span>
               {!done && <Spinner />}
             </div>
@@ -1755,9 +1848,14 @@ function RunView({
             {t('run.error')}{fatalError}
           </div>
         )}
+        {terminatedMessage && (
+          <div className="rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+            {t('run.terminated')}: {terminatedMessage}
+          </div>
+        )}
 
         {/* Results summary */}
-        {done && !fatalError && Object.keys(results).length > 0 && (
+        {done && !fatalError && !terminatedMessage && Object.keys(results).length > 0 && (
           <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
             <div className="border-b border-zinc-100 px-4 py-3">
               <span className="text-xs font-semibold text-zinc-600">{t('run.results')}</span>
@@ -1804,7 +1902,9 @@ function RunView({
       {modalEntry && (
         <TaskDetailModal
           entry={modalEntry}
+          agents={agents}
           onClose={() => setModalTaskId(null)}
+          onInterrupt={modalEntry.taskId ? () => handleInterruptTask(modalEntry.taskId as string) : undefined}
         />
       )}
 
@@ -1863,8 +1963,18 @@ function splitThinkingSections(input: string): ContentSection[] {
   return sections;
 }
 
-function Markdown({ content, className }: { content: string; className?: string }) {
-  return <MarkdownWithThinking content={content} className={className} />;
+function Markdown({
+  content,
+  className,
+  markdownClassName,
+  dark,
+}: {
+  content: string;
+  className?: string;
+  markdownClassName?: string;
+  dark?: boolean;
+}) {
+  return <MarkdownWithThinking content={content} className={className} markdownClassName={markdownClassName} dark={dark} />;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1888,20 +1998,63 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, mode, o
   const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name?: string }>>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [outputExpanded, setOutputExpanded] = useState(false);
+  const [outputFullscreen, setOutputFullscreen] = useState(false);
   const isInterrupted = mode === 'interrupt';
+  const reviewMarkdownClass = 'max-w-none text-sm';
 
   // Find upstream tasks for rollback target selector
   const upstreamTasks = pipeline.tasks.filter((t) => t.id !== taskId);
 
   useEffect(() => {
     api.getAgents()
-      .then((list) => setAvailableAgents(list.map((a) => ({ id: a.id, name: a.name }))))
+      .then((list) => setAvailableAgents(list.filter((a) => !!a.role).map((a) => ({ id: a.id, name: a.name }))))
       .catch(() => setAvailableAgents([]));
   }, []);
 
+  useEffect(() => {
+    setOutputExpanded(false);
+    setOutputFullscreen(false);
+  }, [taskId]);
+
+  const handleReviewSubmitError = (e: unknown) => {
+    const message = (e as Error)?.message ?? 'Submit failed';
+    if (isTerminationNoopMessage(message)) {
+      // Review already resolved elsewhere (stream delay / duplicate submit) — treat as success.
+      onSubmitted();
+      return;
+    }
+    setError(message);
+  };
+
+  const submitInterruptedReview = async (nextComment: string) => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.submitReview(
+        runId,
+        taskId,
+        'revise',
+        nextComment,
+        taskId,
+        agentId || undefined,
+      );
+      onSubmitted();
+    } catch (e) {
+      handleReviewSubmitError(e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleSubmit = async () => {
-    if ((isInterrupted || action === 'revise') && !comment.trim()) {
+    const trimmedComment = comment.trim();
+    if ((isInterrupted || action === 'revise') && !trimmedComment) {
       setError(isInterrupted ? '请填写评论后继续执行。' : 'Please provide feedback when requesting a revision.');
+      return;
+    }
+    if (isInterrupted) {
+      await submitInterruptedReview(trimmedComment);
       return;
     }
     setSubmitting(true);
@@ -1910,133 +2063,217 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, mode, o
       await api.submitReview(
         runId,
         taskId,
-        isInterrupted ? 'revise' : action,
-        comment.trim(),
-        isInterrupted
-          ? taskId
-          : action === 'revise' && targetTaskId !== taskId ? targetTaskId : undefined,
+        action,
+        trimmedComment,
+        action === 'revise' && targetTaskId !== taskId ? targetTaskId : undefined,
         agentId || undefined,
       );
       onSubmitted();
     } catch (e) {
-      setError((e as Error).message);
+      handleReviewSubmitError(e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleRejectInterrupt = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.interruptTask(runId, taskId);
+      onSubmitted();
+    } catch (e) {
+      const message = (e as Error).message;
+      if (isTerminationNoopMessage(message)) {
+        onSubmitted();
+        return;
+      }
+      setError(message);
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <div className="bg-white rounded-xl border-2 border-amber-300 overflow-hidden shadow-sm">
-      <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-2">
-        <span className="text-amber-600 text-sm">{isInterrupted ? '■' : '⏸'}</span>
-        <span className="text-xs font-semibold text-amber-800">
-          {isInterrupted ? `已中断：${taskName}` : `Review: ${taskName}`}
-        </span>
-        <span className="text-[10px] text-amber-500 ml-auto">Round {round}</span>
-      </div>
-
-      <div className="px-4 py-3 space-y-3">
-        {/* Output preview */}
-        {output && (
-          <div className="max-h-48 overflow-y-auto rounded-lg bg-zinc-50 p-3 text-xs">
-            <Markdown content={output} />
-          </div>
-        )}
-
-        {/* Action selector */}
-        {!isInterrupted && (
-          <div className="flex gap-2">
-            <button
-              onClick={() => setAction('approve')}
-              className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
-                action === 'approve'
-                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                  : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
-              }`}
-            >
-              ✓ Approve & Continue
-            </button>
-            <button
-              onClick={() => setAction('revise')}
-              className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
-                action === 'revise'
-                  ? 'bg-amber-50 border-amber-300 text-amber-700'
-                  : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
-              }`}
-            >
-              ↻ Request Revision
-            </button>
-          </div>
-        )}
-
-        {/* Comment / feedback */}
-        <textarea
-          className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize"
-          rows={3}
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          placeholder={isInterrupted ? '请输入本次中断原因或补充说明，然后继续执行...' : (action === 'approve' ? 'Optional comment...' : 'Describe what needs to change...')}
-        />
-
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-zinc-500 shrink-0">Agent:</span>
-          <select
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-            className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
-          >
-            <option value="">Use task default</option>
-            {availableAgents.map((a) => (
-              <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
-            ))}
-          </select>
+    <>
+      <div className="bg-white rounded-xl border-2 border-amber-300 overflow-hidden shadow-sm">
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-2">
+          <span className="text-amber-600 text-sm">{isInterrupted ? '■' : '⏸'}</span>
+          <span className="text-xs font-semibold text-amber-800">
+            {isInterrupted ? `已中断：${taskName}` : `Review: ${taskName}`}
+          </span>
+          <span className="text-[10px] text-amber-500 ml-auto">Round {round}</span>
         </div>
 
-        {/* Rollback target (only for revise) */}
-        {!isInterrupted && action === 'revise' && upstreamTasks.length > 0 && (
+        <div className="px-4 py-3 space-y-3">
+          {/* Output preview */}
+          {output && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-zinc-500">
+                <span>Output · {output.length} chars</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setOutputExpanded((prev) => !prev)}
+                    className="rounded border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-800"
+                  >
+                    {outputExpanded ? '紧凑视图' : '展开视图'}
+                  </button>
+                  <button
+                    onClick={() => setOutputFullscreen(true)}
+                    className="rounded border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-800"
+                  >
+                    全屏查看
+                  </button>
+                </div>
+              </div>
+              <div className={`overflow-y-auto rounded-lg bg-white p-4 text-sm border border-zinc-200/70 shadow-inner resize-y ${
+                outputExpanded ? 'min-h-[34vh] max-h-[62vh]' : 'max-h-56'
+              }`}>
+                <Markdown content={output} markdownClassName={reviewMarkdownClass} />
+              </div>
+            </div>
+          )}
+
+          {/* Action selector */}
+          {!isInterrupted && (
+            <div className="flex gap-2">
+              <button
+                onClick={() => setAction('approve')}
+                className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
+                  action === 'approve'
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                    : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
+                }`}
+              >
+                ✓ Approve & Continue
+              </button>
+              <button
+                onClick={() => setAction('revise')}
+                className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium border transition-colors ${
+                  action === 'revise'
+                    ? 'bg-amber-50 border-amber-300 text-amber-700'
+                    : 'bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300'
+                }`}
+              >
+                ↻ Request Revision
+              </button>
+            </div>
+          )}
+
+          {/* Comment / feedback */}
+          <textarea
+            className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize"
+            rows={3}
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder={isInterrupted ? '请输入本次中断原因或补充说明，然后继续执行...' : (action === 'approve' ? 'Optional comment...' : 'Describe what needs to change...')}
+          />
+
           <div className="flex items-center gap-2 text-xs">
-            <span className="text-zinc-500 shrink-0">Revise target:</span>
+            <span className="text-zinc-500 shrink-0">Agent:</span>
             <select
-              value={targetTaskId}
-              onChange={(e) => setTargetTaskId(e.target.value)}
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
               className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
             >
-              <option value={taskId}>Current task ({taskId})</option>
-              {upstreamTasks.map((t) => (
-                <option key={t.id} value={t.id}>↩ {t.name} ({t.id})</option>
+              <option value="">Use task default</option>
+              {availableAgents.map((a) => (
+                <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
               ))}
             </select>
           </div>
-        )}
 
-        {error && (
-          <p className="text-xs text-red-500">{error}</p>
-        )}
+          {/* Rollback target (only for revise) */}
+          {!isInterrupted && action === 'revise' && upstreamTasks.length > 0 && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-zinc-500 shrink-0">Revise target:</span>
+              <select
+                value={targetTaskId}
+                onChange={(e) => setTargetTaskId(e.target.value)}
+                className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
+              >
+                <option value={taskId}>Current task ({taskId})</option>
+                {upstreamTasks.map((t) => (
+                  <option key={t.id} value={t.id}>↩ {t.name} ({t.id})</option>
+                ))}
+              </select>
+            </div>
+          )}
 
-        {/* Submit */}
-        <div className="flex justify-end">
-          <button
-            onClick={handleSubmit}
-            disabled={submitting}
-            className={`rounded-lg px-4 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50 ${
-              isInterrupted
-                ? 'bg-indigo-600 hover:bg-indigo-500'
-                : action === 'approve'
-                ? 'bg-emerald-600 hover:bg-emerald-500'
-                : 'bg-amber-600 hover:bg-amber-500'
-            }`}
-          >
-            {submitting
-              ? 'Submitting...'
-              : isInterrupted
-                ? '✎ 提交评论并继续'
-                : action === 'approve'
-                  ? '✓ Approve'
-                  : '↻ Submit Revision'}
-          </button>
+          {error && (
+            <p className="text-xs text-red-500">{error}</p>
+          )}
+
+          {/* Submit */}
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={handleRejectInterrupt}
+              disabled={submitting}
+              className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-xs font-semibold text-zinc-700 transition-colors hover:border-zinc-400 hover:bg-zinc-50 disabled:opacity-50"
+            >
+              ■ 拒绝并终止 Pipeline
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={submitting}
+              className={`rounded-lg px-4 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50 ${
+                isInterrupted
+                  ? 'bg-indigo-600 hover:bg-indigo-500'
+                  : action === 'approve'
+                  ? 'bg-emerald-600 hover:bg-emerald-500'
+                  : 'bg-amber-600 hover:bg-amber-500'
+              }`}
+            >
+              {submitting
+                ? 'Submitting...'
+                : isInterrupted
+                  ? '✎ 提交评论并继续'
+                  : action === 'approve'
+                    ? '✓ Approve'
+                    : '↻ Submit Revision'}
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+      {output && outputFullscreen && (
+        <div className="fixed inset-0 z-[120] bg-zinc-950/45 backdrop-blur-md p-2 sm:p-3 md:p-4 flex items-center justify-center animate-fade-in">
+          <div className="mx-auto flex h-full w-full max-w-[92vw] flex-col overflow-hidden rounded-2xl border border-zinc-200/50 bg-white/95 shadow-2xl transition-all duration-300 relative">
+            
+            {/* Top decorative premium accent gradient bar */}
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500" />
+            
+            {/* Elegant glassmorphic header */}
+            <div className="flex items-center gap-3 border-b border-zinc-200/80 bg-zinc-50/50 backdrop-blur-md px-5 py-3.5">
+              <div className="flex items-center gap-2">
+                <span className="flex h-2.5 w-2.5 rounded-full bg-indigo-500 animate-pulse" />
+                <span className="text-sm font-bold text-zinc-900 tracking-tight">Technical Review</span>
+              </div>
+              <span className="rounded bg-indigo-50 border border-indigo-100/60 px-2 py-0.5 text-[10px] font-bold text-indigo-600 truncate max-w-xs md:max-w-md">
+                {taskName}
+              </span>
+              <span className="ml-auto text-xs font-semibold text-zinc-400 bg-zinc-100 px-2.5 py-1 rounded-full">
+                {output.length} characters
+              </span>
+              <button
+                onClick={() => setOutputFullscreen(false)}
+                className="rounded-xl border border-zinc-200 bg-white px-4 py-1.5 text-xs font-bold text-zinc-700 hover:bg-zinc-50 hover:border-zinc-300 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-sm cursor-pointer"
+              >
+                关闭 (Close)
+              </button>
+            </div>
+            
+            {/* Spacious content panel with reduced padding */}
+            <div className="flex-1 overflow-y-auto bg-zinc-50/60 px-2 py-4 sm:px-4 md:px-6">
+              <div className="mx-auto w-full max-w-5xl rounded-2xl border border-zinc-200/60 bg-white p-5 sm:p-8 md:p-10 shadow-xl ring-1 ring-zinc-100/40 relative">
+                {/* Decorative inner document top line */}
+                <div className="absolute top-0 left-0 right-0 h-1 bg-indigo-500/10 rounded-t-2xl" />
+                <Markdown content={output} markdownClassName={reviewMarkdownClass} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -2051,8 +2288,8 @@ function LogRow({ entry, onOpenDetail, onInterrupt }: {
 }) {
   const [expanded, setExpanded] = useState(false);
   const toolCallCount = (entry.toolEvents ?? []).filter((e) => e.type === 'tool_use').length;
-  const icons: Record<LogEntry['status'], string> = { running: '◌', done: '✓', error: '✗', decision: '⬡', awaiting_review: '⏸', interrupted: '■', pending: '↩' };
-  const colors: Record<LogEntry['status'], string> = { running: 'text-zinc-400', done: 'text-emerald-500', error: 'text-red-500', decision: 'text-amber-500', awaiting_review: 'text-amber-500', interrupted: 'text-zinc-500', pending: 'text-zinc-300' };
+  const icons: Record<LogEntry['status'], string> = { running: '◌', done: '✓', error: '✗', decision: '⬡', awaiting_review: '⏸', interrupted: '■', pending: '↩', terminated: '■', skipped: '○' };
+  const colors: Record<LogEntry['status'], string> = { running: 'text-zinc-400', done: 'text-emerald-500', error: 'text-red-500', decision: 'text-amber-500', awaiting_review: 'text-amber-500', interrupted: 'text-zinc-500', pending: 'text-zinc-300', terminated: 'text-zinc-600', skipped: 'text-zinc-400' };
   const durationMs = entry.startedAt ? (entry.finishedAt ?? Date.now()) - entry.startedAt : undefined;
   const previewText = entry.status === 'running'
     ? '● streaming...'
@@ -2098,7 +2335,7 @@ function LogRow({ entry, onOpenDetail, onInterrupt }: {
                 onInterrupt();
               }}
               className="flex items-center justify-center w-6 h-6 rounded-md bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 transition-all shadow-sm group shrink-0 ml-2 animate-pulse"
-              title="中断任务"
+              title="终止流水线"
             >
               <span className="w-2 h-2 bg-red-500 rounded-[1px] group-hover:scale-90 transition-transform" />
             </button>
@@ -2306,7 +2543,7 @@ function getEntryOutput(entry: LogEntry): string {
 }
 
 function getEntryDetail(entry: LogEntry): string {
-  if (entry.status === 'error') {
+  if (entry.status === 'error' || entry.status === 'terminated' || entry.status === 'skipped') {
     return entry.error ?? entry.detail ?? '';
   }
   if (entry.status === 'decision') {
@@ -2319,20 +2556,30 @@ function getEntryDetail(entry: LogEntry): string {
   return '';
 }
 
-function TaskDetailContent({ entry, fullHeight = false }: { entry: LogEntry; fullHeight?: boolean }) {
+function TaskDetailContent({ entry, agents, fullHeight = false }: { entry: LogEntry; agents: Agent[]; fullHeight?: boolean }) {
   // Keep full timeline details even after completion to avoid losing execution context.
   const detailEventMode = 'all';
+  const detailStatus = entry.status === 'awaiting_review' || entry.status === 'pending'
+    ? 'running'
+    : entry.status;
+  const taskAgents = entry.agents ?? [];
+  const agentInfos = taskAgents.map((a) => formatAgentInfo(a, agents));
+  const agentInfo = agentInfos[0] ?? '';
+
   return (
     <TaskDetailShared
       workers={getEntryWorkers(entry)}
       agents={entry.agents}
-      status={entry.status === 'awaiting_review' || entry.status === 'pending' ? 'running' : entry.status}
+      status={detailStatus}
       detail={getEntryDetail(entry)}
       output={getEntryOutput(entry)}
       outputs={entry.outputs}
       workerStatus={entry.workerStatus}
       fullHeight={fullHeight}
       detailEventMode={detailEventMode}
+      input={entry.input}
+      agentInfo={agentInfo}
+      agentInfos={agentInfos}
     />
   );
 }
@@ -2374,7 +2621,7 @@ function OutputModal({ title, content, onClose }: { title: string; content: stri
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-export function TaskDetailModal({ entry, onClose }: { entry: LogEntry; onClose: () => void }) {
+export function TaskDetailModal({ entry, agents, onClose, onInterrupt }: { entry: LogEntry; agents: Agent[]; onClose: () => void; onInterrupt?: () => void }) {
   const workers = getEntryWorkers(entry);
   const toolCallCount = (entry.toolEvents ?? []).filter(e => e.type === 'tool_use').length;
   const durationMs = entry.startedAt ? (entry.finishedAt ?? Date.now()) - entry.startedAt : undefined;
@@ -2407,8 +2654,28 @@ export function TaskDetailModal({ entry, onClose }: { entry: LogEntry; onClose: 
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2.5">
               <span className="text-base font-semibold text-zinc-900 leading-snug">{entry.label}</span>
-              {entry.status === 'running' && <Spinner />}
+              {entry.status === 'running' && (
+                <div className="flex items-center gap-1.5">
+                  <Spinner />
+                  {onInterrupt && (
+                    <button
+                      onClick={() => {
+                        if (window.confirm("确定要终止该任务的执行吗？")) {
+                          onInterrupt();
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 px-2 py-0.5 text-xs font-semibold text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
+                      title="终止任务"
+                    >
+                      <span className="w-1.5 h-1.5 bg-red-500 rounded-[1px]" />
+                      <span>终止</span>
+                    </button>
+                  )}
+                </div>
+              )}
               {entry.status === 'done' && <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">✓ Done</span>}
+              {entry.status === 'terminated' && <span className="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-700 ring-1 ring-inset ring-zinc-300">■ Terminated</span>}
+              {entry.status === 'skipped' && <span className="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500 ring-1 ring-inset ring-zinc-200">○ Skipped</span>}
               {entry.status === 'error' && <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 ring-1 ring-inset ring-red-600/20">✗ Error</span>}
             </div>
             <div className="flex items-center flex-wrap gap-3 mt-1.5 text-xs text-zinc-500">
@@ -2429,7 +2696,7 @@ export function TaskDetailModal({ entry, onClose }: { entry: LogEntry; onClose: 
         </div>
 
         <div className="flex-1 overflow-y-auto px-1.5 py-1">
-          <TaskDetailContent entry={entry} fullHeight />
+          <TaskDetailContent entry={entry} agents={agents} fullHeight />
         </div>
       </div>
     </>

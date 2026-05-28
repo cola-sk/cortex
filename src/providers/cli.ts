@@ -291,9 +291,7 @@ export class CliProvider implements LLMProvider {
     }
 
     if (!hasEvents) return null;
-    // Prefer the `result` event output (Claude CLI's final summary).
-    // Fall back to concatenated text blocks from assistant/message events.
-    const finalOutput = resultOutput || textParts.join('\n\n') || geminiTextParts.join('') || raw;
+    const finalOutput = resultOutput || textParts.join('') || raw;
     return { output: finalOutput, toolEvents };
   }
 
@@ -343,7 +341,7 @@ export class CliProvider implements LLMProvider {
         }
         resolvedArgs.push('-p', userContent, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions');
       } else if (cmd === 'gemini') {
-        resolvedArgs.push('-p', effectivePrompt, '--output-format', 'stream-json', '--yolo');
+        resolvedArgs.push('--skip-trust', '-p', effectivePrompt, '--output-format', 'stream-json', '--yolo');
       } else if (cmd === 'codex') {
         // Codex CLI: use -C to specify working root, then exec subcommand with positional prompt
         if (options?.cwd) {
@@ -361,7 +359,12 @@ export class CliProvider implements LLMProvider {
       const safeResolve = (val: string) => { if (!settled) { settled = true; resolve(val); } };
       const safeReject = (err: Error) => { if (!settled) { settled = true; reject(err); } };
 
-      const child = spawn(this.command, resolvedArgs, {
+      const finalArgs = [...resolvedArgs];
+      if (this.command.toLowerCase() === 'gemini' && !finalArgs.includes('--skip-trust')) {
+        finalArgs.unshift('--skip-trust');
+      }
+
+      const child = spawn(this.command, finalArgs, {
         cwd: normalizeCwd(options?.cwd),
         env: {
           ...process.env,
@@ -369,6 +372,8 @@ export class CliProvider implements LLMProvider {
           CI: '1',
           NO_COLOR: '1',
           TERM: 'dumb',
+          COLUMNS: '10000',
+          LINES: '10000',
           NODE_TLS_REJECT_UNAUTHORIZED: '0',
         },
         timeout: 15 * 60 * 1000,
@@ -419,7 +424,7 @@ export class CliProvider implements LLMProvider {
             
             if (!handledAsJson) {
               // Raw text output from CLI
-              options.onStreamEvent({ index: streamIdx++, type: 'text', content: stripAnsi(rawLine) });
+              options.onStreamEvent({ index: streamIdx++, type: 'text', content: stripAnsi(rawLine) + '\n' });
             }
           }
         }
@@ -430,7 +435,7 @@ export class CliProvider implements LLMProvider {
         if (options?.onStreamEvent) {
           const text = stripAnsi(chunk.toString('utf-8')).trim();
           if (text) {
-            options.onStreamEvent({ index: streamIdx++, type: 'text', content: text });
+            options.onStreamEvent({ index: streamIdx++, type: 'text', content: text + '\n' });
           }
         }
       });

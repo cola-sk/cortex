@@ -46,7 +46,7 @@ export function detectGemini(): DetectedTool {
     provider: {
       type: 'cli' as const,
       command: 'gemini',
-      args: ['-p', '{{PROMPT}}', '--output-format', 'stream-json', '--yolo'],
+      args: ['--skip-trust', '-p', '{{PROMPT}}', '--output-format', 'stream-json', '--yolo'],
     },
   };
 }

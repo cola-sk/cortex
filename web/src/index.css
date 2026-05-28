@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@plugin '@tailwindcss/typography';
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -68,4 +69,299 @@
     background: transparent;
     padding: 0;
   }
+}
+
+/* ==========================================================================
+   Ultra-Premium Markdown Styles (.premium-markdown)
+   ========================================================================== */
+.premium-markdown {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.55 !important;
+  font-size: 14px !important;
+  color: #3f3f46 !important; /* zinc-700 */
+  letter-spacing: -0.01em !important;
+}
+
+.premium-markdown.prose-invert,
+.dark .premium-markdown {
+  color: #d4d4d8 !important; /* zinc-300 */
+}
+
+/* Headings Styling */
+.premium-markdown h1,
+.premium-markdown h2,
+.premium-markdown h3,
+.premium-markdown h4,
+.premium-markdown h5,
+.premium-markdown h6 {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  font-weight: 700 !important;
+  color: #18181b !important; /* zinc-900 */
+  letter-spacing: -0.02em !important;
+  margin-bottom: 8px !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.premium-markdown.prose-invert h1,
+.premium-markdown.prose-invert h2,
+.premium-markdown.prose-invert h3,
+.premium-markdown.prose-invert h4,
+.premium-markdown.prose-invert h5,
+.premium-markdown.prose-invert h6,
+.dark .premium-markdown h1,
+.dark .premium-markdown h2,
+.dark .premium-markdown h3,
+.dark .premium-markdown h4,
+.dark .premium-markdown h5,
+.dark .premium-markdown h6 {
+  color: #f4f4f5 !important; /* zinc-100 */
+}
+
+.premium-markdown h1 {
+  font-size: 20px !important;
+  margin-top: 24px !important;
+  padding-bottom: 6px !important;
+  border-bottom: 1px solid rgba(228, 228, 231, 0.8) !important;
+}
+
+.premium-markdown h2 {
+  font-size: 17.5px !important;
+  margin-top: 20px !important;
+  padding-bottom: 4px !important;
+  border-bottom: 1px solid rgba(244, 244, 245, 0.6) !important;
+}
+
+.premium-markdown h3 {
+  font-size: 15.5px !important;
+  margin-top: 16px !important;
+  position: relative !important;
+  padding-left: 12px !important;
+  color: #18181b !important; /* zinc-900 */
+}
+
+.premium-markdown.prose-invert h3,
+.dark .premium-markdown h3 {
+  color: #f4f4f5 !important; /* zinc-100 */
+}
+
+/* Left vertical accent line for H3 - Slate/Zinc gray gradient */
+.premium-markdown h3::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 0 !important;
+  top: 3px !important;
+  bottom: 3px !important;
+  width: 3.5px !important;
+  background: linear-gradient(135deg, #a1a1aa, #71717a) !important; /* zinc-400 to zinc-500 */
+  border-radius: 2px !important;
+}
+
+.premium-markdown h4 {
+  font-size: 14.5px !important;
+  margin-top: 12px !important;
+  color: #27272a !important; /* zinc-800 */
+}
+
+.premium-markdown.prose-invert h4,
+.dark .premium-markdown h4 {
+  color: #e4e4e7 !important; /* zinc-200 */
+}
+
+.premium-markdown h4::before {
+  content: "✦" !important;
+  color: #a1a1aa !important; /* zinc-400 */
+  margin-right: 6px !important;
+  font-size: 0.85em !important;
+}
+
+.premium-markdown p {
+  margin-top: 6px !important;
+  margin-bottom: 6px !important;
+}
+
+/* Bold / Strong term styling - premium neutral gray capsule blocks */
+.premium-markdown strong {
+  font-weight: 600 !important;
+  color: #18181b !important; /* zinc-900 */
+  background-color: #f4f4f5 !important; /* zinc-100 */
+  border: 1px solid #e4e4e7 !important; /* zinc-200 */
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+}
+
+.premium-markdown.prose-invert strong,
+.dark .premium-markdown strong {
+  color: #f4f4f5 !important; /* zinc-100 */
+  background-color: #27272a !important; /* zinc-800 */
+  border: 1px solid #3f3f46 !important; /* zinc-700 */
+}
+
+/* Elegant spacing and bullet indicators for Unordered Lists - descendant selector to ensure deeply nested lists are covered */
+.premium-markdown ul {
+  list-style-type: none !important;
+  padding-left: 0 !important;
+  margin-top: 6px !important;
+  margin-bottom: 6px !important;
+}
+
+.premium-markdown ul li {
+  position: relative !important;
+  padding-left: 18px !important;
+  margin-top: 4px !important;
+  margin-bottom: 4px !important;
+}
+
+.premium-markdown ul li::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 4px !important;
+  top: 9px !important;
+  width: 4.5px !important;
+  height: 4.5px !important;
+  border-radius: 50% !important;
+  background-color: #a1a1aa !important; /* zinc-400 gray bullet */
+  box-shadow: none !important;
+}
+
+/* Beautiful ordered lists - descendant selector with explicit resets to prevent circle bullets on nested numbers */
+.premium-markdown ol {
+  counter-reset: ol-counter !important;
+  list-style-type: none !important;
+  padding-left: 0 !important;
+  margin-top: 6px !important;
+  margin-bottom: 6px !important;
+}
+
+.premium-markdown ol li {
+  position: relative !important;
+  padding-left: 20px !important;
+  margin-top: 4px !important;
+  margin-bottom: 4px !important;
+  counter-increment: ol-counter !important;
+}
+
+.premium-markdown ol li::before {
+  content: counter(ol-counter) "." !important;
+  position: absolute !important;
+  left: 0 !important;
+  color: #71717a !important; /* zinc-500 neutral gray */
+  font-weight: 600 !important;
+  font-variant-numeric: tabular-nums !important;
+  
+  /* Reset bullet circle background/size properties in case of nesting inside an unordered list */
+  background: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+  width: auto !important;
+  height: auto !important;
+  border-radius: 0 !important;
+}
+
+/* Inline Code Element - Gray-theme */
+.premium-markdown :not(pre) > code {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace !important;
+  font-size: 0.85em !important;
+  background-color: #f4f4f5 !important; /* zinc-100 */
+  color: #27272a !important; /* zinc-800 */
+  padding: 2px 5px !important;
+  border-radius: 4px !important;
+  border: 1px solid #e4e4e7 !important; /* zinc-200 */
+  font-weight: 500 !important;
+}
+
+.premium-markdown.prose-invert :not(pre) > code,
+.dark .premium-markdown :not(pre) > code {
+  background-color: #27272a !important; /* zinc-800 */
+  color: #e4e4e7 !important; /* zinc-200 */
+  border-color: #3f3f46 !important; /* zinc-700 */
+}
+
+/* Pre-formatted Code Blocks */
+.premium-markdown pre {
+  margin-top: 12px !important;
+  margin-bottom: 12px !important;
+  background-color: #1a1b26 !important; /* Slate dark/tokyo night theme */
+  border-radius: 8px !important;
+  padding: 12px 14px !important;
+  overflow-x: auto !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+.premium-markdown pre code {
+  background-color: transparent !important;
+  color: #a9b1d6 !important;
+  padding: 0 !important;
+  border: none !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace !important;
+}
+
+/* Blockquote elements - Neutral gray border */
+.premium-markdown blockquote {
+  margin: 12px 0 !important;
+  padding: 6px 14px !important;
+  border-left: 3.5px solid #a1a1aa !important; /* zinc-400 */
+  background-color: rgba(0, 0, 0, 0.015) !important;
+  border-radius: 0 6px 6px 0 !important;
+  color: #71717a !important; /* zinc-500 */
+  font-style: italic !important;
+}
+
+.premium-markdown.prose-invert blockquote,
+.dark .premium-markdown blockquote {
+  background-color: rgba(255, 255, 255, 0.01) !important;
+  color: #a1a1aa !important;
+}
+
+/* Modern Gradient Divider - gray theme with tighter spacing */
+.premium-markdown hr {
+  border: 0 !important;
+  height: 1px !important;
+  background: linear-gradient(to right, rgba(228, 228, 231, 0), rgba(161, 161, 170, 0.25) 15%, rgba(161, 161, 170, 0.25) 85%, rgba(228, 228, 231, 0)) !important;
+  margin: 20px 0 !important;
+}
+
+/* Tables styling */
+.premium-markdown table {
+  width: 100% !important;
+  border-collapse: collapse !important;
+  margin: 12px 0 !important;
+  font-size: 13px !important;
+  border: 1px solid rgba(228, 228, 231, 0.5) !important;
+  border-radius: 6px !important;
+  overflow: hidden !important;
+}
+
+.premium-markdown.prose-invert table,
+.dark .premium-markdown table {
+  border-color: rgba(63, 63, 70, 0.5) !important;
+}
+
+.premium-markdown th,
+.premium-markdown td {
+  padding: 8px 12px !important;
+  border-bottom: 1px solid rgba(228, 228, 231, 0.5) !important;
+  text-align: left !important;
+}
+
+.premium-markdown.prose-invert th,
+.premium-markdown.prose-invert td,
+.dark .premium-markdown th,
+.dark .premium-markdown td {
+  border-bottom-color: rgba(63, 63, 70, 0.5) !important;
+}
+
+.premium-markdown th {
+  background-color: #f8fafc !important;
+  font-weight: 600 !important;
+  color: #0f172a !important;
+}
+
+.premium-markdown.prose-invert th,
+.dark .premium-markdown th {
+  background-color: rgba(30, 41, 59, 0.25) !important;
+  color: #f1f5f9 !important;
 }

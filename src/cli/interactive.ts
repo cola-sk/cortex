@@ -239,7 +239,7 @@ async function runPipeline(
 
   try {
     const runner = new Runner(agentMap, {
-      onTaskStart: (taskId, taskName, agents) => {
+      onTaskStart: (taskId, taskName, agents, abortController, fullInput) => {
         const rec = taskById.get(taskId);
         if (rec) {
           rec.status = 'running';

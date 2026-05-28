@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Agent, AgentRole, ProviderType } from '../types';
 import { useTranslation } from 'react-i18next';
+import { api } from '../api';
 
 interface Props {
   agent: Agent | null;
@@ -121,6 +122,37 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
   );
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState<string | null>(null);
+
+  const [fetchedModels, setFetchedModels] = useState<string[]>([]);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [showModelSelect, setShowModelSelect] = useState(false);
+
+  const handleFetchModels = async () => {
+    if (!modelForm.baseURL.trim()) {
+      setError('Please fill in Base URL first');
+      return;
+    }
+    setFetchingModels(true);
+    setError(null);
+    try {
+      const result = await api.fetchModels(modelForm.baseURL, modelForm.apiKey, modelForm.providerType);
+      if (result.models && result.models.length > 0) {
+        setFetchedModels(result.models);
+        setShowModelSelect(true);
+        // If the current typed model name is empty, default to the first fetched model
+        if (!modelForm.model.trim()) {
+          setModelForm(prev => ({ ...prev, model: result.models[0] }));
+        }
+      } else {
+        setError('No models returned from provider.');
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setFetchingModels(false);
+    }
+  };
+
   const nameRef = useRef<HTMLInputElement>(null);
 
   // Auto-focus name field when modal opens
@@ -209,14 +241,71 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
                     <option value="cli" disabled>{t('agent.providerCli')}</option>
                   </select>
                 </Field>
-                <Field label={t('agent.fieldModel')} hint={modelForm.providerType === 'claude' ? t('agent.modelHintClaude') : t('agent.modelHintRequired')} required={modelForm.providerType === 'openai-compat'}>
-                  <Input placeholder={modelForm.providerType === 'claude' ? t('agent.modelPlaceholderClaude') : t('agent.modelPlaceholderOpenAI')} value={modelForm.model} onChange={setM('model')} mono required={modelForm.providerType === 'openai-compat'} />
-                </Field>
-                <Field label={t('agent.fieldBaseURL')} hint={modelForm.providerType === 'claude' ? t('agent.baseURLHintClaude') : t('agent.baseURLHintOpenAI')} required={modelForm.providerType === 'openai-compat'}>
+                 <Field label={t('agent.fieldBaseURL')} hint={modelForm.providerType === 'claude' ? t('agent.baseURLHintClaude') : t('agent.baseURLHintOpenAI')} required={modelForm.providerType === 'openai-compat'}>
                   <Input placeholder={modelForm.providerType === 'claude' ? t('agent.baseURLPlaceholderClaude') : t('agent.baseURLPlaceholderOpenAI')} value={modelForm.baseURL} onChange={setM('baseURL')} type="url" required={modelForm.providerType === 'openai-compat'} />
                 </Field>
                 <Field label={t('agent.fieldApiKey')} hint={t('agent.apiKeyHint')}>
                   <Input placeholder={isEdit ? t('agent.apiKeyPlaceholderEdit') : t('agent.apiKeyPlaceholderNew')} value={modelForm.apiKey} onChange={setM('apiKey')} type="password" autoComplete="off" />
+                </Field>
+                <Field label={t('agent.fieldModel')} hint={modelForm.providerType === 'claude' ? t('agent.modelHintClaude') : t('agent.modelHintRequired')} required={modelForm.providerType === 'openai-compat'}>
+                  <div className="flex gap-2">
+                    {showModelSelect && fetchedModels.length > 0 ? (
+                      <select
+                        value={modelForm.model}
+                        onChange={setM('model') as React.ChangeEventHandler<HTMLSelectElement>}
+                        className={`${selectCls} flex-1`}
+                        required={modelForm.providerType === 'openai-compat'}
+                      >
+                        {(() => {
+                          const options = [...fetchedModels];
+                          if (modelForm.model && !options.includes(modelForm.model)) {
+                            options.unshift(modelForm.model);
+                          }
+                          return options.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ));
+                        })()}
+                      </select>
+                    ) : (
+                      <Input
+                        placeholder={modelForm.providerType === 'claude' ? t('agent.modelPlaceholderClaude') : t('agent.modelPlaceholderOpenAI')}
+                        value={modelForm.model}
+                        onChange={setM('model')}
+                        mono
+                        required={modelForm.providerType === 'openai-compat'}
+                      />
+                    )}
+
+                    {showModelSelect && fetchedModels.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowModelSelect(false)}
+                        className="px-3 py-2 rounded-lg border border-zinc-200 bg-white text-xs font-semibold text-zinc-600 hover:bg-zinc-50 transition-colors shrink-0"
+                        title="切换为手动输入"
+                      >
+                        ✍️ Manual
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleFetchModels}
+                        disabled={fetchingModels || !modelForm.baseURL.trim()}
+                        className="px-3 py-2 rounded-lg bg-indigo-50 border border-indigo-200 text-xs font-semibold text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0 flex items-center gap-1.5"
+                      >
+                        {fetchingModels ? (
+                          <>
+                            <svg className="animate-spin text-indigo-600" width="12" height="12" viewBox="0 0 20 20" fill="none">
+                              <circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="3" strokeOpacity="0.2" />
+                              <path d="M18 10a8 8 0 0 0-8-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                            </svg>
+                            Fetching...
+                          </>
+                        ) : (
+                          '⚡ Fetch'
+                        )}
+                      </button>
+                    )}
+                  </div>
                 </Field>
               </>
             )}

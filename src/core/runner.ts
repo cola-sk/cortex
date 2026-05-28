@@ -47,7 +47,7 @@ function getGitDiff(cwd?: string): string {
 }
 
 export interface RunnerCallbacks {
-  onTaskStart?: (taskId: string, taskName: string, agents: string[], abortController?: AbortController) => void;
+  onTaskStart?: (taskId: string, taskName: string, agents: string[], abortController?: AbortController, fullInput?: string) => void;
   onTaskProgress?: (taskId: string, workerIndex: number, event: import('./events.js').ToolEvent) => void;
   onWorkerComplete?: (taskId: string, workerIndex: number, output: string, error?: string) => void;
   onTaskComplete?: (taskId: string, taskName: string, result: TaskResult) => void;
@@ -124,6 +124,10 @@ export class Runner {
     let iterations = 0;
 
     while (pending.size > 0) {
+      if (signal?.aborted) {
+        if (!this.silent) console.warn('  ■ Run aborted — stopping remaining tasks');
+        break;
+      }
       if (++iterations > MAX_ITERATIONS) {
         console.error('⚠ Max iterations reached — possible circular dependency or infinite retry loop.');
         break;
@@ -160,6 +164,22 @@ export class Runner {
       );
 
       if (!this.silent) console.log('');
+      if (signal?.aborted) {
+        if (!this.silent) console.warn('  ■ Run aborted — skipping downstream scheduling');
+        break;
+      }
+
+      // Fail fast: if any task in this batch failed, stop scheduling downstream tasks.
+      const failedTasks = ready
+        .map((task) => ({ taskId: task.id, result: results.get(task.id) }))
+        .filter(({ result }) => !!result?.error)
+        .map(({ taskId }) => taskId);
+      if (failedTasks.length > 0) {
+        if (!this.silent) {
+          console.warn(`  ✗ Task execution failed [${failedTasks.join(', ')}] — stopping remaining tasks`);
+        }
+        break;
+      }
 
       // ---- Evaluate decision points whose tasks just completed ----
       for (const dp of plan.decisions ?? []) {
@@ -355,7 +375,7 @@ export class Runner {
         }
       }
 
-      this.callbacks.onTaskStart?.(task.id, task.name, agentKeys, taskAbortController);
+      this.callbacks.onTaskStart?.(task.id, task.name, agentKeys, taskAbortController, fullInput);
 
       // Run all assigned agents in parallel (multi-worker)
       const workerResults = await Promise.all(
@@ -515,7 +535,11 @@ export class Runner {
       }
 
       // No review required or had an error — mark complete and return
-      completed.add(task.id);
+      if (!taskResult.error) {
+        completed.add(task.id);
+      } else {
+        if (!this.silent) console.warn(`  ✗ [${task.id}] Task execution failed`);
+      }
       return;
     }
 

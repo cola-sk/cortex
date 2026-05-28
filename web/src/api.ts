@@ -33,6 +33,12 @@ export const api = {
   // ---- Agents ----
   getAgents: () => request<Agent[]>('/api/agents'),
 
+  fetchModels: (baseURL: string, apiKey?: string, providerType?: string) =>
+    request<{ models: string[] }>('/api/models/fetch', {
+      method: 'POST',
+      body: JSON.stringify({ baseURL, apiKey, providerType }),
+    }),
+
   createAgent: (agent: Agent) =>
     request<Agent>('/api/agents', {
       method: 'POST',
@@ -85,6 +91,10 @@ export const api = {
   // ---- Runs ----
   getRuns: () => request<RunSummary[]>('/api/runs'),
   getRun: (id: string) => request<RunRecord>(`/api/runs/${encodeURIComponent(id)}`),
+  deleteRun: (id: string) =>
+    request<{ success: boolean }>(`/api/runs/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 
   /** Submit a human review for a paused task */
   submitReview: (
@@ -100,14 +110,22 @@ export const api = {
       body: JSON.stringify({ taskId, action, comment, targetTaskId, agentId }),
     }),
 
-  /** Continue from a completed run with comment context (optionally override current task agent). */
+  /** Retry a failed task from a historical run with comment context (optionally override current task agent). */
   continueRun: (runId: string, taskId: string, comment: string, agentId?: string) =>
     request<{ success: boolean; runId: string }>(`/api/runs/${encodeURIComponent(runId)}/continue`, {
       method: 'POST',
       body: JSON.stringify({ taskId, comment, agentId }),
     }),
 
-  /** Interrupt a running task in real time */
+  /** Branch a successful task from a historical run with optional comment and agent override. */
+  branchRun: (runId: string, taskId: string, comment?: string, agentId?: string) =>
+    request<{ success: boolean; runId: string }>(`/api/runs/${encodeURIComponent(runId)}/branch`, {
+      method: 'POST',
+      body: JSON.stringify({ taskId, comment, agentId }),
+    }),
+
+
+  /** Terminate a live pipeline run in real time */
   interruptTask: (runId: string, taskId: string) =>
     request<{ success: boolean }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/interrupt`, {
       method: 'POST',
