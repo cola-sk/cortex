@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Agent, RunSummary, RunRecord, RunTaskRecord, RunEventType, ToolEvent, Pipeline, ReviewRecord, RoundRecord } from '../types';
 import { api } from '../api';
 import { useTranslation } from 'react-i18next';
-import { TaskDetailShared, MarkdownWithThinking, type DetailStatus } from './TaskDetailShared';
+import { TaskDetailShared, MarkdownWithThinking, type DetailStatus, formatAgentInfo, getBaseAgentId } from './TaskDetailShared';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -23,7 +23,9 @@ function formatTime(iso?: string): string {
 
 function statusColors(status: string) {
   if (status === 'done') return 'bg-emerald-100 text-emerald-700';
+  if (status === 'terminated') return 'bg-zinc-200 text-zinc-700';
   if (status === 'error') return 'bg-red-100 text-red-600';
+  if (status === 'skipped') return 'bg-zinc-100 text-zinc-500';
   if (status === 'awaiting_review') return 'bg-amber-100 text-amber-700';
   if (status === 'interrupted') return 'bg-zinc-100 text-zinc-700';
   return 'bg-blue-100 text-blue-600';
@@ -31,7 +33,9 @@ function statusColors(status: string) {
 
 function statusDot(status: string) {
   if (status === 'done') return 'bg-emerald-400';
+  if (status === 'terminated') return 'bg-zinc-500';
   if (status === 'error') return 'bg-red-400';
+  if (status === 'skipped') return 'bg-zinc-300';
   if (status === 'awaiting_review') return 'bg-amber-400 animate-pulse';
   if (status === 'interrupted') return 'bg-zinc-400';
   return 'bg-blue-400 animate-pulse';
@@ -40,13 +44,28 @@ function statusDot(status: string) {
 function statusLabel(status: RunSummary['status'] | RunTaskRecord['status']): string {
   if (status === 'running') return 'running';
   if (status === 'done') return 'done';
+  if (status === 'terminated') return 'terminated';
   if (status === 'error') return 'error';
+  if (status === 'skipped') return 'skipped';
   if (status === 'awaiting_review') return 'awaiting_input';
   if (status === 'interrupted') return 'interrupted';
   return status;
 }
 
-function groupRunsByLineage(runs: RunSummary[]): Array<{ run: RunSummary, depth: number }> {
+function isTerminationNoopMessage(message?: string): boolean {
+  if (!message) return false;
+  return message.includes('No pending review for run')
+    || message.includes('is not currently active or cannot be terminated')
+    || message.includes('Run already finished');
+}
+
+function groupRunsByLineage(runs: RunSummary[], collapsedRuns: Set<string>): Array<{
+  run: RunSummary;
+  depth: number;
+  hasChild: boolean;
+  deepestStatus?: RunSummary['status'];
+  collapsed?: boolean;
+}> {
   const runMap = new Map<string, RunSummary>();
   runs.forEach(r => runMap.set(r.id, r));
 
@@ -66,18 +85,44 @@ function groupRunsByLineage(runs: RunSummary[]): Array<{ run: RunSummary, depth:
   const roots = runs.filter(r => !r.continuedFromRunId || !runMap.has(r.continuedFromRunId));
   roots.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
 
-  const result: Array<{ run: RunSummary, depth: number }> = [];
+  const result: Array<{
+    run: RunSummary;
+    depth: number;
+    hasChild: boolean;
+    deepestStatus?: RunSummary['status'];
+    collapsed?: boolean;
+  }> = [];
+
+  function getDeepestStatus(runId: string): RunSummary['status'] {
+    const children = childrenMap.get(runId) || [];
+    if (children.length === 0) {
+      return runMap.get(runId)?.status ?? 'terminated';
+    }
+    const latestChild = children[children.length - 1];
+    return getDeepestStatus(latestChild.id);
+  }
   
-  function traverse(run: RunSummary, depth: number) {
-    result.push({ run, depth });
+  function traverse(run: RunSummary, depth: number, isParentCollapsed: boolean) {
+    if (isParentCollapsed) return;
+
     const children = childrenMap.get(run.id) || [];
+    const isCollapsed = collapsedRuns.has(run.id);
+
+    result.push({
+      run,
+      depth,
+      hasChild: children.length > 0,
+      deepestStatus: children.length > 0 ? getDeepestStatus(run.id) : undefined,
+      collapsed: isCollapsed,
+    });
+
     children.forEach(child => {
-      traverse(child, depth + 1);
+      traverse(child, depth + 1, isCollapsed);
     });
   }
 
   roots.forEach(root => {
-    traverse(root, 0);
+    traverse(root, 0, false);
   });
 
   return result;
@@ -372,10 +417,12 @@ function ToolEventList({ events }: { events: ToolEvent[] }) {
   );
 }
 
-function TaskDetailPanel({ task, fullHeight = false }: { task: RunTaskRecord; fullHeight?: boolean }) {
+function TaskDetailPanel({ task, agents, fullHeight = false }: { task: RunTaskRecord; agents: Agent[]; fullHeight?: boolean }) {
   const status: DetailStatus =
     task.status === 'pending'
       ? 'running'
+      : task.status === 'skipped'
+        ? 'skipped'
       : task.status === 'awaiting_review'
         ? 'running'
         : task.status;
@@ -384,9 +431,12 @@ function TaskDetailPanel({ task, fullHeight = false }: { task: RunTaskRecord; fu
   // Preserve full execution detail after completion as well.
   const detailEventMode = 'all';
 
+  const agentInfos = task.agents.map((a) => formatAgentInfo(a, agents));
+  const agentInfo = agentInfos[0] ?? '';
+
   return (
     <div className="space-y-3">
-      <TaskRoundHistory task={task} />
+      <TaskRoundHistory task={task} agents={agents} />
       <TaskDetailShared
         workers={(task.toolEvents ?? []).length > 0 ? (task.toolEvents ?? []) : [[]]}
         agents={task.agents}
@@ -397,15 +447,18 @@ function TaskDetailPanel({ task, fullHeight = false }: { task: RunTaskRecord; fu
         workerStatus={task.workerStatus}
         fullHeight={fullHeight}
         detailEventMode={detailEventMode}
+        input={task.input}
+        agentInfo={agentInfo}
+        agentInfos={agentInfos}
       />
     </div>
   );
 }
 
-function TaskRoundHistory({ task }: { task: RunTaskRecord }) {
+function TaskRoundHistory({ task, agents }: { task: RunTaskRecord; agents: Agent[] }) {
   const rounds = task.rounds ?? [];
   const sorted = [...rounds].sort((a, b) => a.round - b.round);
-  const terminal = task.status === 'done' || task.status === 'error';
+  const terminal = task.status === 'done' || task.status === 'error' || task.status === 'terminated' || task.status === 'skipped';
   const activeRound = task.currentRound ?? (sorted.length + 1);
   const hasActiveRow = !terminal && activeRound > 0;
 
@@ -422,9 +475,16 @@ function TaskRoundHistory({ task }: { task: RunTaskRecord }) {
       <div className="space-y-2.5">
         {sorted.map((round) => {
           const isRevise = round.review?.action === 'revise';
+          const roundAgentInfo = task.agents && task.agents.length > 0
+            ? task.agents.map(aId => {
+                const baseId = getBaseAgentId(aId, agents);
+                return formatAgentInfo(baseId, agents);
+              }).join(', ')
+            : '';
+
           return (
             <details key={round.round} className="group rounded-xl border border-zinc-200/60 bg-white p-3 shadow-sm hover:shadow-md hover:border-zinc-300 transition-all">
-              <summary className="cursor-pointer select-none text-xs text-zinc-700 font-bold flex items-center gap-2.5">
+              <summary className="cursor-pointer select-none text-xs text-zinc-700 font-bold flex flex-wrap items-center gap-2">
                 <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold select-none ${
                   isRevise 
                     ? 'bg-amber-50 border border-amber-200 text-amber-700' 
@@ -435,6 +495,11 @@ function TaskRoundHistory({ task }: { task: RunTaskRecord }) {
                 <span className="font-semibold text-zinc-800">
                   {isRevise ? '↺ Revised' : '✓ Reviewed'}
                 </span>
+                {roundAgentInfo && (
+                  <span className="text-[10px] bg-zinc-100 text-zinc-500 rounded px-1.5 py-0.5 select-none font-mono font-medium">
+                    🤖 {roundAgentInfo}
+                  </span>
+                )}
                 <span className="text-[10px] text-zinc-400 font-medium ml-auto font-mono">
                   {formatTime(round.review?.reviewedAt ?? round.finishedAt)}
                 </span>
@@ -484,7 +549,21 @@ function TaskRoundHistory({ task }: { task: RunTaskRecord }) {
   );
 }
 
-function TaskDetailDialog({ task, onClose }: { task: RunTaskRecord; onClose: () => void }) {
+function TaskDetailDialog({
+  task,
+  onClose,
+  run,
+  agents = [],
+  onContinueStarted,
+  onInterrupt,
+}: {
+  task: RunTaskRecord;
+  onClose: () => void;
+  run?: RunRecord;
+  agents?: Agent[];
+  onContinueStarted?: (newRunId: string) => void;
+  onInterrupt?: () => void;
+}) {
   const toolCallCount = (task.toolEvents ?? []).flat().filter((e) => e.type === 'tool_use').length;
 
   useEffect(() => {
@@ -492,6 +571,8 @@ function TaskDetailDialog({ task, onClose }: { task: RunTaskRecord; onClose: () 
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
   }, [onClose]);
+
+  const showContinuePanel = run && agents && onContinueStarted && (task.status === 'error' || task.status === 'interrupted' || task.status === 'terminated');
 
   return (
     <>
@@ -512,7 +593,27 @@ function TaskDetailDialog({ task, onClose }: { task: RunTaskRecord; onClose: () 
             <div className="flex items-center gap-2.5">
               <span className="text-base font-semibold text-zinc-900 leading-snug">{task.taskName}</span>
               {task.status === 'done' && <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">✓ Done</span>}
-              {task.status === 'running' && <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20">● Running</span>}
+              {task.status === 'running' && (
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20 animate-pulse">● Running</span>
+                  {onInterrupt && (
+                    <button
+                      onClick={() => {
+                        if (window.confirm("确定要终止该任务的执行吗？")) {
+                          onInterrupt();
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 px-2 py-0.5 text-xs font-semibold text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
+                      title="终止任务"
+                    >
+                      <span className="w-1.5 h-1.5 bg-red-500 rounded-[1px]" />
+                      <span>终止</span>
+                    </button>
+                  )}
+                </div>
+              )}
+              {task.status === 'terminated' && <span className="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-700 ring-1 ring-inset ring-zinc-300">■ Terminated</span>}
+              {task.status === 'skipped' && <span className="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500 ring-1 ring-inset ring-zinc-200">○ Skipped</span>}
               {task.status === 'interrupted' && <span className="inline-flex items-center rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-700 ring-1 ring-inset ring-zinc-300">■ Interrupted</span>}
               {task.status === 'error' && <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 ring-1 ring-inset ring-red-600/20">✗ Error</span>}
             </div>
@@ -533,9 +634,23 @@ function TaskDetailDialog({ task, onClose }: { task: RunTaskRecord; onClose: () 
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-1.5 py-1">
-          <TaskDetailPanel task={task} fullHeight />
+        <div className="flex-1 overflow-y-auto px-4 py-3 bg-zinc-50/20">
+          <TaskDetailPanel task={task} agents={agents} fullHeight />
         </div>
+
+        {showContinuePanel && (
+          <div className="border-t border-zinc-150 bg-zinc-50 px-4 py-4 shrink-0 shadow-lg">
+            <RunDetailContinuePanel
+              run={run}
+              agents={agents}
+              task={task}
+              onStarted={(newRunId) => {
+                onContinueStarted(newRunId);
+                onClose();
+              }}
+            />
+          </div>
+        )}
       </div>
     </>
   );
@@ -545,7 +660,19 @@ function TaskDetailDialog({ task, onClose }: { task: RunTaskRecord; onClose: () 
 // Task record row
 // ─────────────────────────────────────────────────────────────────────────────
 
-function TaskRow({ task, onInterrupt }: { task: RunTaskRecord; onInterrupt?: () => void }) {
+function TaskRow({
+  task,
+  run,
+  agents = [],
+  onContinueStarted,
+  onInterrupt,
+}: {
+  task: RunTaskRecord;
+  run?: RunRecord;
+  agents?: Agent[];
+  onContinueStarted?: (newRunId: string) => void;
+  onInterrupt?: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
   
@@ -575,7 +702,7 @@ function TaskRow({ task, onInterrupt }: { task: RunTaskRecord; onInterrupt?: () 
                 onInterrupt();
               }}
               className="flex items-center justify-center w-5 h-5 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 transition-all shadow-sm group shrink-0"
-              title="中断任务"
+              title="终止流水线"
             >
               <span className="w-1.5 h-1.5 bg-red-500 rounded-[0.5px] group-hover:scale-90 transition-transform" />
             </button>
@@ -602,11 +729,20 @@ function TaskRow({ task, onInterrupt }: { task: RunTaskRecord; onInterrupt?: () 
 
       {expanded && (
         <div className="border-t border-zinc-100 px-4 py-3 bg-white space-y-3">
-          <TaskDetailPanel task={task} />
+          <TaskDetailPanel task={task} agents={agents} />
         </div>
       )}
     </div>
-    {showModal && <TaskDetailDialog task={task} onClose={() => setShowModal(false)} />}
+    {showModal && (
+      <TaskDetailDialog
+        task={task}
+        run={run}
+        agents={agents}
+        onContinueStarted={onContinueStarted}
+        onClose={() => setShowModal(false)}
+        onInterrupt={onInterrupt}
+      />
+    )}
     </>
   );
 }
@@ -655,8 +791,18 @@ function splitThinkingSections(input: string): ContentSection[] {
   return sections;
 }
 
-function Markdown({ content, className, dark }: { content: string; className?: string; dark?: boolean }) {
-  return <MarkdownWithThinking content={content} className={className} dark={dark} />;
+function Markdown({
+  content,
+  className,
+  markdownClassName,
+  dark,
+}: {
+  content: string;
+  className?: string;
+  markdownClassName?: string;
+  dark?: boolean;
+}) {
+  return <MarkdownWithThinking content={content} className={className} markdownClassName={markdownClassName} dark={dark} />;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -677,16 +823,58 @@ function RunDetailReviewPanel({ runId, run, task, agents, onSubmitted }: {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [outputExpanded, setOutputExpanded] = useState(false);
+  const [outputFullscreen, setOutputFullscreen] = useState(false);
   const isInterrupted = task.status === 'interrupted';
+  const reviewMarkdownClass = 'max-w-none text-sm';
 
   useEffect(() => {
     setTargetTaskId(task.taskId);
     setSubmitted(false);
+    setOutputExpanded(false);
+    setOutputFullscreen(false);
   }, [task.taskId]);
 
+  const handleReviewSubmitError = (e: unknown) => {
+    const message = (e as Error)?.message ?? 'Submit failed';
+    if (isTerminationNoopMessage(message)) {
+      // Review already resolved elsewhere (stream delay / duplicate submit) — treat as success.
+      setSubmitted(true);
+      onSubmitted();
+      return;
+    }
+    setError(message);
+  };
+
+  const submitInterruptedReview = async (nextComment: string) => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.submitReview(
+        runId,
+        task.taskId,
+        'revise',
+        nextComment,
+        task.taskId,
+        agentId || undefined,
+      );
+      setSubmitted(true);
+      onSubmitted();
+    } catch (e) {
+      handleReviewSubmitError(e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleSubmit = async () => {
-    if ((isInterrupted || action === 'revise') && !comment.trim()) {
+    const trimmedComment = comment.trim();
+    if ((isInterrupted || action === 'revise') && !trimmedComment) {
       setError(isInterrupted ? '请填写评论后继续执行。' : 'Please provide feedback when requesting a revision.');
+      return;
+    }
+    if (isInterrupted) {
+      await submitInterruptedReview(trimmedComment);
       return;
     }
     setSubmitting(true);
@@ -695,19 +883,35 @@ function RunDetailReviewPanel({ runId, run, task, agents, onSubmitted }: {
       await api.submitReview(
         runId,
         task.taskId,
-        isInterrupted ? 'revise' : action,
-        comment.trim(),
-        isInterrupted
-          ? task.taskId
-          : action === 'revise'
-            ? targetTaskId
-            : undefined,
+        action,
+        trimmedComment,
+        action === 'revise' ? targetTaskId : undefined,
         agentId || undefined,
       );
       setSubmitted(true);
       onSubmitted();
     } catch (e) {
-      setError((e as Error).message);
+      handleReviewSubmitError(e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleRejectInterrupt = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.interruptTask(runId, task.taskId);
+      setSubmitted(true);
+      onSubmitted();
+    } catch (e) {
+      const message = (e as Error).message;
+      if (isTerminationNoopMessage(message)) {
+        setSubmitted(true);
+        onSubmitted();
+        return;
+      }
+      setError(message);
     } finally {
       setSubmitting(false);
     }
@@ -716,7 +920,8 @@ function RunDetailReviewPanel({ runId, run, task, agents, onSubmitted }: {
   if (submitted) return null;
 
   return (
-    <div className="bg-white rounded-xl border-2 border-amber-300 overflow-hidden shadow-sm">
+    <>
+      <div className="bg-white rounded-xl border-2 border-amber-300 overflow-hidden shadow-sm">
       <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-2">
         <span className="text-amber-600 text-sm">{isInterrupted ? '■' : '⏸'}</span>
         <span className="text-xs font-semibold text-amber-800">
@@ -726,8 +931,29 @@ function RunDetailReviewPanel({ runId, run, task, agents, onSubmitted }: {
       </div>
       <div className="px-4 py-3 space-y-3">
         {task.output && (
-          <div className="max-h-48 overflow-y-auto rounded-lg bg-zinc-50 p-3 text-xs">
-            <Markdown content={task.output} />
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-[11px] text-zinc-500">
+              <span>Output · {task.output.length} chars</span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setOutputExpanded((prev) => !prev)}
+                  className="rounded border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-800"
+                >
+                  {outputExpanded ? '紧凑视图' : '展开视图'}
+                </button>
+                <button
+                  onClick={() => setOutputFullscreen(true)}
+                  className="rounded border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-800"
+                >
+                  全屏查看
+                </button>
+              </div>
+            </div>
+            <div className={`overflow-y-auto rounded-lg bg-white p-4 text-sm border border-zinc-200/70 shadow-inner resize-y ${
+              outputExpanded ? 'min-h-[34vh] max-h-[62vh]' : 'max-h-56'
+            }`}>
+              <Markdown content={task.output} markdownClassName={reviewMarkdownClass} />
+            </div>
           </div>
         )}
         {!isInterrupted && (
@@ -768,7 +994,13 @@ function RunDetailReviewPanel({ runId, run, task, agents, onSubmitted }: {
             onChange={(e) => setAgentId(e.target.value)}
             className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
           >
-            <option value="">Use task default</option>
+            <option value="">
+              Use task default {(() => {
+                const defaultAgentId = task.agents?.[0];
+                const defaultAgent = defaultAgentId ? agents.find((a) => a.id === defaultAgentId) : null;
+                return defaultAgent ? `(${defaultAgent.name || defaultAgent.id})` : (defaultAgentId ? `(${defaultAgentId})` : '');
+              })()}
+            </option>
             {agents.filter((a) => !!a.role).map((a) => (
               <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
             ))}
@@ -791,7 +1023,14 @@ function RunDetailReviewPanel({ runId, run, task, agents, onSubmitted }: {
           </div>
         )}
         {error && <p className="text-xs text-red-500">{error}</p>}
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={handleRejectInterrupt}
+            disabled={submitting}
+            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-xs font-semibold text-zinc-700 transition-colors hover:border-zinc-400 hover:bg-zinc-50 disabled:opacity-50"
+          >
+            ■ 拒绝并终止 Pipeline
+          </button>
           <button
             onClick={handleSubmit}
             disabled={submitting}
@@ -813,7 +1052,46 @@ function RunDetailReviewPanel({ runId, run, task, agents, onSubmitted }: {
           </button>
         </div>
       </div>
-    </div>
+      </div>
+      {task.output && outputFullscreen && (
+        <div className="fixed inset-0 z-[120] bg-zinc-950/45 backdrop-blur-md p-2 sm:p-3 md:p-4 flex items-center justify-center animate-fade-in">
+          <div className="mx-auto flex h-full w-full max-w-[92vw] flex-col overflow-hidden rounded-2xl border border-zinc-200/50 bg-white/95 shadow-2xl transition-all duration-300 relative">
+            
+            {/* Top decorative premium accent gradient bar */}
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500" />
+            
+            {/* Elegant glassmorphic header */}
+            <div className="flex items-center gap-3 border-b border-zinc-200/80 bg-zinc-50/50 backdrop-blur-md px-5 py-3.5">
+              <div className="flex items-center gap-2">
+                <span className="flex h-2.5 w-2.5 rounded-full bg-indigo-500 animate-pulse" />
+                <span className="text-sm font-bold text-zinc-900 tracking-tight">Technical Review</span>
+              </div>
+              <span className="rounded bg-indigo-50 border border-indigo-100/60 px-2 py-0.5 text-[10px] font-bold text-indigo-600 truncate max-w-xs md:max-w-md">
+                {task.taskName}
+              </span>
+              <span className="ml-auto text-xs font-semibold text-zinc-400 bg-zinc-100 px-2.5 py-1 rounded-full">
+                {task.output.length} characters
+              </span>
+              <button
+                onClick={() => setOutputFullscreen(false)}
+                className="rounded-xl border border-zinc-200 bg-white px-4 py-1.5 text-xs font-bold text-zinc-700 hover:bg-zinc-50 hover:border-zinc-300 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-sm cursor-pointer"
+              >
+                关闭 (Close)
+              </button>
+            </div>
+            
+            {/* Spacious content panel with reduced padding */}
+            <div className="flex-1 overflow-y-auto bg-zinc-50/60 px-2 py-4 sm:px-4 md:px-6">
+              <div className="mx-auto w-full max-w-5xl rounded-2xl border border-zinc-200/60 bg-white p-5 sm:p-8 md:p-10 shadow-xl ring-1 ring-zinc-100/40 relative">
+                {/* Decorative inner document top line */}
+                <div className="absolute top-0 left-0 right-0 h-1 bg-indigo-500/10 rounded-t-2xl" />
+                <Markdown content={task.output} markdownClassName={reviewMarkdownClass} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -821,35 +1099,30 @@ function RunDetailContinuePanel({
   run,
   agents,
   onStarted,
+  task,
 }: {
   run: RunRecord;
   agents: Agent[];
   onStarted: (newRunId: string) => void;
+  task?: RunTaskRecord;
 }) {
-  const defaultTaskId = run.tasks[run.tasks.length - 1]?.taskId ?? '';
-  const [taskId, setTaskId] = useState(defaultTaskId);
+  const failedTask = task || run.tasks.find((t) => t.status === 'error' || t.status === 'interrupted' || t.status === 'terminated');
+  const currentTaskId = failedTask?.taskId ?? '';
   const [comment, setComment] = useState('');
   const [agentId, setAgentId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setTaskId(defaultTaskId);
-  }, [defaultTaskId, run.id]);
-
   const handleContinue = async () => {
-    if (!taskId) {
-      setError('Please choose a task to continue from.');
-      return;
-    }
-    if (!comment.trim()) {
-      setError('请填写本次继续执行的评论/指令。');
+    if (!currentTaskId) {
+      setError('当前没有可重跑的失败任务。');
       return;
     }
     setSubmitting(true);
     setError(null);
     try {
-      const data = await api.continueRun(run.id, taskId, comment.trim(), agentId || undefined);
+      const activeComment = comment.trim() || 'Re-run';
+      const data = await api.continueRun(run.id, currentTaskId, activeComment, agentId || undefined);
       onStarted(data.runId);
     } catch (e) {
       setError((e as Error).message);
@@ -863,23 +1136,19 @@ function RunDetailContinuePanel({
       <div className="border-b border-indigo-100 bg-indigo-50 px-4 py-3 flex items-center gap-2">
         <span className="text-indigo-600 text-sm">↻</span>
         <span className="text-xs font-semibold text-indigo-800">
-          Continue Workflow (with previous context)
+          重跑当前失败任务（复用历史上下文）
         </span>
       </div>
       <div className="px-4 py-3 space-y-3">
         <div className="flex items-center gap-2 text-xs">
-          <span className="text-zinc-500 shrink-0">Current task:</span>
-          <select
-            value={taskId}
-            onChange={(e) => setTaskId(e.target.value)}
-            className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
-          >
-            {run.tasks.map((task) => (
-              <option key={task.taskId} value={task.taskId}>
-                {task.taskName} ({task.taskId})
-              </option>
-            ))}
-          </select>
+          <span className="text-zinc-500 shrink-0">当前任务:</span>
+          {failedTask ? (
+            <span className="inline-flex items-center rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-700">
+              {failedTask.taskName} ({failedTask.taskId})
+            </span>
+          ) : (
+            <span className="text-red-500">未找到失败任务</span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 text-xs">
@@ -889,7 +1158,13 @@ function RunDetailContinuePanel({
             onChange={(e) => setAgentId(e.target.value)}
             className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
           >
-            <option value="">Use task default</option>
+            <option value="">
+              Use task default {(() => {
+                const defaultAgentId = failedTask?.agents?.[0];
+                const defaultAgent = defaultAgentId ? agents.find((a) => a.id === defaultAgentId) : null;
+                return defaultAgent ? `(${defaultAgent.name || defaultAgent.id})` : (defaultAgentId ? `(${defaultAgentId})` : '');
+              })()}
+            </option>
             {agents.filter((a) => !!a.role).map((a) => (
               <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
             ))}
@@ -901,7 +1176,7 @@ function RunDetailContinuePanel({
           rows={3}
           value={comment}
           onChange={(e) => setComment(e.target.value)}
-          placeholder="补充你的评论/新指令，系统会携带之前上下文继续执行..."
+          placeholder="补充本次失败原因、修正方向或新指令（选填，系统默认记录“重新执行”），系统会从当前任务重新执行并继续后续未完成任务..."
         />
 
         {error && <p className="text-xs text-red-500">{error}</p>}
@@ -912,7 +1187,7 @@ function RunDetailContinuePanel({
             disabled={submitting}
             className="rounded-lg bg-indigo-600 hover:bg-indigo-500 px-4 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50"
           >
-            {submitting ? 'Starting...' : '↻ Continue Execution'}
+            {submitting ? 'Starting...' : '↻ 重跑当前任务'}
           </button>
         </div>
       </div>
@@ -923,10 +1198,12 @@ function RunDetailContinuePanel({
 interface WorkflowDAGMapProps {
   run: RunRecord;
   pipelines: Pipeline[];
+  agents: Agent[];
   onSelectTask: (taskId: string) => void;
+  onInterruptTask?: (taskId: string) => void;
 }
 
-function WorkflowDAGMap({ run, pipelines, onSelectTask }: WorkflowDAGMapProps) {
+function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask }: WorkflowDAGMapProps) {
   const pipeline = pipelines.find((p) => p.id === run.pipelineId);
   const getDeps = useCallback((taskId: string) => {
     return pipeline?.tasks.find((t) => t.id === taskId)?.dependsOn || [];
@@ -946,6 +1223,8 @@ function WorkflowDAGMap({ run, pipelines, onSelectTask }: WorkflowDAGMapProps) {
                 const isRunning = task.status === 'running';
                 const isDone = task.status === 'done';
                 const isError = task.status === 'error';
+                const isTerminated = task.status === 'terminated';
+                const isSkipped = task.status === 'skipped';
                 const isPending = task.status === 'pending';
 
                 let bgClass = 'bg-white/80 border-zinc-200 text-zinc-800';
@@ -965,6 +1244,12 @@ function WorkflowDAGMap({ run, pipelines, onSelectTask }: WorkflowDAGMapProps) {
                 } else if (isError) {
                   bgClass = 'bg-red-50/80 border-red-300 text-red-950 shadow-red-50/50 ring-2 ring-red-100';
                   statusDotClass = 'bg-red-500';
+                } else if (isTerminated) {
+                  bgClass = 'bg-zinc-100/80 border-zinc-300 text-zinc-800 shadow-zinc-100/70 ring-1 ring-zinc-200';
+                  statusDotClass = 'bg-zinc-500';
+                } else if (isSkipped) {
+                  bgClass = 'bg-zinc-50/80 border-zinc-200 text-zinc-500';
+                  statusDotClass = 'bg-zinc-300';
                 } else if (isPending) {
                   bgClass = 'bg-zinc-50/50 border-zinc-200/60 text-zinc-400';
                   statusDotClass = 'bg-zinc-300';
@@ -978,24 +1263,46 @@ function WorkflowDAGMap({ run, pipelines, onSelectTask }: WorkflowDAGMapProps) {
                   >
                     <div className="flex items-center gap-2 mb-2">
                       <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusDotClass}`} />
-                      <span className={`text-xs font-bold leading-tight ${pulseClass}`}>
+                      <span className={`text-xs font-bold leading-tight flex-1 min-w-0 truncate ${pulseClass}`} title={task.taskName}>
                         {task.taskName}
                       </span>
                       {task.status !== 'pending' && (
-                        <span className={`ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
-                          isDone ? 'bg-emerald-100/60 text-emerald-700' :
-                          isRunning ? 'bg-blue-100/60 text-blue-700' :
-                          isAwaiting ? 'bg-amber-100/60 text-amber-700' :
-                          isError ? 'bg-red-100/60 text-red-700' :
-                          'bg-zinc-100 text-zinc-600'
-                        }`}>
-                          {statusLabel(task.status)}
-                        </span>
+                        <div className="ml-auto flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                          {isRunning && onInterruptTask && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (window.confirm("确定要终止该任务的执行吗？")) {
+                                  onInterruptTask(task.taskId);
+                                }
+                              }}
+                              className="flex items-center justify-center gap-1 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 px-1.5 py-0.5 text-[9px] font-bold text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
+                              title="终止任务"
+                            >
+                              <span className="w-1.5 h-1.5 bg-red-500 rounded-[1px] animate-pulse" />
+                              <span>终止</span>
+                            </button>
+                          )}
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                            isDone ? 'bg-emerald-100/60 text-emerald-700' :
+                            isRunning ? 'bg-blue-100/60 text-blue-700' :
+                            isAwaiting ? 'bg-amber-100/60 text-amber-700' :
+                            isTerminated ? 'bg-zinc-200/70 text-zinc-700' :
+                            isSkipped ? 'bg-zinc-100 text-zinc-500' :
+                            isError ? 'bg-red-100/60 text-red-700' :
+                            'bg-zinc-100 text-zinc-600'
+                          }`}>
+                            {statusLabel(task.status)}
+                          </span>
+                        </div>
                       )}
                     </div>
 
                     <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
-                      <span className="font-mono">🤖 {task.agents.join(', ')}</span>
+                      <span className="font-mono">🤖 {task.agents.map(aId => {
+                        const ag = agents.find(a => a.id === aId);
+                        return ag?.name || aId;
+                      }).join(', ')}</span>
                       {task.durationMs != null && (
                         <>
                           <span>·</span>
@@ -1343,7 +1650,9 @@ function RunDetail({
         <WorkflowDAGMap
           run={run}
           pipelines={pipelines}
+          agents={agents}
           onSelectTask={onSelectTask}
+          onInterruptTask={onInterruptTask}
         />
       )}
 
@@ -1357,7 +1666,14 @@ function RunDetail({
       {viewTab === 'tasks' && (
         <div className="px-5 py-4 space-y-3">
           {run.tasks.map((task) => (
-            <TaskRow key={task.taskId} task={task} onInterrupt={onInterruptTask ? () => onInterruptTask(task.taskId) : undefined} />
+            <TaskRow
+              key={task.taskId}
+              task={task}
+              run={run}
+              agents={agents}
+              onContinueStarted={onContinueStarted}
+              onInterrupt={onInterruptTask ? () => onInterruptTask(task.taskId) : undefined}
+            />
           ))}
         </div>
       )}
@@ -1375,7 +1691,7 @@ function RunDetail({
         </div>
       )}
 
-      {!awaitingTask && (run.status === 'done' || run.status === 'error') && (
+      {!awaitingTask && (run.status === 'error' || run.status === 'terminated') && (
         <div className="px-5 pb-4 pt-2 border-t border-zinc-100">
           <RunDetailContinuePanel
             run={run}
@@ -1392,25 +1708,58 @@ function RunDetail({
 // Run list card
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RunCard({ run, selected, onClick }: {
+function RunCard({ run, selected, onClick, onDelete, hasChild, deepestStatus, collapsed, onToggleCollapse }: {
   run: RunSummary;
   selected: boolean;
   onClick: () => void;
+  onDelete: () => void;
+  hasChild?: boolean;
+  deepestStatus?: RunSummary['status'];
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
+  const finalStatus = hasChild && collapsed && deepestStatus ? deepestStatus : run.status;
+
   return (
-    <button
+    <div
       onClick={onClick}
-      className={`w-full flex flex-col gap-1 px-4 py-3 text-left border-b border-zinc-100 hover:bg-zinc-50 transition-colors ${
-        selected ? 'bg-indigo-50 border-l-2 border-l-indigo-400' : ''
+      className={`w-full group relative flex flex-col gap-1 pl-3 pr-4 py-3 text-left border-b border-zinc-100 hover:bg-zinc-50 cursor-pointer transition-colors ${
+        selected ? 'bg-indigo-50/50 border-l-2 border-l-indigo-400' : ''
       }`}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold text-zinc-700 truncate flex-1">{run.pipelineName}</span>
-        <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusColors(run.status)}`}>
-          {statusLabel(run.status)}
-        </span>
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          <div className="w-[18px] h-[18px] flex items-center justify-center shrink-0 select-none">
+            {hasChild && onToggleCollapse ? (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleCollapse();
+                }}
+                className="p-0.5 rounded hover:bg-zinc-200/50 text-zinc-400 hover:text-zinc-600 transition-colors shrink-0"
+                title={collapsed ? "Expand tree" : "Collapse tree"}
+              >
+                <svg 
+                  className={`w-3.5 h-3.5 transition-transform ${collapsed ? '' : 'rotate-90'}`}
+                  fill="none" 
+                  viewBox="0 0 24 24" 
+                  stroke="currentColor" 
+                  strokeWidth="3"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            ) : null}
+          </div>
+          <span className="text-xs font-semibold text-zinc-700 truncate flex-1">{run.pipelineName}</span>
+        </div>
+        <div className="flex items-center gap-1 shrink-0 pr-6 group-hover:pr-1 transition-all">
+          <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusColors(finalStatus)}`}>
+            {statusLabel(finalStatus)}
+          </span>
+        </div>
       </div>
-      <p className="text-xs text-zinc-400 truncate leading-snug">{run.goal}</p>
+      <p className="text-xs text-zinc-400 truncate leading-snug pr-6">{run.goal}</p>
       <div className="flex items-center gap-2 text-[10px] text-zinc-300 mt-0.5">
         <span>{formatTime(run.startedAt)}</span>
         <span>·</span>
@@ -1422,7 +1771,23 @@ function RunCard({ run, selected, onClick }: {
           </>
         )}
       </div>
-    </button>
+
+      {/* Delete button (visible on hover) */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          if (confirm('Are you sure you want to delete this run record?')) {
+            onDelete();
+          }
+        }}
+        className="absolute right-2 bottom-2 text-zinc-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-1 rounded hover:bg-red-50"
+        title="Delete run"
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
+        </svg>
+      </button>
+    </div>
   );
 }
 
@@ -1440,7 +1805,20 @@ export function RunsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<RunRecord | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set());
   const sseRef = useRef<{ abort: () => void } | null>(null);
+
+  const toggleCollapse = useCallback((runId: string) => {
+    setCollapsedRuns((prev) => {
+      const next = new Set(prev);
+      if (next.has(runId)) {
+        next.delete(runId);
+      } else {
+        next.add(runId);
+      }
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async (silent = false) => {
     try {
@@ -1456,6 +1834,21 @@ export function RunsPage() {
     }
   }, [selectedId]);
 
+  const handleDeleteRun = useCallback(async (runId: string) => {
+    try {
+      const { success } = await api.deleteRun(runId);
+      if (success) {
+        if (selectedId === runId) {
+          setSelectedId(null);
+          setSelectedRun(null);
+        }
+        await load(true);
+      }
+    } catch (e) {
+      alert(`Delete failed: ${(e as Error).message}`);
+    }
+  }, [selectedId, load]);
+
   const handleInterruptTask = async (taskId: string) => {
     if (!selectedId) return;
     try {
@@ -1463,8 +1856,18 @@ export function RunsPage() {
       const detail = await api.getRun(selectedId);
       setSelectedRun(detail);
     } catch (e) {
-      console.error('Failed to interrupt task:', e);
-      alert('Failed to interrupt task: ' + (e instanceof Error ? e.message : String(e)));
+      const message = e instanceof Error ? e.message : String(e);
+      if (isTerminationNoopMessage(message)) {
+        try {
+          const detail = await api.getRun(selectedId);
+          setSelectedRun(detail);
+        } catch {
+          // Ignore refresh failure for idempotent terminate race.
+        }
+        return;
+      }
+      console.error('Failed to terminate run:', e);
+      alert('Failed to terminate run: ' + message);
     }
   };
 
@@ -1526,9 +1929,14 @@ export function RunsPage() {
       } else if (type === 'task:complete') {
         const task = run.tasks.find((t) => t.taskId === d.taskId);
         if (task) {
-          task.status = (d.error as string | undefined) === 'Interrupted by user'
+          const errorText = d.error as string | undefined;
+          task.status = errorText === 'Interrupted by user'
             ? 'interrupted'
-            : d.error ? 'error' : 'done';
+            : (errorText && /terminated|aborted|interrupted/i.test(errorText))
+              ? 'terminated'
+              : errorText
+                ? 'error'
+                : 'done';
           task.finishedAt = new Date().toISOString();
           task.output = (d.output as string) ?? '';
           task.outputs = d.outputs as string[] | undefined;
@@ -1538,8 +1946,22 @@ export function RunsPage() {
         run.status = 'done';
         run.finishedAt = new Date().toISOString();
       } else if (type === 'error') {
-        run.status = 'error';
+        const message = (d.message as string | undefined) ?? '';
+        run.status = /terminated|aborted|interrupted/i.test(message) ? 'terminated' : 'error';
         run.finishedAt = new Date().toISOString();
+        if (run.status === 'terminated') {
+          for (const task of run.tasks) {
+            if (task.status === 'running' || task.status === 'awaiting_review' || task.status === 'interrupted') {
+              task.status = 'terminated';
+              task.error = message || 'Run terminated by user';
+              task.finishedAt = new Date().toISOString();
+            } else if (task.status === 'pending') {
+              task.status = 'skipped';
+              task.error = undefined;
+              task.finishedAt = new Date().toISOString();
+            }
+          }
+        }
       } else if (type === 'review:pending') {
         const mode = (d.mode as string | undefined) ?? 'review';
         run.status = mode === 'interrupt' ? 'interrupted' : 'awaiting_review';
@@ -1667,12 +2089,12 @@ export function RunsPage() {
               <p className="text-xs text-zinc-400">{t('runs.empty', 'No runs yet. Execute a pipeline to see history here.')}</p>
             </div>
           ) : (
-            groupRunsByLineage(runs).map(({ run, depth }) => (
+            groupRunsByLineage(runs, collapsedRuns).map(({ run, depth, hasChild, deepestStatus, collapsed }) => (
               <div key={run.id} className="flex items-stretch border-b border-zinc-100/50 hover:bg-zinc-50/30">
                 {depth > 0 && (
                   <div 
-                    className="flex shrink-0 items-center justify-end text-zinc-300/80 font-mono font-bold select-none text-[10px] pl-3"
-                    style={{ width: `${Math.min(depth * 18, 90)}px` }}
+                    className="flex shrink-0 items-center justify-end text-zinc-300/80 font-mono font-bold select-none text-[11px]"
+                    style={{ width: `${depth * 42}px` }}
                   >
                     └─
                   </div>
@@ -1681,7 +2103,12 @@ export function RunsPage() {
                   <RunCard
                     run={run}
                     selected={selectedId === run.id}
+                    onDelete={() => handleDeleteRun(run.id)}
                     onClick={() => setSelectedId(run.id)}
+                    hasChild={hasChild}
+                    deepestStatus={deepestStatus}
+                    collapsed={collapsed}
+                    onToggleCollapse={() => toggleCollapse(run.id)}
                   />
                 </div>
               </div>
@@ -1729,7 +2156,19 @@ export function RunsPage() {
       {activeTaskId && selectedRun && (
         (() => {
           const task = selectedRun.tasks.find(t => t.taskId === activeTaskId);
-          return task ? <TaskDetailDialog task={task} onClose={() => setActiveTaskId(null)} /> : null;
+          return task ? (
+            <TaskDetailDialog
+              task={task}
+              run={selectedRun}
+              agents={agents}
+              onContinueStarted={(newRunId) => {
+                setSelectedId(newRunId);
+                load(true);
+              }}
+              onClose={() => setActiveTaskId(null)}
+              onInterrupt={handleInterruptTask ? () => handleInterruptTask(task.taskId) : undefined}
+            />
+          ) : null;
         })()
       )}
     </div>

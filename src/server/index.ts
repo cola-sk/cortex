@@ -1,6 +1,8 @@
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import express from 'express';
 import cors from 'cors';
+import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import path from 'path';
 import fs from 'fs';
 import yaml from 'js-yaml';
@@ -11,7 +13,7 @@ import { readAppConfig, portFromUrl, DEFAULT_CONFIG } from '../config/appConfig.
 import { Agent } from '../core/agent.js';
 import { Runner } from '../core/runner.js';
 import type { RunnerRunOptions } from '../core/runner.js';
-import type { Plan, Task, TaskResult, ReviewAction, TaskRound } from '../core/plan.js';
+import type { Plan, TaskResult, ReviewAction, TaskRound } from '../core/plan.js';
 import type { ToolEvent } from '../core/events.js';
 
 const app = express();
@@ -45,8 +47,9 @@ interface RunTaskRecord {
   taskId: string;
   taskName: string;
   agents: string[];
-  status: 'pending' | 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted';
+  status: 'pending' | 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted' | 'terminated' | 'skipped';
   requiresReview?: boolean;
+  input?: string;
   currentRound?: number;
   rounds?: RoundRecord[];
   startedAt?: string;
@@ -64,7 +67,7 @@ interface RunRecord {
   pipelineId: string;
   pipelineName: string;
   goal: string;
-  status: 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted';
+  status: 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted' | 'terminated';
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;
@@ -72,21 +75,6 @@ interface RunRecord {
   toolCallCount: number;
   continuedFromRunId?: string;
   tasks: RunTaskRecord[];
-}
-
-function findDownstreamTasks(taskId: string, tasks: Task[]): string[] {
-  const downstream = new Set<string>();
-  const queue = [taskId];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    for (const task of tasks) {
-      if (task.dependsOn.includes(current) && !downstream.has(task.id)) {
-        downstream.add(task.id);
-        queue.push(task.id);
-      }
-    }
-  }
-  return [...downstream];
 }
 
 function toTaskRoundRecords(rounds?: RoundRecord[]): TaskRound[] {
@@ -131,6 +119,8 @@ const reviewResolvers = new Map<string, (review: ReviewAction) => void>();
 const reviewModes = new Map<string, PauseMode>();
 // Per-task active abort controllers: key = "runId:taskId"
 const activeTaskAborts = new Map<string, AbortController>();
+// Per-run abort controllers: key = "runId"
+const activeRunAborts = new Map<string, AbortController>();
 
 function emitToRunSubscribers(runId: string, type: string, data: unknown): void {
   const subs = runSubscribers.get(runId);
@@ -159,6 +149,50 @@ function flushAndSaveRun(run: RunRecord): void {
   saveRun(run);
 }
 
+function markRunAsTerminated(runId: string, reason = 'Terminated by user'): void {
+  const run = activeRuns.get(runId);
+  if (!run) return;
+  if (run.status !== 'running' && run.status !== 'awaiting_review' && run.status !== 'interrupted') return;
+
+  const nowIso = new Date().toISOString();
+  run.status = 'terminated';
+  run.finishedAt = nowIso;
+  run.durationMs = Date.now() - new Date(run.startedAt).getTime();
+
+  for (const task of run.tasks) {
+    if (task.status === 'pending') {
+      task.status = 'skipped';
+      task.error = undefined;
+      task.finishedAt = nowIso;
+      continue;
+    }
+    if (task.status === 'running' || task.status === 'awaiting_review' || task.status === 'interrupted') {
+      task.status = 'terminated';
+      task.error = reason;
+      task.finishedAt = nowIso;
+      if (task.startedAt) {
+        task.durationMs = Date.now() - new Date(task.startedAt).getTime();
+      }
+    }
+  }
+
+  run.toolCallCount = countToolCalls(run.tasks);
+  flushAndSaveRun(run);
+}
+
+function resolvePendingReviewsForRun(runId: string, comment = 'Run terminated by user'): void {
+  for (const [key, resolver] of reviewResolvers) {
+    if (!key.startsWith(`${runId}:`)) continue;
+    try {
+      resolver({ action: 'approve', comment });
+    } catch {
+      // Ignore resolver errors during forced shutdown.
+    }
+    reviewResolvers.delete(key);
+    reviewModes.delete(key);
+  }
+}
+
 function ensureRunsDir(): void {
   if (!fs.existsSync(RUNS_DIR)) fs.mkdirSync(RUNS_DIR, { recursive: true });
 }
@@ -172,6 +206,16 @@ function countToolCalls(tasks: RunTaskRecord[]): number {
   return tasks.reduce((sum, t) => {
     return sum + (t.toolEvents ?? []).flat().filter((e) => e.type === 'tool_use').length;
   }, 0);
+}
+
+function markPendingTasksAsSkipped(run: RunRecord): void {
+  const nowIso = new Date().toISOString();
+  for (const task of run.tasks) {
+    if (task.status !== 'pending') continue;
+    task.status = 'error';
+    task.error = 'Skipped due to previous task failure';
+    task.finishedAt = nowIso;
+  }
 }
 
 // ---- Auto-init config files from templates if they don't exist ----
@@ -237,6 +281,41 @@ app.get('/api/workspace/validate', (req, res) => {
     return;
   }
   res.json({ ok: true, resolved });
+});
+
+// POST /api/models/fetch — fetch available models from base URL (OpenAI/Anthropic compatible)
+app.post('/api/models/fetch', async (req, res) => {
+  try {
+    const { baseURL, apiKey, providerType } = req.body as { baseURL?: string; apiKey?: string; providerType?: string };
+    if (!baseURL || typeof baseURL !== 'string' || !baseURL.trim()) {
+      res.status(400).json({ error: 'baseURL is required' });
+      return;
+    }
+
+    const trimmedBaseURL = baseURL.trim();
+    const trimmedApiKey = apiKey?.trim() || '';
+
+    if (providerType === 'claude') {
+      const client = new Anthropic({
+        apiKey: trimmedApiKey || 'no-key',
+        baseURL: trimmedBaseURL,
+      });
+      const list = await client.models.list();
+      const models = list.data.map((m) => m.id);
+      res.json({ models });
+    } else {
+      // standard openai and openai-compat
+      const client = new OpenAI({
+        apiKey: trimmedApiKey || 'no-key',
+        baseURL: trimmedBaseURL,
+      });
+      const list = await client.models.list();
+      const models = list.data.map((m) => m.id);
+      res.json({ models });
+    }
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // GET /api/agents
@@ -321,7 +400,11 @@ app.get('/api/runs', (_req, res) => {
 
     const runs = files.flatMap((f) => {
       try {
-        const run = JSON.parse(fs.readFileSync(path.join(RUNS_DIR, f), 'utf-8')) as RunRecord;
+        let run = JSON.parse(fs.readFileSync(path.join(RUNS_DIR, f), 'utf-8')) as RunRecord;
+        const active = activeRuns.get(run.id);
+        if (active) {
+          run = active;
+        }
         // Return summary without full task outputs
         return [{
           id: run.id,
@@ -361,6 +444,21 @@ app.get('/api/runs/:id', (req, res) => {
       return;
     }
     res.json(JSON.parse(fs.readFileSync(filePath, 'utf-8')));
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// DELETE /api/runs/:id — delete a run record from disk and memory
+app.delete('/api/runs/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    activeRuns.delete(id);
+    const filePath = path.join(RUNS_DIR, `${id}.json`);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -541,6 +639,25 @@ app.post('/api/runs/:runId/review', (req, res) => {
     const key = `${runId}:${body.taskId}`;
     const resolver = reviewResolvers.get(key);
     if (!resolver) {
+      // The review may already be resolved by a terminate flow or late UI submission.
+      // Treat terminal run states as idempotent success instead of surfacing an error.
+      const activeRun = activeRuns.get(runId);
+      let persistedRun: RunRecord | null = null;
+      if (!activeRun) {
+        const filePath = path.join(RUNS_DIR, `${runId}.json`);
+        if (fs.existsSync(filePath)) {
+          try {
+            persistedRun = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as RunRecord;
+          } catch {
+            persistedRun = null;
+          }
+        }
+      }
+      const terminalStatus = (activeRun ?? persistedRun)?.status;
+      if (terminalStatus === 'terminated' || terminalStatus === 'done' || terminalStatus === 'error') {
+        res.json({ success: true, mode: 'noop' });
+        return;
+      }
       res.status(404).json({ error: `No pending review for run "${runId}" task "${body.taskId}"` });
       return;
     }
@@ -594,21 +711,17 @@ app.post('/api/runs/:runId/review', (req, res) => {
   }
 });
 
-// POST /api/runs/:runId/continue — continue from a completed run with comment context
+// POST /api/runs/:runId/continue — retry a failed/interrupted/terminated task from a historical run
 app.post('/api/runs/:runId/continue', (req, res) => {
   try {
     const { runId } = req.params;
     const body = req.body as { taskId?: string; comment?: string; agentId?: string };
     const taskId = body.taskId?.trim();
-    const comment = body.comment?.trim() ?? '';
+    const comment = body.comment?.trim() || 'Re-run';
     const agentId = body.agentId?.trim();
 
     if (!taskId) {
       res.status(400).json({ error: 'taskId is required' });
-      return;
-    }
-    if (!comment) {
-      res.status(400).json({ error: 'comment is required' });
       return;
     }
 
@@ -634,6 +747,16 @@ app.post('/api/runs/:runId/continue', (req, res) => {
     const continuationTask = pipelineCfg.tasks.find((t) => t.id === taskId);
     if (!continuationTask) {
       res.status(400).json({ error: `Task "${taskId}" is not part of pipeline "${sourceRun.pipelineId}"` });
+      return;
+    }
+    const sourceTaskMap = new Map(sourceRun.tasks.map((t) => [t.taskId, t]));
+    const sourceTask = sourceTaskMap.get(taskId);
+    if (!sourceTask) {
+      res.status(400).json({ error: `Task "${taskId}" has no execution record in run "${runId}"` });
+      return;
+    }
+    if (sourceTask.status !== 'error' && sourceTask.status !== 'interrupted' && sourceTask.status !== 'terminated') {
+      res.status(400).json({ error: `Task "${taskId}" is not retryable (status: ${sourceTask.status})` });
       return;
     }
 
@@ -670,17 +793,14 @@ app.post('/api/runs/:runId/continue', (req, res) => {
       decisions: pipelineCfg.decisions,
     };
 
-    const sourceTaskMap = new Map(sourceRun.tasks.map((t) => [t.taskId, t]));
-    const rerunSet = new Set<string>([taskId, ...findDownstreamTasks(taskId, plan.tasks as Task[])]);
     const nowIso = new Date().toISOString();
     const newRunId = generateRunId();
 
-    const selectedSourceTask = sourceTaskMap.get(taskId);
-    const continuationRounds: RoundRecord[] = [...(selectedSourceTask?.rounds ?? [])];
+    const continuationRounds: RoundRecord[] = [...(sourceTask.rounds ?? [])];
     continuationRounds.push({
       round: continuationRounds.length + 1,
-      output: selectedSourceTask?.output ?? '',
-      toolEvents: selectedSourceTask?.toolEvents,
+      output: sourceTask.output ?? '',
+      toolEvents: sourceTask.toolEvents,
       finishedAt: nowIso,
       review: {
         action: 'revise',
@@ -706,10 +826,11 @@ app.post('/api/runs/:runId/continue', (req, res) => {
         const defaultAgents = Array.isArray(task.agent) ? task.agent : [task.agent];
         const assignedAgents = task.id === taskId && agentId ? [agentId] : defaultAgents;
 
-        if (!rerunSet.has(task.id) && previous) {
+        if (task.id !== taskId && previous?.status === 'done') {
           return {
             ...previous,
             agents: assignedAgents,
+            input: task.input,
           };
         }
 
@@ -718,6 +839,7 @@ app.post('/api/runs/:runId/continue', (req, res) => {
           taskName: task.name,
           agents: assignedAgents,
           status: 'pending',
+          input: task.input,
           ...(task.requiresReview ? { requiresReview: true } : {}),
           ...(task.id === taskId ? { rounds: continuationRounds } : (previous?.rounds ? { rounds: previous.rounds } : {})),
         };
@@ -732,19 +854,17 @@ app.post('/api/runs/:runId/continue', (req, res) => {
     const initialResults = new Map<string, TaskResult>();
     const initialCompletedTaskIds: string[] = [];
     for (const task of plan.tasks) {
-      if (rerunSet.has(task.id)) continue;
+      if (task.id === taskId) continue;
       const previous = sourceTaskMap.get(task.id);
-      if (!previous) continue;
+      if (!previous || previous.status !== 'done') continue;
       initialCompletedTaskIds.push(task.id);
-      if (typeof previous.output === 'string') {
-        initialResults.set(task.id, {
-          taskId: task.id,
-          outputs: previous.outputs && previous.outputs.length > 0 ? previous.outputs : [previous.output],
-          output: previous.output,
-          ...(previous.error ? { error: previous.error } : {}),
-          ...(previous.toolEvents ? { toolEvents: previous.toolEvents } : {}),
-        });
-      }
+      const output = previous.output ?? '';
+      initialResults.set(task.id, {
+        taskId: task.id,
+        outputs: previous.outputs && previous.outputs.length > 0 ? previous.outputs : [output],
+        output,
+        ...(previous.toolEvents ? { toolEvents: previous.toolEvents } : {}),
+      });
     }
 
     const initialTaskRounds = new Map<string, TaskRound[]>();
@@ -759,13 +879,18 @@ app.post('/api/runs/:runId/continue', (req, res) => {
 
     const taskStartTimes = new Map<string, number>();
     const abortController = new AbortController();
+    activeRunAborts.set(newRunId, abortController);
 
     void (async () => {
       try {
         const runner = new Runner(agentMap, {
-          onTaskStart: (startedTaskId, taskName, agents, taskAbortController) => {
-            emitToRunSubscribers(newRunId, 'task:start', { taskId: startedTaskId, taskName, agents });
+          onTaskStart: (startedTaskId, taskName, agents, taskAbortController, fullInput) => {
             const task = newRun.tasks.find((t) => t.taskId === startedTaskId);
+            if (task && fullInput) {
+              task.input = fullInput;
+            }
+            const input = fullInput || task?.input;
+            emitToRunSubscribers(newRunId, 'task:start', { taskId: startedTaskId, taskName, agents, input });
             if (task) {
               task.status = 'running';
               task.startedAt = new Date().toISOString();
@@ -808,14 +933,25 @@ app.post('/api/runs/:runId/continue', (req, res) => {
             emitToRunSubscribers(newRunId, 'task:complete', { taskId: completedTaskId, taskName, output: result.output, outputs: result.outputs, error: result.error });
             const task = newRun.tasks.find((t) => t.taskId === completedTaskId);
             if (task) {
+              const isRunTerminated = newRun.status === 'terminated';
               const isInterrupted = result.error === 'Interrupted by user';
-              task.status = isInterrupted ? 'interrupted' : (result.error ? 'error' : 'done');
+              if (isRunTerminated) {
+                task.status = task.status === 'skipped' ? 'skipped' : 'terminated';
+              } else {
+                task.status = isInterrupted ? 'interrupted' : (result.error ? 'error' : 'done');
+              }
               task.finishedAt = new Date().toISOString();
               const started = taskStartTimes.get(completedTaskId);
               if (started) task.durationMs = Date.now() - started;
               task.output = result.output;
               if (result.outputs && result.outputs.length > 1) task.outputs = result.outputs;
-              task.error = result.error || undefined;
+              if (task.status === 'terminated') {
+                task.error = task.error || 'Terminated by user';
+              } else if (task.status === 'skipped') {
+                task.error = undefined;
+              } else {
+                task.error = result.error || undefined;
+              }
               if (result.toolEvents) task.toolEvents = result.toolEvents;
               newRun.toolCallCount = countToolCalls(newRun.tasks);
               flushAndSaveRun(newRun);
@@ -844,6 +980,9 @@ app.post('/api/runs/:runId/continue', (req, res) => {
             });
           },
           onReviewSubmitted: (reviewTaskId, action, round) => {
+            if (abortController.signal.aborted && (newRun.status === 'error' || newRun.status === 'terminated')) {
+              return;
+            }
             const task = newRun.tasks.find((t) => t.taskId === reviewTaskId);
             const mode: PauseMode = task?.status === 'interrupted' ? 'interrupt' : 'review';
             newRun.status = 'running';
@@ -890,20 +1029,30 @@ app.post('/api/runs/:runId/continue', (req, res) => {
         }, false, pipelineCfg.workspace);
 
         const results = await runner.runWithOptions(plan, abortController.signal, runOptions);
+        const isTerminated = newRun.status === 'terminated';
         const hasTaskErrors = newRun.tasks.some((t) => t.status === 'error');
-        newRun.status = hasTaskErrors ? 'error' : 'done';
+        if (!isTerminated && hasTaskErrors) {
+          markPendingTasksAsSkipped(newRun);
+        }
+        newRun.status = isTerminated ? 'terminated' : (hasTaskErrors ? 'error' : 'done');
         newRun.finishedAt = new Date().toISOString();
         newRun.durationMs = Date.now() - new Date(nowIso).getTime();
         newRun.toolCallCount = countToolCalls(newRun.tasks);
         flushAndSaveRun(newRun);
 
-        const summary: Record<string, { output: string; error?: string }> = {};
-        for (const [key, result] of results) {
-          if (!key.startsWith('__decision_')) {
-            summary[key] = { output: result.output, ...(result.error ? { error: result.error } : {}) };
+        if (isTerminated) {
+          emitToRunSubscribers(newRunId, 'error', { message: 'Run terminated by user' });
+        } else if (hasTaskErrors) {
+          emitToRunSubscribers(newRunId, 'error', { message: 'Run terminated with errors' });
+        } else {
+          const summary: Record<string, { output: string; error?: string }> = {};
+          for (const [key, result] of results) {
+            if (!key.startsWith('__decision_')) {
+              summary[key] = { output: result.output, ...(result.error ? { error: result.error } : {}) };
+            }
           }
+          emitToRunSubscribers(newRunId, 'complete', { taskCount: plan.tasks.length, results: summary, runId: newRunId });
         }
-        emitToRunSubscribers(newRunId, 'complete', { taskCount: plan.tasks.length, results: summary, runId: newRunId });
       } catch (err) {
         emitToRunSubscribers(newRunId, 'error', { message: (err as Error).message });
         if (newRun.status === 'running' || newRun.status === 'awaiting_review' || newRun.status === 'interrupted') {
@@ -913,6 +1062,7 @@ app.post('/api/runs/:runId/continue', (req, res) => {
           flushAndSaveRun(newRun);
         }
       } finally {
+        activeRunAborts.delete(newRunId);
         activeRuns.delete(newRunId);
         for (const key of reviewResolvers.keys()) {
           if (key.startsWith(`${newRunId}:`)) reviewResolvers.delete(key);
@@ -937,18 +1087,42 @@ app.post('/api/runs/:runId/continue', (req, res) => {
   }
 });
 
-// POST /api/runs/:runId/tasks/:taskId/interrupt — interrupt a running task
+// POST /api/runs/:runId/tasks/:taskId/interrupt — terminate the entire live run
 app.post('/api/runs/:runId/tasks/:taskId/interrupt', (req, res) => {
   try {
-    const { runId, taskId } = req.params;
-    const key = `${runId}:${taskId}`;
-    const controller = activeTaskAborts.get(key);
-    if (!controller) {
-      res.status(404).json({ error: `Task "${taskId}" in run "${runId}" is not currently running or cannot be interrupted` });
+    const { runId } = req.params;
+    const activeRun = activeRuns.get(runId);
+    const controller = activeRunAborts.get(runId);
+    if (!activeRun) {
+      const filePath = path.join(RUNS_DIR, `${runId}.json`);
+      if (!fs.existsSync(filePath)) {
+        res.status(404).json({ error: `Run "${runId}" not found` });
+        return;
+      }
+      const persistedRun = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as RunRecord;
+      if (persistedRun.status === 'terminated' || persistedRun.status === 'done' || persistedRun.status === 'error') {
+        res.json({ success: true, terminated: persistedRun.status === 'terminated', alreadyFinished: true, status: persistedRun.status });
+        return;
+      }
+      res.status(404).json({ error: `Run "${runId}" is not currently active or cannot be terminated` });
       return;
     }
-    controller.abort();
-    res.json({ success: true });
+    if (activeRun.status !== 'running' && activeRun.status !== 'awaiting_review' && activeRun.status !== 'interrupted') {
+      res.json({ success: true, terminated: activeRun.status === 'terminated', alreadyFinished: true, status: activeRun.status });
+      return;
+    }
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
+    }
+    for (const [key, taskAbortController] of activeTaskAborts) {
+      if (key.startsWith(`${runId}:`)) {
+        taskAbortController.abort();
+      }
+    }
+    markRunAsTerminated(runId);
+    resolvePendingReviewsForRun(runId, 'Run terminated by user');
+    emitToRunSubscribers(runId, 'error', { message: 'Run terminated by user' });
+    res.json({ success: true, terminated: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -990,16 +1164,9 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     if (!aborted && run && (run.status === 'running' || run.status === 'awaiting_review' || run.status === 'interrupted')) {
       aborted = true;
       abortController.abort();
-      run.status = 'error';
-      run.finishedAt = new Date().toISOString();
-      run.durationMs = Date.now() - new Date(run.startedAt).getTime();
-      for (const task of run.tasks) {
-        if (task.status === 'running' || task.status === 'pending') {
-          task.status = 'error';
-          task.error = 'Interrupted';
-        }
-      }
-      saveRun(run);
+      markRunAsTerminated(run.id, 'Interrupted');
+      resolvePendingReviewsForRun(run.id, 'Run interrupted');
+      emitToRunSubscribers(run.id, 'error', { message: 'Run interrupted' });
     }
   };
 
@@ -1069,11 +1236,13 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         taskName: t.name,
         agents: Array.isArray(t.agent) ? t.agent : [t.agent],
         status: 'pending' as const,
+        input: t.input,
         ...(t.requiresReview ? { requiresReview: true } : {}),
       })),
     };
     saveRun(run);
     activeRuns.set(runId, run);
+    activeRunAborts.set(runId, abortController);
 
     emit('run:started', { runId });
     emitToRunSubscribers(runId, 'run:started', { runId });
@@ -1081,10 +1250,14 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
     const taskStartTimes = new Map<string, number>();
 
     const runner = new Runner(agentMap, {
-      onTaskStart: (taskId, taskName, agents, abortController) => {
-        emit('task:start', { taskId, taskName, agents });
-        emitToRunSubscribers(runId, 'task:start', { taskId, taskName, agents });
+      onTaskStart: (taskId, taskName, agents, abortController, fullInput) => {
         const task = run!.tasks.find((t) => t.taskId === taskId);
+        if (task && fullInput) {
+          task.input = fullInput;
+        }
+        const input = fullInput || task?.input;
+        emit('task:start', { taskId, taskName, agents, input });
+        emitToRunSubscribers(runId, 'task:start', { taskId, taskName, agents, input });
         if (task) {
           task.status = 'running';
           task.startedAt = new Date().toISOString();
@@ -1125,14 +1298,25 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         emitToRunSubscribers(runId, 'task:complete', { taskId, taskName, output: result.output, outputs: result.outputs, error: result.error });
         const task = run!.tasks.find((t) => t.taskId === taskId);
         if (task) {
+          const isRunTerminated = run!.status === 'terminated';
           const isInterrupted = result.error === 'Interrupted by user';
-          task.status = isInterrupted ? 'interrupted' : (result.error ? 'error' : 'done');
+          if (isRunTerminated) {
+            task.status = task.status === 'skipped' ? 'skipped' : 'terminated';
+          } else {
+            task.status = isInterrupted ? 'interrupted' : (result.error ? 'error' : 'done');
+          }
           task.finishedAt = new Date().toISOString();
           const started = taskStartTimes.get(taskId);
           if (started) task.durationMs = Date.now() - started;
           task.output = result.output;
           if (result.outputs && result.outputs.length > 1) task.outputs = result.outputs;
-          task.error = result.error || undefined;
+          if (task.status === 'terminated') {
+            task.error = task.error || 'Terminated by user';
+          } else if (task.status === 'skipped') {
+            task.error = undefined;
+          } else {
+            task.error = result.error || undefined;
+          }
           if (result.toolEvents) task.toolEvents = result.toolEvents;
           run!.toolCallCount = countToolCalls(run!.tasks);
           flushAndSaveRun(run!);
@@ -1165,6 +1349,9 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         });
       },
       onReviewSubmitted: (taskId, action, round) => {
+        if (abortController.signal.aborted && (run!.status === 'error' || run!.status === 'terminated')) {
+          return;
+        }
         const task = run!.tasks.find((t) => t.taskId === taskId);
         const mode: PauseMode = task?.status === 'interrupted' ? 'interrupt' : 'review';
         run!.status = 'running';
@@ -1223,21 +1410,33 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
 
     if (!aborted) {
       pipelineFinished = true;
+      const isTerminated = run.status === 'terminated';
       const hasTaskErrors = run.tasks.some(t => t.status === 'error');
-      run.status = hasTaskErrors ? 'error' : 'done';
+      if (!isTerminated && hasTaskErrors) {
+        markPendingTasksAsSkipped(run);
+      }
+      run.status = isTerminated ? 'terminated' : (hasTaskErrors ? 'error' : 'done');
       run.finishedAt = new Date().toISOString();
       run.durationMs = Date.now() - new Date(runStartedAt).getTime();
       run.toolCallCount = countToolCalls(run.tasks);
       flushAndSaveRun(run);
 
-      const summary: Record<string, { output: string; error?: string }> = {};
-      for (const [key, r] of results) {
-        if (!key.startsWith('__decision_')) {
-          summary[key] = { output: r.output, ...(r.error ? { error: r.error } : {}) };
+      if (isTerminated) {
+        emit('error', { message: 'Run terminated by user' });
+        emitToRunSubscribers(runId, 'error', { message: 'Run terminated by user' });
+      } else if (hasTaskErrors) {
+        emit('error', { message: 'Run terminated with errors' });
+        emitToRunSubscribers(runId, 'error', { message: 'Run terminated with errors' });
+      } else {
+        const summary: Record<string, { output: string; error?: string }> = {};
+        for (const [key, r] of results) {
+          if (!key.startsWith('__decision_')) {
+            summary[key] = { output: r.output, ...(r.error ? { error: r.error } : {}) };
+          }
         }
+        emit('complete', { taskCount: plan.tasks.length, results: summary, runId });
+        emitToRunSubscribers(runId, 'complete', { taskCount: plan.tasks.length, results: summary, runId });
       }
-      emit('complete', { taskCount: plan.tasks.length, results: summary, runId });
-      emitToRunSubscribers(runId, 'complete', { taskCount: plan.tasks.length, results: summary, runId });
     }
   } catch (err) {
     if (!aborted) {
@@ -1253,6 +1452,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
   } finally {
     process.off('SIGTERM', sigtermHandler);
     if (run) {
+      activeRunAborts.delete(run.id);
       activeRuns.delete(run.id);
       // Clean up any pending review resolvers for this run
       for (const key of reviewResolvers.keys()) {
