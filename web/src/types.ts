@@ -127,8 +127,10 @@ export interface RunTaskRecord {
   taskId: string;
   taskName: string;
   agents: string[];
-  status: 'pending' | 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted';
+  status: 'pending' | 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted' | 'terminated' | 'skipped';
   requiresReview?: boolean;
+  gitDiff?: boolean;
+  input?: string;
   currentRound?: number;
   rounds?: RoundRecord[];
   startedAt?: string;
@@ -148,7 +150,7 @@ export interface RunSummary {
   pipelineId: string;
   pipelineName: string;
   goal: string;
-  status: 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted';
+  status: 'running' | 'done' | 'error' | 'awaiting_review' | 'interrupted' | 'terminated';
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;

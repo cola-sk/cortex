@@ -450,6 +450,7 @@ function TaskDetailPanel({ task, agents, fullHeight = false }: { task: RunTaskRe
         input={task.input}
         agentInfo={agentInfo}
         agentInfos={agentInfos}
+        gitDiff={task.gitDiff}
       />
     </div>
   );
@@ -621,6 +622,12 @@ function TaskDetailDialog({
               {task.durationMs != null && <span className="flex items-center gap-1">⏱ {formatDuration(task.durationMs)}</span>}
               {toolCallCount > 0 && <span className="flex items-center gap-1">🔧 {toolCallCount} tool calls</span>}
               <span className="flex items-center gap-1">👥 {task.agents.join(', ')}</span>
+              {task.gitDiff && (
+                <span className="inline-flex items-center gap-0.5 rounded bg-indigo-50 border border-indigo-100/80 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600 select-none">
+                  <span>✦</span>
+                  <span>Git Diff Enabled</span>
+                </span>
+              )}
             </div>
           </div>
           <button 

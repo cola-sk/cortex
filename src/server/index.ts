@@ -831,6 +831,7 @@ app.post('/api/runs/:runId/continue', (req, res) => {
             ...previous,
             agents: assignedAgents,
             input: task.input,
+            gitDiff: task.gitDiff,
           };
         }
 
@@ -840,6 +841,7 @@ app.post('/api/runs/:runId/continue', (req, res) => {
           agents: assignedAgents,
           status: 'pending',
           input: task.input,
+          gitDiff: task.gitDiff,
           ...(task.requiresReview ? { requiresReview: true } : {}),
           ...(task.id === taskId ? { rounds: continuationRounds } : (previous?.rounds ? { rounds: previous.rounds } : {})),
         };
@@ -1237,6 +1239,7 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         agents: Array.isArray(t.agent) ? t.agent : [t.agent],
         status: 'pending' as const,
         input: t.input,
+        gitDiff: t.gitDiff,
         ...(t.requiresReview ? { requiresReview: true } : {}),
       })),
     };

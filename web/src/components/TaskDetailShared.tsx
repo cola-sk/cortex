@@ -3,9 +3,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/atom-one-dark.css';
-import type { ToolEvent } from '../types';
+import type { ToolEvent, Agent } from '../types';
 
-export type DetailStatus = 'running' | 'done' | 'error' | 'decision' | 'interrupted';
+export type DetailStatus = 'running' | 'done' | 'error' | 'decision' | 'interrupted' | 'terminated' | 'skipped';
 
 type ContentSection = { kind: 'markdown' | 'thinking'; content: string };
 type TextBlockKind = 'diff' | 'text';
@@ -28,6 +28,55 @@ export interface TaskDetailSharedProps {
   workerStatus?: ('running' | 'done' | 'error')[];
   fullHeight?: boolean;
   detailEventMode?: 'all' | 'tools-only';
+  input?: string;
+  agentInfo?: string;
+  agentInfos?: string[];
+  gitDiff?: boolean;
+}
+
+export function getBaseAgentId(agentId: string, agentsList: Agent[]): string {
+  const agent = agentsList.find((a) => a.id === agentId);
+  if (!agent) return agentId;
+  if (!agent.provider && agent.baseAgent) {
+    return getBaseAgentId(agent.baseAgent, agentsList);
+  }
+  return agentId;
+}
+
+export function formatAgentInfo(agentId: string, agentsList: Agent[]): string {
+  const agent = agentsList.find((a) => a.id === agentId);
+  if (!agent) return agentId;
+  const provider = agent.provider;
+  if (!provider) {
+    if (agent.baseAgent) {
+      const base = agentsList.find((a) => a.id === agent.baseAgent);
+      if (base) {
+        const baseFormatted = formatAgentInfo(agent.baseAgent, agentsList);
+        return `${agent.name || agent.id} (via ${baseFormatted})`;
+      }
+    }
+    return `${agent.name || agent.id}`;
+  }
+
+  const normName = (agent.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normId = agent.id.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const isSimilar = normName.includes(normId) || normId.includes(normName) ||
+    (normName.startsWith('claude') && normId.startsWith('claude')) ||
+    (normName.startsWith('gemini') && normId.startsWith('gemini')) ||
+    (normName.startsWith('codex') && normId.startsWith('codex'));
+
+  const nameStr = agent.name && !isSimilar ? `${agent.name} (${agent.id})` : (agent.name || agent.id);
+
+  if (provider.type === 'cli') {
+    return `${nameStr} (💻 cli: ${provider.command})`;
+  }
+  if (provider.type === 'claude') {
+    return `${nameStr} (💬 claude api: ${provider.model || 'default'})`;
+  }
+  if (provider.type === 'openai-compat') {
+    return `${nameStr} (💬 openai api: ${provider.model})`;
+  }
+  return nameStr;
 }
 
 function normalizeMixedContent(input: string): string {
@@ -160,7 +209,7 @@ export function MarkdownWithThinking({
       {sections.map((section, idx) => {
         if (section.kind === 'thinking') {
           return (
-            <details key={`think-${idx}`} className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2">
+            <details key={`think-${idx}`} className="rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2">
               <summary className="cursor-pointer select-none text-[11px] font-semibold text-amber-700">Thinking</summary>
               <div className={`mt-2 ${proseClass} prose-amber text-amber-900 ${markdownClassName ?? ''}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{section.content}</ReactMarkdown>
@@ -170,7 +219,7 @@ export function MarkdownWithThinking({
         }
 
         return (
-          <div key={`md-${idx}`} className={`${proseClass} ${markdownClassName ?? ''}`}>
+          <div key={`md-${idx}`} className={`${proseClass} premium-markdown ${markdownClassName ?? ''}`}>
             <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{section.content}</ReactMarkdown>
           </div>
         );
@@ -203,8 +252,7 @@ function getToolSummaryText(event: ToolEvent): string {
 function appendTextChunk(base: string, chunk: string): string {
   if (!chunk) return base;
   if (!base) return chunk;
-  if (base.endsWith('\n') || chunk.startsWith('\n')) return base + chunk;
-  return `${base}\n${chunk}`;
+  return base + chunk;
 }
 
 function looksLikeStandaloneTextBlock(content: string): boolean {
@@ -480,7 +528,7 @@ function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }
           <div className="mt-1 space-y-2.5 pl-1">
             <div>
               <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider mb-1">Input</p>
-              <div className="rounded-xl border border-zinc-200/50 bg-zinc-950 p-1 overflow-x-auto max-h-64">
+              <div className="rounded-lg border border-zinc-200/50 bg-zinc-950 p-1 overflow-x-auto max-h-64">
                 <MarkdownWithThinking content={inputMarkdown} dark />
               </div>
             </div>
@@ -489,7 +537,7 @@ function TimelineToolItem({ item, idx }: { item: TimelineItem & { type: 'tool' }
                 <p className={`text-[10px] font-medium uppercase tracking-wider mb-1 ${item.result.isError ? 'text-red-400' : 'text-zinc-400'}`}>
                   Output{item.result.isError ? ' (error)' : ''}
                 </p>
-                <div className={`rounded-xl border max-h-96 overflow-x-auto p-1 bg-zinc-950 ${
+                <div className={`rounded-lg border max-h-96 overflow-x-auto p-1 bg-zinc-950 ${
                   item.result.isError ? 'border-red-200/50 bg-red-950/20' : 'border-zinc-200/50 bg-zinc-950'
                 }`}>
                   <MarkdownWithThinking content={outputMarkdown} dark />
@@ -537,7 +585,7 @@ function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
         </button>
         {expanded && (
           <div className="mt-2">
-            <div className="rounded-lg border border-zinc-200 bg-zinc-50/80 overflow-hidden">
+            <div className="rounded-md border border-zinc-200 bg-zinc-50/80 overflow-hidden">
               <div className="px-3 py-1.5 border-b border-zinc-200 bg-white/80 flex items-center justify-between">
                 <span className="text-[10px] uppercase tracking-wider font-semibold text-zinc-500">
                   {outputTypeLabel}
@@ -551,7 +599,7 @@ function TimelineTextItem({ item }: { item: TimelineItem & { type: 'text' } }) {
               ) : hasDiffBlocks ? (
                 <div className="px-2 py-2 max-h-[70vh] overflow-auto space-y-2 bg-zinc-50">
                   {blocks.map((block, index) => (
-                    <div key={`${block.kind}-${index}`} className="rounded-md border border-zinc-200 bg-white overflow-hidden">
+                    <div key={`${block.kind}-${index}`} className="rounded border border-zinc-200 bg-white overflow-hidden">
                       <div className="px-2 py-1 border-b border-zinc-100 bg-zinc-50/70 text-[10px] uppercase tracking-wider font-semibold text-zinc-500">
                         {block.kind === 'diff' ? 'Code Diff' : 'Text'}
                       </div>
@@ -631,6 +679,45 @@ function WorkerTimeline({ events, status, fullHeight = false }: { events: ToolEv
   );
 }
 
+function TaskPromptCollapse({ input, agentInfo, gitDiff }: { input: string; agentInfo?: string; gitDiff?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const charCount = input.length;
+  const lineCount = input.split('\n').length;
+
+  return (
+    <div className="border border-zinc-200/80 rounded-lg overflow-hidden bg-white shadow-sm mb-3">
+      <button
+        onClick={() => setExpanded((e) => !e)}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-zinc-50/60 hover:bg-zinc-100/50 transition-colors text-left"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs select-none">💬</span>
+          <span className="text-xs font-bold text-zinc-700 select-none">Task Prompt / 任务指令</span>
+          {agentInfo && (
+            <span className="text-[10px] bg-zinc-200/80 text-zinc-600 rounded px-2 py-0.5 select-none font-semibold">
+              {agentInfo}
+            </span>
+          )}
+          {gitDiff && (
+            <span className="text-[10px] bg-indigo-50 border border-indigo-100 text-indigo-600 rounded px-2 py-0.5 select-none font-semibold flex items-center gap-1">
+              <span>✦</span>
+              <span>Git Diff Enabled / 已携带 Diff</span>
+            </span>
+          )}
+          <span className="text-[10px] text-zinc-400 font-mono select-none">({lineCount}L · {charCount}C)</span>
+        </div>
+        <ChevronRightIcon className={`w-3.5 h-3.5 text-zinc-400 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+      </button>
+
+      {expanded && (
+        <div className="border-t border-zinc-150 bg-zinc-50/20 px-4 py-3 max-h-64 overflow-y-auto leading-relaxed text-xs">
+          <MarkdownWithThinking content={input} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TaskDetailShared({
   workers,
   agents = ['worker'],
@@ -641,6 +728,10 @@ export function TaskDetailShared({
   workerStatus,
   fullHeight = false,
   detailEventMode = 'all',
+  input,
+  agentInfo,
+  agentInfos,
+  gitDiff,
 }: TaskDetailSharedProps) {
   const [activeWorker, setActiveWorker] = useState(0);
   const [timelineOpen, setTimelineOpen] = useState(false);
@@ -694,12 +785,17 @@ export function TaskDetailShared({
     </div>
   );
 
+  const currentAgentInfo = hasMultiWorker && agentInfos
+    ? agentInfos[activeWorker]
+    : agentInfo;
+
   // ── Running: worker tabs + live timeline ──
   if (isRunning) {
     return (
       <div className={`space-y-3 ${fullHeight ? 'h-full min-h-0 flex flex-col' : ''}`}>
+        {input && <TaskPromptCollapse input={input} agentInfo={currentAgentInfo} gitDiff={gitDiff} />}
         {detailText && (
-          <div className="rounded-lg p-3 bg-zinc-50 text-zinc-700">
+          <div className="rounded-md p-3 bg-zinc-50 text-zinc-700">
             <MarkdownWithThinking content={detailText} className="text-xs" />
           </div>
         )}
@@ -713,29 +809,40 @@ export function TaskDetailShared({
     );
   }
 
-  // ── Done / Error / Decision ──
+  // ── Done / Error / Decision / Terminated ──
   // Multi-worker: worker tabs, each tab shows that worker's output + that worker's timeline
   // Single-worker: output + collapsible timeline (only if has tool events)
   return (
     <div className={`space-y-2 ${fullHeight ? 'h-full min-h-0 flex flex-col' : ''}`}>
+      {input && <TaskPromptCollapse input={input} agentInfo={currentAgentInfo} gitDiff={gitDiff} />}
       {/* Error banner */}
       {detailText && status === 'error' && (
-        <div className="rounded-xl border border-red-200 bg-red-50/70 p-4 text-red-800 shadow-sm border-l-4 border-l-red-500">
+        <div className="rounded-lg border border-red-200 bg-red-50/70 p-4 text-red-800 shadow-sm border-l-4 border-l-red-500">
           <MarkdownWithThinking content={detailText} className="text-xs" />
         </div>
       )}
 
       {/* Decision banner */}
       {detailText && status === 'decision' && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-amber-900 shadow-sm border-l-4 border-l-amber-500">
+        <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-4 text-amber-900 shadow-sm border-l-4 border-l-amber-500">
           <MarkdownWithThinking content={detailText} className="text-xs" />
         </div>
       )}
 
       {/* Interrupted banner */}
       {status === 'interrupted' && (
-        <div className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 text-zinc-700 shadow-sm border-l-4 border-l-zinc-400">
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50/80 p-4 text-zinc-700 shadow-sm border-l-4 border-l-zinc-400">
           <p className="text-xs font-medium">任务已中断，提交评论后可继续执行。</p>
+        </div>
+      )}
+      {status === 'terminated' && (
+        <div className="rounded-lg border border-zinc-300 bg-zinc-50/90 p-4 text-zinc-700 shadow-sm border-l-4 border-l-zinc-500">
+          <p className="text-xs font-medium">任务已终止，流水线不会继续执行后续步骤。</p>
+        </div>
+      )}
+      {status === 'skipped' && (
+        <div className="rounded-lg border border-zinc-200 bg-zinc-50/70 p-4 text-zinc-500 shadow-sm border-l-4 border-l-zinc-300">
+          <p className="text-xs font-medium">任务已跳过。</p>
         </div>
       )}
 
@@ -743,7 +850,7 @@ export function TaskDetailShared({
       {workerTabs}
 
       {workerOutput ? (
-        <div className="flex flex-col border border-zinc-200/70 rounded-xl overflow-hidden bg-white shadow-sm">
+        <div className="flex flex-col border border-zinc-200/70 rounded-lg overflow-hidden bg-white shadow-sm">
           {/* Output Document Header */}
           <div className="bg-zinc-50 border-b border-zinc-150 px-4 py-2.5 flex items-center justify-between">
             <span className="text-[10px] uppercase tracking-wider font-bold text-zinc-500 flex items-center gap-1.5 select-none">
@@ -760,13 +867,13 @@ export function TaskDetailShared({
           }`}>
             <MarkdownWithThinking
               content={workerOutput}
-              markdownClassName="text-xs sm:text-sm text-zinc-700 leading-relaxed max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2"
+              markdownClassName="max-w-none text-xs sm:text-sm"
             />
           </div>
         </div>
       ) : (
         !detailText && (
-          <div className="rounded-xl border border-dashed border-zinc-200 bg-white px-3 py-6 text-center text-xs text-zinc-400">
+          <div className="rounded-lg border border-dashed border-zinc-200 bg-white px-3 py-6 text-center text-xs text-zinc-400">
             No output.
           </div>
         )
