@@ -10,7 +10,8 @@
       "Bash(lsof -ti:47821)",
       "Bash(xargs kill -9)",
       "Bash(npm run *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git commit *)"
     ],
     "additionalDirectories": [
       "/Users/liuzhe.x/Pictures/ai"

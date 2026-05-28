@@ -576,7 +576,6 @@ function TaskDetailDialog({
   }, [onClose]);
 
   const showContinuePanel = run && agents && onContinueStarted && (task.status === 'error' || task.status === 'interrupted' || task.status === 'terminated');
-  const showBranchPanel = run && agents && onContinueStarted && task.status === 'done';
 
   return (
     <>
@@ -651,20 +650,6 @@ function TaskDetailDialog({
         {showContinuePanel && (
           <div className="border-t border-zinc-150 bg-zinc-50 px-4 py-4 shrink-0 shadow-lg">
             <RunDetailContinuePanel
-              run={run}
-              agents={agents}
-              task={task}
-              onStarted={(newRunId) => {
-                onContinueStarted(newRunId);
-                onClose();
-              }}
-            />
-          </div>
-        )}
-
-        {showBranchPanel && run && (
-          <div className="border-t border-zinc-150 bg-zinc-50 px-4 py-4 shrink-0 shadow-lg">
-            <RunDetailBranchPanel
               run={run}
               agents={agents}
               task={task}
@@ -1124,11 +1109,13 @@ function RunDetailContinuePanel({
   agents,
   onStarted,
   task,
+  hideHeader,
 }: {
   run: RunRecord;
   agents: Agent[];
   onStarted: (newRunId: string) => void;
   task?: RunTaskRecord;
+  hideHeader?: boolean;
 }) {
   const failedTask = task || run.tasks.find((t) => t.status === 'error' || t.status === 'interrupted' || t.status === 'terminated');
   const currentTaskId = failedTask?.taskId ?? '';
@@ -1155,6 +1142,65 @@ function RunDetailContinuePanel({
     }
   };
 
+  const formContent = (
+    <div className={`${hideHeader ? 'px-5 py-4' : 'px-4 py-3'} space-y-3`}>
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-zinc-500 shrink-0">当前任务:</span>
+        {failedTask ? (
+          <span className="inline-flex items-center rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-700">
+            {failedTask.taskName} ({failedTask.taskId})
+          </span>
+        ) : (
+          <span className="text-red-500">未找到失败任务</span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-zinc-500 shrink-0">Agent:</span>
+        <select
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
+          className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
+        >
+          <option value="">
+            Use task default {(() => {
+              const defaultAgentId = failedTask?.agents?.[0];
+              const defaultAgent = defaultAgentId ? agents.find((a) => a.id === defaultAgentId) : null;
+              return defaultAgent ? `(${defaultAgent.name || defaultAgent.id})` : (defaultAgentId ? `(${defaultAgentId})` : '');
+            })()}
+          </option>
+          {agents.filter((a) => !!a.role).map((a) => (
+            <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
+          ))}
+        </select>
+      </div>
+
+      <textarea
+        className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize"
+        rows={3}
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        placeholder="补充本次失败原因、修正方向或新指令（选填，系统默认记录“重新执行”），系统会从当前任务重新执行并继续后续未完成任务..."
+      />
+
+      {error && <p className="text-xs text-red-500">{error}</p>}
+
+      <div className="flex justify-end">
+        <button
+          onClick={handleContinue}
+          disabled={submitting}
+          className="rounded-lg bg-indigo-600 hover:bg-indigo-500 px-4 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50"
+        >
+          {submitting ? 'Starting...' : '↻ 重跑当前任务'}
+        </button>
+      </div>
+    </div>
+  );
+
+  if (hideHeader) {
+    return formContent;
+  }
+
   return (
     <div className="bg-white rounded-xl border-2 border-indigo-200 overflow-hidden shadow-sm">
       <div className="border-b border-indigo-100 bg-indigo-50 px-4 py-3 flex items-center gap-2">
@@ -1163,58 +1209,7 @@ function RunDetailContinuePanel({
           重跑当前失败任务（复用历史上下文）
         </span>
       </div>
-      <div className="px-4 py-3 space-y-3">
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-zinc-500 shrink-0">当前任务:</span>
-          {failedTask ? (
-            <span className="inline-flex items-center rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-700">
-              {failedTask.taskName} ({failedTask.taskId})
-            </span>
-          ) : (
-            <span className="text-red-500">未找到失败任务</span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-zinc-500 shrink-0">Agent:</span>
-          <select
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-            className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-indigo-400"
-          >
-            <option value="">
-              Use task default {(() => {
-                const defaultAgentId = failedTask?.agents?.[0];
-                const defaultAgent = defaultAgentId ? agents.find((a) => a.id === defaultAgentId) : null;
-                return defaultAgent ? `(${defaultAgent.name || defaultAgent.id})` : (defaultAgentId ? `(${defaultAgentId})` : '');
-              })()}
-            </option>
-            {agents.filter((a) => !!a.role).map((a) => (
-              <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
-            ))}
-          </select>
-        </div>
-
-        <textarea
-          className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize"
-          rows={3}
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          placeholder="补充本次失败原因、修正方向或新指令（选填，系统默认记录“重新执行”），系统会从当前任务重新执行并继续后续未完成任务..."
-        />
-
-        {error && <p className="text-xs text-red-500">{error}</p>}
-
-        <div className="flex justify-end">
-          <button
-            onClick={handleContinue}
-            disabled={submitting}
-            className="rounded-lg bg-indigo-600 hover:bg-indigo-500 px-4 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50"
-          >
-            {submitting ? 'Starting...' : '↻ 重跑当前任务'}
-          </button>
-        </div>
-      </div>
+      {formContent}
     </div>
   );
 }
@@ -1224,11 +1219,13 @@ function RunDetailBranchPanel({
   agents,
   onStarted,
   task,
+  hideHeader,
 }: {
   run: RunRecord;
   agents: Agent[];
   onStarted: (newRunId: string) => void;
   task: RunTaskRecord;
+  hideHeader?: boolean;
 }) {
   const currentTaskId = task.taskId;
   const [comment, setComment] = useState('');
@@ -1250,6 +1247,61 @@ function RunDetailBranchPanel({
     }
   };
 
+  const formContent = (
+    <div className={`${hideHeader ? 'px-5 py-4' : 'px-4 py-3'} space-y-3`}>
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-zinc-500 shrink-0">当前基石任务:</span>
+        <span className="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50/50 px-2 py-1 text-xs font-medium text-emerald-800">
+          {task.taskName} ({task.taskId})
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-zinc-500 shrink-0">指派智能体:</span>
+        <select
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
+          className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-300"
+        >
+          <option value="">
+            使用任务默认 {(() => {
+              const defaultAgentId = task.agents?.[0];
+              const defaultAgent = defaultAgentId ? agents.find((a) => a.id === defaultAgentId) : null;
+              return defaultAgent ? `(${defaultAgent.name || defaultAgent.id})` : (defaultAgentId ? `(${defaultAgentId})` : '');
+            })()}
+          </option>
+          {agents.filter((a) => !!a.role).map((a) => (
+            <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
+          ))}
+        </select>
+      </div>
+
+      <textarea
+        className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-300 resize"
+        rows={3}
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        placeholder="补充本次分支执行的修正方向或新指令（选填）。若留空，智能体将从头独立重新运行此步骤；若填写评论，智能体将在上一次产出基础上进行增量修改并向后执行下游步骤..."
+      />
+
+      {error && <p className="text-xs text-red-500">{error}</p>}
+
+      <div className="flex justify-end">
+        <button
+          onClick={handleBranch}
+          disabled={submitting}
+          className="rounded-lg bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-xs font-semibold text-white transition-all shadow-sm active:scale-95 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+        >
+          <span>{submitting ? 'Starting...' : '🌱 创建分支并执行'}</span>
+        </button>
+      </div>
+    </div>
+  );
+
+  if (hideHeader) {
+    return formContent;
+  }
+
   return (
     <div className="bg-white rounded-xl border-2 border-emerald-200 overflow-hidden shadow-sm transition-all hover:border-emerald-300">
       <div className="border-b border-emerald-100 bg-emerald-50 px-4 py-3 flex items-center gap-2">
@@ -1258,54 +1310,7 @@ function RunDetailBranchPanel({
           基于当前成功任务创建分支执行（仅重跑此任务及下游）
         </span>
       </div>
-      <div className="px-4 py-3 space-y-3">
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-zinc-500 shrink-0">当前基石任务:</span>
-          <span className="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50/50 px-2 py-1 text-xs font-medium text-emerald-800">
-            {task.taskName} ({task.taskId})
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-zinc-500 shrink-0">指派智能体:</span>
-          <select
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-            className="flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-300"
-          >
-            <option value="">
-              使用任务默认 {(() => {
-                const defaultAgentId = task.agents?.[0];
-                const defaultAgent = defaultAgentId ? agents.find((a) => a.id === defaultAgentId) : null;
-                return defaultAgent ? `(${defaultAgent.name || defaultAgent.id})` : (defaultAgentId ? `(${defaultAgentId})` : '');
-              })()}
-            </option>
-            {agents.filter((a) => !!a.role).map((a) => (
-              <option key={a.id} value={a.id}>{a.name || a.id} ({a.id})</option>
-            ))}
-          </select>
-        </div>
-
-        <textarea
-          className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-300 resize"
-          rows={3}
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          placeholder="补充本次分支执行的修正方向或新指令（选填）。若留空，智能体将从头独立重新运行此步骤；若填写评论，智能体将在上一次产出基础上进行增量修改并向后执行下游步骤..."
-        />
-
-        {error && <p className="text-xs text-red-500">{error}</p>}
-
-        <div className="flex justify-end">
-          <button
-            onClick={handleBranch}
-            disabled={submitting}
-            className="rounded-lg bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-xs font-semibold text-white transition-all shadow-sm active:scale-95 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
-          >
-            <span>{submitting ? 'Starting...' : '🌱 创建分支并执行'}</span>
-          </button>
-        </div>
-      </div>
+      {formContent}
     </div>
   );
 }
@@ -1316,9 +1321,12 @@ interface WorkflowDAGMapProps {
   agents: Agent[];
   onSelectTask: (taskId: string) => void;
   onInterruptTask?: (taskId: string) => void;
+  onContinueStarted?: (newRunId: string) => void;
 }
 
-function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask }: WorkflowDAGMapProps) {
+function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask, onContinueStarted }: WorkflowDAGMapProps) {
+  const [branchTask, setBranchTask] = useState<RunTaskRecord | null>(null);
+  const [reRunTask, setReRunTask] = useState<RunTaskRecord | null>(null);
   const pipeline = pipelines.find((p) => p.id === run.pipelineId);
   const getDeps = useCallback((taskId: string) => {
     return pipeline?.tasks.find((t) => t.id === taskId)?.dependsOn || [];
@@ -1327,6 +1335,7 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask 
   const levelGroups = calculateLevels(run.tasks, getDeps);
 
   return (
+    <>
     <div className="p-6 bg-zinc-50/50 min-h-[400px] flex flex-col items-center">
       <div className="w-full max-w-2xl space-y-4">
         {levelGroups.map((group, gIdx) => (
@@ -1397,6 +1406,33 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask 
                             >
                               <span className="w-1.5 h-1.5 bg-red-500 rounded-[1px] animate-pulse" />
                               <span>终止</span>
+                            </button>
+                          )}
+                          {isDone && onContinueStarted && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setBranchTask(task); }}
+                              className="flex items-center justify-center rounded bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 hover:border-emerald-300 p-0.5 text-emerald-600 transition-colors shadow-sm cursor-pointer active:scale-95"
+                              title="从此任务创建分支"
+                            >
+                              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M4 2 L4 8" />
+                                <path d="M4 8 L4 14" />
+                                <path d="M4 5 Q4 5 10 5 L10 14" />
+                                <path d="M8 12 L10 14 L12 12" />
+                                <path d="M2 12 L4 14 L6 12" />
+                              </svg>
+                            </button>
+                          )}
+                          {(isError || isTerminated || task.status === 'interrupted') && onContinueStarted && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setReRunTask(task); }}
+                              className="flex items-center justify-center rounded bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 hover:border-indigo-300 p-0.5 text-indigo-600 transition-colors shadow-sm cursor-pointer active:scale-95"
+                              title="重跑当前失败任务"
+                            >
+                              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M1.5 8a6.5 6.5 0 1 0 1.5-4.2L1.5 6" />
+                                <path d="M1.5 1.5v4.5h4.5" />
+                              </svg>
                             </button>
                           )}
                           <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
@@ -1481,6 +1517,87 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask 
         ))}
       </div>
     </div>
+
+      {/* Branch modal */}
+      {branchTask && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+          onClick={() => setBranchTask(null)}
+        >
+          <div
+            className="w-full max-w-lg mx-4 shadow-2xl rounded-2xl overflow-hidden bg-white"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 bg-emerald-50 border-b border-emerald-100">
+              <div className="flex items-center gap-2">
+                <span className="text-emerald-600 text-sm">🌱</span>
+                <span className="text-sm font-semibold text-emerald-800">
+                  基于当前成功任务创建分支（仅重跑此任务及下游）
+                </span>
+              </div>
+              <button
+                onClick={() => setBranchTask(null)}
+                className="text-emerald-500 hover:text-emerald-700 transition-colors p-1.5 rounded hover:bg-emerald-100/50 cursor-pointer"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <RunDetailBranchPanel
+              run={run}
+              agents={agents}
+              task={branchTask!}
+              hideHeader={true}
+              onStarted={(newRunId) => {
+                setBranchTask(null);
+                onContinueStarted?.(newRunId);
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Re-run modal */}
+      {reRunTask && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+          onClick={() => setReRunTask(null)}
+        >
+          <div
+            className="w-full max-w-lg mx-4 shadow-2xl rounded-2xl overflow-hidden bg-white"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 bg-indigo-50 border-b border-indigo-100">
+              <div className="flex items-center gap-2">
+                <span className="text-indigo-600 text-sm">↻</span>
+                <span className="text-sm font-semibold text-indigo-800">
+                  重跑当前失败任务（复用历史上下文）
+                </span>
+              </div>
+              <button
+                onClick={() => setReRunTask(null)}
+                className="text-indigo-500 hover:text-indigo-700 transition-colors p-1.5 rounded hover:bg-indigo-100/50 cursor-pointer"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <RunDetailContinuePanel
+              run={run}
+              agents={agents}
+              task={reRunTask!}
+              hideHeader={true}
+              onStarted={(newRunId) => {
+                setReRunTask(null);
+                onContinueStarted?.(newRunId);
+              }}
+            />
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1769,6 +1886,7 @@ function RunDetail({
           agents={agents}
           onSelectTask={onSelectTask}
           onInterruptTask={onInterruptTask}
+          onContinueStarted={onContinueStarted}
         />
       )}
 
@@ -2235,8 +2353,12 @@ export function RunsPage() {
               return (
                 <div key={run.id} className="flex items-stretch border-b border-zinc-100/50">
                   {depth > 0 && (
-                    <div className="flex shrink-0 self-stretch" style={{ width: '14px' }}>
-                      <div className="ml-3 border-l-2 border-zinc-200 self-stretch" />
+                    <div className="flex shrink-0 self-stretch" style={{ width: `${depth * 14}px` }}>
+                      {Array.from({ length: depth }).map((_, i) => (
+                        <div key={i} className="w-[14px] shrink-0 flex justify-center self-stretch">
+                          <div className="border-l-2 border-zinc-200 self-stretch" />
+                        </div>
+                      ))}
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
