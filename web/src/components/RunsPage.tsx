@@ -1508,7 +1508,123 @@ function WorkflowDAGMap({
     return activeSet;
   })();
 
-  const renderTaskCard = (task: RunTaskRecord, currentRecord: RunRecord, activeTaskIds: Set<string> | null, columnRunId: string) => {
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Unified Task Evolution Tree construction algorithm
+  // ─────────────────────────────────────────────────────────────────────────────
+  
+  interface ExecutionNode {
+    id: string;
+    runId: string;
+    taskId: string;
+    task: RunTaskRecord;
+    run: RunRecord;
+    roundLabel: string;
+    isCurrentVersion: boolean;
+  }
+
+  const buildEvolutionTree = (): Array<{ level: number, nodes: ExecutionNode[] }> => {
+    const allNodes: ExecutionNode[] = [];
+
+    lineageSummaries.forEach((summary) => {
+      const fullRun = lineageRuns[summary.id] || (summary.id === run.id ? run : null);
+      if (!fullRun) return;
+
+      const activeTaskIds = getActiveTaskIdsForRun(fullRun);
+      fullRun.tasks.forEach((task) => {
+        // Collect only active (executed) tasks in each run to eliminate duplicates
+        const isActive = activeTaskIds === null || activeTaskIds.has(task.taskId);
+        if (isActive) {
+          allNodes.push({
+            id: `${summary.id}_${task.taskId}`,
+            runId: summary.id,
+            taskId: task.taskId,
+            task,
+            run: fullRun,
+            roundLabel: `R${summary.continuationRound || 1}`,
+            isCurrentVersion: summary.id === run.id,
+          });
+        }
+      });
+    });
+
+    // Determine parent node connections in the tree
+    const getParentNodeIds = (node: ExecutionNode): string[] => {
+      // 1. If it's a continuation task, it inherits directly from the predecessor's run at the same task
+      if (node.run.continuationTaskId === node.taskId && node.run.continuedFromRunId) {
+        return [`${node.run.continuedFromRunId}_${node.taskId}`];
+      }
+
+      // 2. Otherwise, it depends on the execution nodes of its pipeline dependencies
+      const deps = getDeps(node.taskId);
+      const parentIds: string[] = [];
+
+      deps.forEach((depId) => {
+        // Trace upwards through predecessor runs to find the nearest run where depId was active
+        let currentRunId: string | null = node.runId;
+        const visited = new Set<string>();
+
+        while (currentRunId) {
+          if (visited.has(currentRunId)) break;
+          visited.add(currentRunId);
+
+          const r = lineageRuns[currentRunId] || (currentRunId === run.id ? run : null);
+          if (!r) break;
+
+          const activeIds = getActiveTaskIdsForRun(r);
+          const isActive = activeIds === null || activeIds.has(depId);
+          if (isActive) {
+            parentIds.push(`${currentRunId}_${depId}`);
+            break;
+          }
+
+          const summary = lineageSummaries.find((s) => s.id === currentRunId);
+          currentRunId = summary?.continuedFromRunId || null;
+        }
+      });
+
+      return parentIds;
+    };
+
+    // Calculate topological levels for the unified nodes
+    return calculateNodeLevels(allNodes, getParentNodeIds);
+  };
+
+  function calculateNodeLevels(allNodes: ExecutionNode[], getParentIds: (n: ExecutionNode) => string[]): Array<{ level: number, nodes: ExecutionNode[] }> {
+    const levels: Record<string, number> = {};
+    allNodes.forEach(n => levels[n.id] = 0);
+
+    let changed = true;
+    for (let iter = 0; iter < 100 && changed; iter++) {
+      changed = false;
+      allNodes.forEach(n => {
+        const parentIds = getParentIds(n);
+        let maxParentLevel = -1;
+        parentIds.forEach(pId => {
+          if (levels[pId] !== undefined) {
+            maxParentLevel = Math.max(maxParentLevel, levels[pId]);
+          }
+        });
+        const newLevel = maxParentLevel + 1;
+        if (levels[n.id] !== newLevel) {
+          levels[n.id] = newLevel;
+          changed = true;
+        }
+      });
+    }
+
+    const maxLevel = Math.max(0, ...Object.values(levels));
+    const levelGroups: Array<{ level: number, nodes: ExecutionNode[] }> = [];
+    for (let l = 0; l <= maxLevel; l++) {
+      const group = allNodes.filter(n => levels[n.id] === l);
+      if (group.length > 0) {
+        levelGroups.push({ level: l, nodes: group });
+      }
+    }
+    return levelGroups;
+  }
+
+  const renderTaskNode = (node: ExecutionNode) => {
+    const { task, run: nodeRun, roundLabel, isCurrentVersion } = node;
     const isSkippedDueToFailure = task.error === 'Skipped due to previous task failure';
     const isAwaiting = task.status === 'awaiting_review' || task.status === 'interrupted';
     const isRunning = task.status === 'running';
@@ -1517,8 +1633,6 @@ function WorkflowDAGMap({
     const isTerminated = task.status === 'terminated';
     const isSkipped = task.status === 'skipped' || isSkippedDueToFailure;
     const isPending = task.status === 'pending';
-
-    const isInherited = activeTaskIds !== null && !activeTaskIds.has(task.taskId);
 
     let bgClass = 'bg-white border-zinc-200 text-zinc-800 hover:border-zinc-300';
     let statusDotClass = 'bg-zinc-400';
@@ -1548,31 +1662,69 @@ function WorkflowDAGMap({
       statusDotClass = 'bg-zinc-300';
     }
 
+    const parentSummary = nodeRun.continuedFromRunId 
+      ? lineageSummaries.find(s => s.id === nodeRun.continuedFromRunId) 
+      : null;
+    const parentRoundText = parentSummary ? `R${parentSummary.continuationRound || 1}` : null;
+
     return (
       <div
-        key={task.taskId}
+        key={node.id}
         onClick={() => {
-          if (onSelectRun) onSelectRun(columnRunId);
+          if (onSelectRun) onSelectRun(node.runId);
           onSelectTask(task.taskId);
         }}
-        className={`rounded-xl border p-3.5 shadow-sm hover:shadow-md cursor-pointer transition-all hover:-translate-y-0.5 backdrop-blur-sm relative group ${
-          isInherited
-            ? 'opacity-55 border-dashed border-zinc-300 bg-zinc-50 saturate-50 hover:opacity-85 hover:border-zinc-400'
-            : bgClass
-        }`}
+        className={`w-[260px] rounded-xl border p-4 shadow-sm hover:shadow-md cursor-pointer transition-all hover:-translate-y-0.5 backdrop-blur-sm relative group ${
+          isCurrentVersion
+            ? 'ring-2 ring-indigo-500/10 border-indigo-300 shadow-indigo-100/50'
+            : ''
+        } ${bgClass}`}
       >
         <div className="flex items-center gap-1.5 mb-1.5">
-          <span className={`w-2 h-2 rounded-full shrink-0 ${isInherited ? 'bg-zinc-300' : statusDotClass}`} />
-          <span className={`text-xs font-bold leading-tight flex-1 min-w-0 truncate ${isInherited ? 'text-zinc-400 font-medium' : pulseClass}`} title={task.taskName}>
+          <span className={`w-2 h-2 rounded-full shrink-0 ${statusDotClass}`} />
+          <span className={`text-xs font-bold leading-tight flex-1 min-w-0 truncate ${pulseClass}`} title={task.taskName}>
             {task.taskName}
           </span>
-          {isInherited && (
-            <span className="shrink-0 inline-flex items-center gap-0.5 rounded bg-zinc-100 border border-zinc-200 px-1 py-0.5 text-[8px] font-bold text-zinc-400 select-none">
-              📥 已复用
-            </span>
+          <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
+            isCurrentVersion ? 'bg-indigo-100 text-indigo-700 ring-1 ring-indigo-200' : 'bg-zinc-200/80 text-zinc-600'
+          }`}>
+            {roundLabel} {isCurrentVersion ? '当前' : ''}
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between text-[9px] text-zinc-400/90 mb-2">
+          <span>🤖 {task.agents.map(aId => {
+            const ag = agents.find(a => a.id === aId);
+            return ag?.name || aId;
+          }).join(', ')}</span>
+          {task.durationMs != null && (
+            <span>⏱ {formatDuration(task.durationMs)}</span>
           )}
-          {!isInherited && task.status !== 'pending' && (
-            <div className="ml-auto flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+        </div>
+
+        {/* Continuation lineage breadcrumb on the card */}
+        {nodeRun.continuationTaskId === task.taskId && parentRoundText && (
+          <div className="text-[8px] font-bold text-zinc-400 bg-zinc-100/80 border border-zinc-200 rounded px-1.5 py-0.5 w-fit select-none mb-2">
+            {nodeRun.continuationType === 'branch' ? '🌱 分支自' : '↻ 重跑自'} {parentRoundText} 的此任务
+          </div>
+        )}
+
+        {/* Action triggers */}
+        {task.status !== 'pending' && (
+          <div className="flex items-center justify-between border-t border-zinc-100/60 pt-2" onClick={(e) => e.stopPropagation()}>
+            <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
+              isDone ? 'bg-emerald-100/60 text-emerald-700' :
+              isRunning ? 'bg-blue-100/60 text-blue-700 animate-pulse' :
+              isAwaiting ? 'bg-amber-100/60 text-amber-700 animate-pulse' :
+              isTerminated ? 'bg-zinc-200/70 text-zinc-700' :
+              isSkipped ? 'bg-zinc-100 text-zinc-500' :
+              isError ? 'bg-red-100/60 text-red-700' :
+              'bg-zinc-100 text-zinc-600'
+            }`}>
+              {isSkippedDueToFailure ? 'skipped' : statusLabel(task.status)}
+            </span>
+            
+            <div className="flex items-center gap-1.5">
               {isRunning && onInterruptTask && (
                 <button
                   onClick={(e) => {
@@ -1581,19 +1733,18 @@ function WorkflowDAGMap({
                       onInterruptTask(task.taskId);
                     }
                   }}
-                  className="flex items-center justify-center gap-0.5 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 px-1 py-0.5 text-[8px] font-bold text-red-600 transition-colors shadow-sm cursor-pointer"
-                  title="终止任务"
+                  className="flex items-center justify-center gap-0.5 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 px-1.5 py-0.5 text-[8px] font-bold text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
                 >
                   <span>终止</span>
                 </button>
               )}
               {isDone && onContinueStarted && (
                 <button
-                  onClick={(e) => { e.stopPropagation(); setModalRun(currentRecord); setBranchTask(task); }}
-                  className="flex items-center justify-center rounded bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 hover:border-emerald-300 p-0.5 text-emerald-600 transition-colors shadow-sm cursor-pointer"
+                  onClick={(e) => { e.stopPropagation(); setModalRun(nodeRun); setBranchTask(task); }}
+                  className="flex items-center justify-center rounded bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 hover:border-emerald-300 p-1 text-emerald-600 transition-colors shadow-sm cursor-pointer active:scale-95"
                   title="从此任务创建分支"
                 >
-                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M4 2 L4 8" />
                     <path d="M4 8 L4 14" />
                     <path d="M4 5 Q4 5 10 5 L10 14" />
@@ -1603,80 +1754,17 @@ function WorkflowDAGMap({
               )}
               {(isError || isTerminated || task.status === 'interrupted') && onContinueStarted && (
                 <button
-                  onClick={(e) => { e.stopPropagation(); setModalRun(currentRecord); setReRunTask(task); }}
-                  className="flex items-center justify-center rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 p-0.5 text-red-600 transition-colors shadow-sm cursor-pointer"
+                  onClick={(e) => { e.stopPropagation(); setModalRun(nodeRun); setReRunTask(task); }}
+                  className="flex items-center justify-center rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 p-1 text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
                   title="重跑当前失败任务"
                 >
-                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M1.5 8a6.5 6.5 0 1 0 1.5-4.2L1.5 6" />
                     <path d="M1.5 1.5v4.5h4.5" />
                   </svg>
                 </button>
               )}
-              <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
-                isDone ? 'bg-emerald-100/60 text-emerald-700' :
-                isRunning ? 'bg-blue-100/60 text-blue-700' :
-                isAwaiting ? 'bg-amber-100/60 text-amber-700' :
-                isTerminated ? 'bg-zinc-200/70 text-zinc-700' :
-                isSkipped ? 'bg-zinc-100 text-zinc-500' :
-                isError ? 'bg-red-100/60 text-red-700' :
-                'bg-zinc-100 text-zinc-600'
-              }`}>
-                {isSkippedDueToFailure ? 'skipped' : statusLabel(task.status)}
-              </span>
             </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1.5 text-[9px] text-zinc-400">
-          <span>🤖 {task.agents.map(aId => {
-            const ag = agents.find(a => a.id === aId);
-            return ag?.name || aId;
-          }).join(', ')}</span>
-          {task.durationMs != null && (
-            <>
-              <span>·</span>
-              <span>⏱ {formatDuration(task.durationMs)}</span>
-            </>
-          )}
-        </div>
-
-        {/* Rounds sequence */}
-        {task.rounds && task.rounds.length > 0 && (
-          <div className="mt-2 border-t border-zinc-100/60 pt-1.5 flex flex-wrap gap-1 items-center">
-            <span className="text-[8px] uppercase tracking-wider text-zinc-400 font-bold mr-0.5">Rounds:</span>
-            {task.rounds.map((r) => {
-              const isRoundInherited = currentRecord.continuationRound !== undefined && r.round < currentRecord.continuationRound;
-              return (
-                <div
-                  key={r.round}
-                  className={`group relative rounded px-1.5 py-0.2 text-[9px] font-semibold border flex items-center gap-0.5 transition-all hover:scale-105 select-none ${
-                    isRoundInherited
-                      ? 'opacity-40 border-dashed border-zinc-300 bg-zinc-50/50 text-zinc-400 hover:opacity-100 hover:border-zinc-400'
-                      : r.review?.action === 'revise'
-                        ? 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 hover:border-amber-300'
-                        : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-300'
-                  }`}
-                >
-                  <span>R{r.round}</span>
-                  {r.review?.comment && <span className="text-[7px]">💬</span>}
-
-                  {r.review?.comment && (
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-[99] w-48 rounded-xl bg-zinc-950 text-white p-2.5 text-[9px] leading-relaxed shadow-xl border border-zinc-800 backdrop-blur-sm pointer-events-none transition-opacity">
-                      <div className="font-bold border-b border-white/10 pb-1 mb-1 flex justify-between items-center text-zinc-300">
-                        <span>{isRoundInherited ? '📥 已复用' : r.review.action === 'revise' ? '↺ Revision' : '✓ Approved'}</span>
-                      </div>
-                      <p className="italic text-zinc-200">"{r.review.comment}"</p>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {(isRunning || isAwaiting) && (
-              <span className="rounded bg-indigo-50 border border-indigo-200 text-indigo-700 px-1 py-0.2 text-[9px] font-semibold animate-pulse">
-                R{task.currentRound ?? (task.rounds.length + 1)}
-              </span>
-            )}
           </div>
         )}
       </div>
@@ -1698,7 +1786,7 @@ function WorkflowDAGMap({
                   : 'bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-100'
               }`}
             >
-              🔄 完整生命周期链路图 (Lineage)
+              🌳 完整历史拓扑演进树 (Evolution Tree)
             </button>
             <button
               onClick={() => setMapMode('current')}
@@ -1722,82 +1810,32 @@ function WorkflowDAGMap({
 
       {/* Main Panel View */}
       {showLineageTopology && mapMode === 'lineage' ? (
-        <div className="p-6 bg-zinc-50/50 min-h-[460px] overflow-x-auto select-none">
-          <div className="flex gap-6 items-stretch min-w-max pb-4">
-            {lineageSummaries.map((summary, idx) => {
-              const isCurrent = summary.id === run.id;
-              const fullRun = lineageRuns[summary.id] || (isCurrent ? run : null);
-              
-              const pred = idx > 0 ? lineageSummaries[idx - 1] : null;
-              const triggerInfo = pred ? (
-                <div className="text-[10px] text-zinc-400 font-semibold truncate" title={`${summary.continuationType === 'branch' ? '🌱 分支' : '↻ 重跑'}自 R${pred.continuationRound || 1} 的【${summary.continuationTaskName}】`}>
-                  {summary.continuationType === 'branch' ? '🌱 分支' : '↻ 重跑'}自 R{pred.continuationRound || 1} 【{summary.continuationTaskName || '任务'}】
-                </div>
-              ) : (
-                <div className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider">🎬 原始启动</div>
-              );
-
-              return (
-                <div
-                  key={summary.id}
-                  className={`w-[270px] rounded-2xl border flex flex-col p-4 transition-all shadow-sm ${
-                    isCurrent
-                      ? 'bg-white border-indigo-200 ring-2 ring-indigo-50 shadow-md scale-[1.01]'
-                      : 'bg-zinc-100/50 border-zinc-200/80 opacity-90'
-                  }`}
-                >
-                  {/* Column Header */}
-                  <div className="mb-4 pb-3 border-b border-zinc-200/60 shrink-0">
-                    <div className="flex items-center justify-between gap-1.5 mb-1">
-                      <span className="text-[11px] font-mono font-black text-indigo-700">
-                        R{summary.continuationRound || 1} {isCurrent ? ' (当前)' : ''}
-                      </span>
-                      <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-bold ${statusColors(summary.status)}`}>
-                        {statusLabel(summary.status)}
-                      </span>
-                    </div>
-                    {triggerInfo}
-                    <div className="text-[11px] font-bold text-zinc-700 truncate mt-1.5" title={summary.goal}>
-                      {summary.goal}
-                    </div>
+        <div className="p-8 bg-zinc-50/50 min-h-[460px] flex flex-col items-center overflow-x-auto select-none">
+          {loadingLineage && Object.keys(lineageRuns).length < lineageSummaries.length ? (
+            <div className="flex flex-col items-center justify-center py-20 text-zinc-400 text-xs">
+              <Spinner />
+              <span className="mt-3">正在解析历史依赖演进树...</span>
+            </div>
+          ) : (
+            <div className="w-full max-w-4xl space-y-6">
+              {buildEvolutionTree().map((group, gIdx, allGroups) => (
+                <div key={group.level} className="flex flex-col items-center">
+                  {/* Task nodes row at this tree level */}
+                  <div className="flex flex-wrap justify-center gap-6 w-full pb-1">
+                    {group.nodes.map(renderTaskNode)}
                   </div>
-
-                  {/* Tasks in the Run Column */}
-                  <div className="flex-1 shrink-0">
-                    {fullRun ? (
-                      (() => {
-                        const activeTaskIds = getActiveTaskIdsForRun(fullRun);
-                        const levelGroups = calculateLevels(fullRun.tasks, getDeps);
-                        return (
-                          <div className="space-y-4">
-                            {levelGroups.map((group, gIdx) => (
-                              <div key={group.level} className="flex flex-col items-center">
-                                <div className="flex flex-col gap-3 w-full">
-                                  {group.tasks.map((task) => renderTaskCard(task, fullRun, activeTaskIds, summary.id))}
-                                </div>
-                                {gIdx < levelGroups.length - 1 && (
-                                  <div className="my-2 flex justify-center text-zinc-300">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                                      <path d="M12 4v16M12 20l-4-4m4 4l4-4" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                                    </svg>
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        );
-                      })()
-                    ) : (
-                      <div className="flex flex-col items-center justify-center py-20 text-zinc-300/80">
-                        <Spinner />
-                        <span className="text-[10px] mt-2">正在载入版本...</span>
-                      </div>
-                    )}
-                  </div>
+                  {/* Connecting visual arrows between tree levels */}
+                  {gIdx < allGroups.length - 1 && (
+                    <div className="my-3 flex justify-center text-zinc-300">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="animate-bounce">
+                        <path d="M12 4v16M12 20l-4-4m4 4l4-4" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </div>
+                  )}
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         /* Original single-run dependency map */
@@ -1806,7 +1844,15 @@ function WorkflowDAGMap({
             {currentLevelGroups.map((group, gIdx) => (
               <div key={group.level} className="flex flex-col items-center">
                 <div className="flex flex-wrap justify-center gap-4 w-full">
-                  {group.tasks.map((task) => renderTaskCard(task, run, currentActiveTaskIds, run.id))}
+                  {group.tasks.map((task) => renderTaskNode({
+                    id: `${run.id}_${task.taskId}`,
+                    runId: run.id,
+                    taskId: task.taskId,
+                    task,
+                    run,
+                    roundLabel: `R${run.continuationRound || 1}`,
+                    isCurrentVersion: true,
+                  }))}
                 </div>
                 {gIdx < currentLevelGroups.length - 1 && (
                   <div className="my-3 flex justify-center text-zinc-300/80">
