@@ -1473,9 +1473,51 @@ function WorkflowDAGMap({
 
   // Helper to identify which tasks are active versus inherited/reused for any run
   const getActiveTaskIdsForRun = (targetRun: RunRecord): Set<string> | null => {
-    if (!targetRun.continuationTaskId) return null;
-    const activeSet = new Set<string>([targetRun.continuationTaskId]);
-    const queue = [targetRun.continuationTaskId];
+    // 1. If schema metadata is present, use it as the primary source of truth
+    if (targetRun.continuationTaskId) {
+      const activeSet = new Set<string>([targetRun.continuationTaskId]);
+      const queue = [targetRun.continuationTaskId];
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        const directChildren = pipeline?.tasks.filter((t) => t.dependsOn.includes(current)) || [];
+        for (const child of directChildren) {
+          if (!activeSet.has(child.id)) {
+            activeSet.add(child.id);
+            queue.push(child.id);
+          }
+        }
+      }
+      return activeSet;
+    }
+
+    // 2. If it is a root run (not continued from any other run), all tasks are active by definition
+    if (!targetRun.continuedFromRunId) {
+      return null; // returning null means all tasks are active in this run
+    }
+
+    // 3. Fallback Heuristic for older historical runs:
+    // If a task's startedAt is earlier than the run's startedAt by more than 1s, it is inherited (not active).
+    // Any task that is started in this run, or is downstream of a started task, is active.
+    const runStartTime = new Date(targetRun.startedAt).getTime();
+    const directlyActive = new Set<string>();
+
+    targetRun.tasks.forEach((t) => {
+      if (!t.startedAt) return;
+      const taskStartTime = new Date(t.startedAt).getTime();
+      // If it started after/around the run started, it actually executed in this run
+      if (taskStartTime >= runStartTime - 1000) {
+        directlyActive.add(t.taskId);
+      }
+    });
+
+    // If we couldn't find any directly active tasks, fall back to null (all active) to be safe
+    if (directlyActive.size === 0) {
+      return null;
+    }
+
+    // Propagate downstream to find all active tasks
+    const activeSet = new Set<string>(directlyActive);
+    const queue = Array.from(directlyActive);
     while (queue.length > 0) {
       const current = queue.shift()!;
       const directChildren = pipeline?.tasks.filter((t) => t.dependsOn.includes(current)) || [];
@@ -1486,6 +1528,7 @@ function WorkflowDAGMap({
         }
       }
     }
+
     return activeSet;
   };
 
