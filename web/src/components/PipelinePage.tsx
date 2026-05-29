@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { Agent, Pipeline, PipelineTask, PipelineDecision, RunEventType, ToolEvent } from '../types';
 import { api } from '../api';
 import { useTranslation } from 'react-i18next';
 import { TaskDetailShared, MarkdownWithThinking, formatAgentInfo } from './TaskDetailShared';
+import { WorkflowSummary, type WorkflowSummaryNode } from './WorkflowSummary';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Templates
@@ -245,6 +246,7 @@ export function PipelinePage({ agents }: { agents: Agent[] }) {
         <div className={view === 'run' ? '' : 'hidden'}>
           <RunView
             pipeline={running}
+            agents={agents}
             onBack={handleRunBack}
             onDone={handleRunDone}
             onPauseStateChange={(mode) => {
@@ -1249,8 +1251,9 @@ function isTerminationNoopMessage(message?: string): boolean {
 }
 
 function RunView({
-  pipeline, onBack, onDone, onPauseStateChange }: {
+  pipeline, agents, onBack, onDone, onPauseStateChange }: {
     pipeline: Pipeline;
+    agents: Agent[];
     onBack: () => void;
     onDone: () => void;
     onPauseStateChange: (mode: 'review' | 'interrupt' | null) => void;
@@ -1270,6 +1273,18 @@ function RunView({
   const logRef = useRef<HTMLDivElement>(null);
   const isProgrammaticLogScrollRef = useRef(false);
   const [autoFollowLog, setAutoFollowLog] = useState(true);
+  const workflowNodes = useMemo<WorkflowSummaryNode[]>(() => (
+    pipeline.tasks.map((task) => ({
+      id: task.id,
+      name: task.name,
+      agents: Array.isArray(task.agent) ? [...task.agent] : [task.agent],
+      dependsOn: [...task.dependsOn],
+    }))
+  ), [pipeline.tasks]);
+  const resolveAgentLabel = useCallback((agentId: string) => {
+    const agent = agents.find((item) => item.id === agentId);
+    return agent ? (agent.name || agent.id) : agentId;
+  }, [agents]);
 
   const addEntry = (entry: LogEntry) => {
     setLog((prev) => {
@@ -1753,6 +1768,11 @@ function RunView({
             <p className="text-xs text-zinc-400 mb-4">
               {t('run.goalDesc')}
             </p>
+            <WorkflowSummary
+              nodes={workflowNodes}
+              resolveAgentLabel={resolveAgentLabel}
+              className="mb-4"
+            />
             <textarea
               className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800 placeholder-zinc-400 outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300 resize"
               rows={3}

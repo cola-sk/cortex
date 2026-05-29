@@ -832,7 +832,7 @@ app.post('/api/runs/:runId/continue', (req, res) => {
       continuationTaskId: taskId,
       continuationTaskName: continuationTask.name,
       continuationType: 'continue',
-      continuationRound: continuationRounds.length,
+      continuationRound: (sourceRun.continuationRound ?? 1) + 1,
       tasks: plan.tasks.map((task) => {
         const previous = sourceTaskMap.get(task.id);
         const defaultAgents = Array.isArray(task.agent) ? task.agent : [task.agent];
@@ -1229,7 +1229,7 @@ app.post('/api/runs/:runId/branch', (req, res) => {
       continuationTaskId: taskId,
       continuationTaskName: continuationTask.name,
       continuationType: 'branch',
-      continuationRound: comment ? continuationRounds.length : 1,
+      continuationRound: (sourceRun.continuationRound ?? 1) + 1,
       tasks: plan.tasks.map((task) => {
         const previous = sourceTaskMap.get(task.id);
         const defaultAgents = Array.isArray(task.agent) ? task.agent : [task.agent];
