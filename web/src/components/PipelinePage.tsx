@@ -1226,6 +1226,11 @@ function appendTextChunk(base: string, chunk: string): string {
   return base + chunk;
 }
 
+function openRunTaskDetail(runId: string, taskId: string) {
+  const params = new URLSearchParams({ runId, taskId });
+  window.location.hash = `#runs?${params.toString()}`;
+}
+
 const AUTO_SCROLL_BOTTOM_GAP = 24;
 
 function isNearBottom(el: HTMLDivElement, gap = AUTO_SCROLL_BOTTOM_GAP): boolean {
@@ -1803,7 +1808,13 @@ function RunView({
                 <LogRow
                   key={entry.id}
                   entry={entry}
-                  onOpenDetail={() => setModalTaskId(entry.id)}
+                  onOpenDetail={() => {
+                    if (activeRunId && entry.taskId) {
+                      openRunTaskDetail(activeRunId, entry.taskId);
+                      return;
+                    }
+                    setModalTaskId(entry.id);
+                  }}
                   onInterrupt={entry.taskId ? () => handleInterruptTask(entry.taskId as string) : undefined}
                 />
               ))}

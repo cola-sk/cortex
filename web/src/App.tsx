@@ -15,7 +15,8 @@ const VALID_PAGES = ['models', 'roles', 'pipelines', 'runs'] as const;
 
 function readPageFromHash(): Page {
   const hash = window.location.hash.replace('#', '');
-  if (VALID_PAGES.includes(hash as Page)) return hash as Page;
+  const page = hash.split('?')[0];
+  if (VALID_PAGES.includes(page as Page)) return page as Page;
   return 'models';
 }
 
