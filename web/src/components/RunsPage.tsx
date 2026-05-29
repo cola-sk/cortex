@@ -1590,81 +1590,43 @@ function WorkflowDAGMap({
       });
     });
 
-    // Determine parent node connections in the tree
-    const getParentNodeIds = (node: ExecutionNode): string[] => {
-      // 1. If it's a continuation task, it inherits directly from the predecessor's run at the same task
-      if (node.run.continuationTaskId === node.taskId && node.run.continuedFromRunId) {
-        return [`${node.run.continuedFromRunId}_${node.taskId}`];
-      }
-
-      // 2. Otherwise, it depends on the execution nodes of its pipeline dependencies
-      const deps = getDeps(node.taskId);
-      const parentIds: string[] = [];
-
-      deps.forEach((depId) => {
-        // Trace upwards through predecessor runs to find the nearest run where depId was active
-        let currentRunId: string | null = node.runId;
-        const visited = new Set<string>();
-
-        while (currentRunId) {
-          if (visited.has(currentRunId)) break;
-          visited.add(currentRunId);
-
-          const r = lineageRuns[currentRunId] || (currentRunId === run.id ? run : null);
-          if (!r) break;
-
-          const activeIds = getActiveTaskIdsForRun(r);
-          const isActive = activeIds === null || activeIds.has(depId);
-          if (isActive) {
-            parentIds.push(`${currentRunId}_${depId}`);
-            break;
-          }
-
-          const summary = lineageSummaries.find((s) => s.id === currentRunId);
-          currentRunId = summary?.continuedFromRunId || null;
-        }
-      });
-
-      return parentIds;
-    };
-
-    // Calculate topological levels for the unified nodes
-    return calculateNodeLevels(allNodes, getParentNodeIds);
-  };
-
-  function calculateNodeLevels(allNodes: ExecutionNode[], getParentIds: (n: ExecutionNode) => string[]): Array<{ level: number, nodes: ExecutionNode[] }> {
-    const levels: Record<string, number> = {};
-    allNodes.forEach(n => levels[n.id] = 0);
+    // Compute the logical level of each taskId based strictly on the pipeline's static dependency DAG.
+    // This guarantees that all runs of the same task remain at the correct logical stage row (e.g. Row 2 for Phase 2),
+    // and downstream tasks never drift up or upstream tasks never drift down.
+    const pipelineTasks = pipeline?.tasks || [];
+    const pipelineLevels: Record<string, number> = {};
+    pipelineTasks.forEach(t => pipelineLevels[t.id] = 0);
 
     let changed = true;
     for (let iter = 0; iter < 100 && changed; iter++) {
       changed = false;
-      allNodes.forEach(n => {
-        const parentIds = getParentIds(n);
-        let maxParentLevel = -1;
-        parentIds.forEach(pId => {
-          if (levels[pId] !== undefined) {
-            maxParentLevel = Math.max(maxParentLevel, levels[pId]);
+      pipelineTasks.forEach(t => {
+        const deps = t.dependsOn || [];
+        let maxDepLevel = -1;
+        deps.forEach(depId => {
+          if (pipelineLevels[depId] !== undefined) {
+            maxDepLevel = Math.max(maxDepLevel, pipelineLevels[depId]);
           }
         });
-        const newLevel = maxParentLevel + 1;
-        if (levels[n.id] !== newLevel) {
-          levels[n.id] = newLevel;
+        const newLevel = maxDepLevel + 1;
+        if (pipelineLevels[t.id] !== newLevel) {
+          pipelineLevels[t.id] = newLevel;
           changed = true;
         }
       });
     }
 
-    const maxLevel = Math.max(0, ...Object.values(levels));
+    // Now group allNodes by their pipeline logical level
+    const maxLevel = Math.max(0, ...Object.values(pipelineLevels));
     const levelGroups: Array<{ level: number, nodes: ExecutionNode[] }> = [];
     for (let l = 0; l <= maxLevel; l++) {
-      const group = allNodes.filter(n => levels[n.id] === l);
-      if (group.length > 0) {
-        levelGroups.push({ level: l, nodes: group });
+      const nodesAtLevel = allNodes.filter(n => (pipelineLevels[n.taskId] ?? 0) === l);
+      if (nodesAtLevel.length > 0) {
+        levelGroups.push({ level: l, nodes: nodesAtLevel });
       }
     }
     return levelGroups;
-  }
+  };
 
   const renderTaskNode = (node: ExecutionNode) => {
     const { task, run: nodeRun, roundLabel, isCurrentVersion } = node;
