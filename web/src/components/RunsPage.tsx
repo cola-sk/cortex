@@ -62,6 +62,70 @@ function isTerminationNoopMessage(message?: string): boolean {
     || message.includes('Run already finished');
 }
 
+function readRunsHashParams(): { runId: string | null; taskId: string | null } {
+  const hash = window.location.hash.replace('#', '');
+  const [page, query = ''] = hash.split('?');
+  if (page !== 'runs') return { runId: null, taskId: null };
+  const params = new URLSearchParams(query);
+  return {
+    runId: params.get('runId'),
+    taskId: params.get('taskId'),
+  };
+}
+
+function getRootRunId(runId: string | null, allRuns: RunSummary[]): string | null {
+  if (!runId) return null;
+  const runMap = new Map(allRuns.map(r => [r.id, r]));
+  let current = runMap.get(runId);
+  if (!current) return runId;
+  while (current.continuedFromRunId && runMap.has(current.continuedFromRunId)) {
+    current = runMap.get(current.continuedFromRunId)!;
+  }
+  if (current.continuedFromRunId) {
+    return current.continuedFromRunId;
+  }
+  return current.id;
+}
+
+function getLineageChain(currentRun: RunSummary | RunRecord | null, allRuns: RunSummary[]): RunSummary[] {
+  if (!currentRun) return [];
+  const rootId = currentRun.continuedFromRunId || currentRun.id;
+
+  const lineageMap = new Map<string, RunSummary>();
+
+  // 1. Add all runs from allRuns that share the same lineage (either they are the root or they point to the root)
+  allRuns.forEach(r => {
+    if (r.id === rootId || r.continuedFromRunId === rootId) {
+      lineageMap.set(r.id, r);
+    }
+  });
+
+  // 2. Make sure the current run itself is included
+  if (!lineageMap.has(currentRun.id)) {
+    lineageMap.set(currentRun.id, {
+      id: currentRun.id,
+      pipelineId: currentRun.pipelineId,
+      pipelineName: currentRun.pipelineName,
+      goal: currentRun.goal,
+      status: currentRun.status,
+      startedAt: currentRun.startedAt,
+      finishedAt: currentRun.finishedAt,
+      durationMs: currentRun.durationMs,
+      taskCount: currentRun.taskCount,
+      toolCallCount: currentRun.toolCallCount,
+      continuedFromRunId: currentRun.continuedFromRunId,
+      continuationTaskId: (currentRun as any).continuationTaskId,
+      continuationTaskName: (currentRun as any).continuationTaskName,
+      continuationType: (currentRun as any).continuationType,
+      continuationRound: (currentRun as any).continuationRound,
+    });
+  }
+
+  const chain = Array.from(lineageMap.values());
+  chain.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
+  return chain;
+}
+
 type GroupedRunItem =
   | { type: 'group'; pipelineId: string; pipelineName: string; runCount: number; isCollapsed: boolean }
   | { type: 'run'; run: RunSummary; depth: number; hasChild: boolean; collapsed: boolean };
@@ -419,7 +483,7 @@ function ToolEventList({ events }: { events: ToolEvent[] }) {
   );
 }
 
-function TaskDetailPanel({ task, agents, fullHeight = false }: { task: RunTaskRecord; agents: Agent[]; fullHeight?: boolean }) {
+function TaskDetailPanel({ task, agents, fullHeight = false, continuationRound }: { task: RunTaskRecord; agents: Agent[]; fullHeight?: boolean; continuationRound?: number }) {
   const status: DetailStatus =
     task.status === 'pending'
       ? 'running'
@@ -438,7 +502,7 @@ function TaskDetailPanel({ task, agents, fullHeight = false }: { task: RunTaskRe
 
   return (
     <div className="space-y-3">
-      <TaskRoundHistory task={task} agents={agents} />
+      <TaskRoundHistory task={task} agents={agents} continuationRound={continuationRound} />
       <TaskDetailShared
         workers={(task.toolEvents ?? []).length > 0 ? (task.toolEvents ?? []) : [[]]}
         agents={task.agents}
@@ -458,7 +522,7 @@ function TaskDetailPanel({ task, agents, fullHeight = false }: { task: RunTaskRe
   );
 }
 
-function TaskRoundHistory({ task, agents }: { task: RunTaskRecord; agents: Agent[] }) {
+function TaskRoundHistory({ task, agents, continuationRound }: { task: RunTaskRecord; agents: Agent[]; continuationRound?: number }) {
   const rounds = task.rounds ?? [];
   const sorted = [...rounds].sort((a, b) => a.round - b.round);
   const terminal = task.status === 'done' || task.status === 'error' || task.status === 'terminated' || task.status === 'skipped';
@@ -478,6 +542,7 @@ function TaskRoundHistory({ task, agents }: { task: RunTaskRecord; agents: Agent
       <div className="space-y-2.5">
         {sorted.map((round) => {
           const isRevise = round.review?.action === 'revise';
+          const isRoundInherited = continuationRound !== undefined && round.round < continuationRound;
           const roundAgentInfo = task.agents && task.agents.length > 0
             ? task.agents.map(aId => {
                 const baseId = getBaseAgentId(aId, agents);
@@ -486,17 +551,23 @@ function TaskRoundHistory({ task, agents }: { task: RunTaskRecord; agents: Agent
             : '';
 
           return (
-            <details key={round.round} className="group rounded-xl border border-zinc-200/60 bg-white p-3 shadow-sm hover:shadow-md hover:border-zinc-300 transition-all">
+            <details key={round.round} className={`group rounded-xl border p-3 shadow-sm hover:shadow-md hover:border-zinc-300 transition-all ${
+              isRoundInherited 
+                ? 'opacity-55 saturate-50 border-dashed border-zinc-200 bg-zinc-50/10 hover:opacity-100 hover:saturate-100 hover:border-solid hover:bg-white' 
+                : 'border-zinc-200/60 bg-white'
+            }`}>
               <summary className="cursor-pointer select-none text-xs text-zinc-700 font-bold flex flex-wrap items-center gap-2">
                 <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold select-none ${
-                  isRevise 
-                    ? 'bg-amber-50 border border-amber-200 text-amber-700' 
-                    : 'bg-emerald-50 border border-emerald-200 text-emerald-700'
+                  isRoundInherited
+                    ? 'bg-zinc-100 border border-zinc-200 text-zinc-400'
+                    : isRevise 
+                      ? 'bg-amber-50 border border-amber-200 text-amber-700' 
+                      : 'bg-emerald-50 border border-emerald-200 text-emerald-700'
                 }`}>
                   R{round.round}
                 </span>
-                <span className="font-semibold text-zinc-800">
-                  {isRevise ? '↺ Revised' : '✓ Reviewed'}
+                <span className={`font-semibold ${isRoundInherited ? 'text-zinc-400' : 'text-zinc-800'}`}>
+                  {isRoundInherited ? '📥 历史复用轮次' : isRevise ? '↺ Revised' : '✓ Reviewed'}
                 </span>
                 {roundAgentInfo && (
                   <span className="text-[10px] bg-zinc-100 text-zinc-500 rounded px-1.5 py-0.5 select-none font-mono font-medium">
@@ -644,7 +715,7 @@ function TaskDetailDialog({
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-3 bg-zinc-50/20">
-          <TaskDetailPanel task={task} agents={agents} fullHeight />
+          <TaskDetailPanel task={task} agents={agents} fullHeight continuationRound={run?.continuationRound} />
         </div>
 
         {showContinuePanel && (
@@ -738,7 +809,7 @@ function TaskRow({
 
       {expanded && (
         <div className="border-t border-zinc-100 px-4 py-3 bg-white space-y-3">
-          <TaskDetailPanel task={task} agents={agents} />
+          <TaskDetailPanel task={task} agents={agents} continuationRound={run?.continuationRound} />
         </div>
       )}
     </div>
@@ -1332,6 +1403,27 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
     return pipeline?.tasks.find((t) => t.id === taskId)?.dependsOn || [];
   }, [pipeline]);
 
+  // Identify which tasks are active versus inherited/reused.
+  // If run.continuationTaskId is not set, all tasks are active.
+  // If run.continuationTaskId is set, only that task and all its downstream tasks are active.
+  const activeTaskIds = (() => {
+    if (!run.continuationTaskId) return null;
+    const activeSet = new Set<string>([run.continuationTaskId]);
+    const queue = [run.continuationTaskId];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      // Find downstream tasks (tasks that have 'current' in dependsOn)
+      const directChildren = pipeline?.tasks.filter((t) => t.dependsOn.includes(current)) || [];
+      for (const child of directChildren) {
+        if (!activeSet.has(child.id)) {
+          activeSet.add(child.id);
+          queue.push(child.id);
+        }
+      }
+    }
+    return activeSet;
+  })();
+
   const levelGroups = calculateLevels(run.tasks, getDeps);
 
   return (
@@ -1351,6 +1443,8 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
                 const isTerminated = task.status === 'terminated';
                 const isSkipped = task.status === 'skipped' || isSkippedDueToFailure;
                 const isPending = task.status === 'pending';
+
+                const isInherited = activeTaskIds !== null && !activeTaskIds.has(task.taskId);
 
                 let bgClass = 'bg-white/80 border-zinc-200 text-zinc-800';
                 let statusDotClass = 'bg-zinc-400';
@@ -1384,14 +1478,23 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
                   <div
                     key={task.taskId}
                     onClick={() => onSelectTask(task.taskId)}
-                    className={`flex-1 min-w-[240px] max-w-[320px] rounded-xl border p-4 shadow-sm hover:shadow-md cursor-pointer transition-all hover:-translate-y-0.5 backdrop-blur-sm ${bgClass}`}
+                    className={`flex-1 min-w-[240px] max-w-[320px] rounded-xl border p-4 shadow-sm hover:shadow-md cursor-pointer transition-all hover:-translate-y-0.5 backdrop-blur-sm ${
+                      isInherited
+                        ? 'opacity-40 border-dashed border-zinc-200 bg-zinc-50/30 saturate-50 hover:opacity-75'
+                        : bgClass
+                    }`}
                   >
                     <div className="flex items-center gap-2 mb-2">
-                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusDotClass}`} />
-                      <span className={`text-xs font-bold leading-tight flex-1 min-w-0 truncate ${pulseClass}`} title={task.taskName}>
+                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isInherited ? 'bg-zinc-300' : statusDotClass}`} />
+                      <span className={`text-xs font-bold leading-tight flex-1 min-w-0 truncate ${isInherited ? 'text-zinc-400 font-medium' : pulseClass}`} title={task.taskName}>
                         {task.taskName}
                       </span>
-                      {task.status !== 'pending' && (
+                      {isInherited && (
+                        <span className="shrink-0 inline-flex items-center gap-0.5 rounded bg-zinc-100 border border-zinc-200 px-1 py-0.5 text-[9px] font-bold text-zinc-400 select-none">
+                          📥 已复用
+                        </span>
+                      )}
+                      {!isInherited && task.status !== 'pending' && (
                         <div className="ml-auto flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                           {isRunning && onInterruptTask && (
                             <button
@@ -1426,7 +1529,7 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
                           {(isError || isTerminated || task.status === 'interrupted') && onContinueStarted && (
                             <button
                               onClick={(e) => { e.stopPropagation(); setReRunTask(task); }}
-className="flex items-center justify-center rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 p-0.5 text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
+                              className="flex items-center justify-center rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 p-0.5 text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
                               title="重跑当前失败任务"
                             >
                               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -1467,30 +1570,35 @@ className="flex items-center justify-center rounded bg-red-50 hover:bg-red-100 b
                     {task.rounds && task.rounds.length > 0 && (
                       <div className="mt-3 border-t border-zinc-100/60 pt-2 flex flex-wrap gap-1.5 items-center">
                         <span className="text-[9px] uppercase tracking-wider text-zinc-400/80 font-bold mr-1">Rounds:</span>
-                        {task.rounds.map((r) => (
-                          <div
-                            key={r.round}
-                            className={`group relative rounded px-1.5 py-0.5 text-[10px] font-semibold border flex items-center gap-0.5 transition-all hover:scale-105 select-none ${
-                              r.review?.action === 'revise'
-                                ? 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 hover:border-amber-300'
-                                : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-300'
-                            }`}
-                          >
-                            <span>R{r.round}</span>
-                            {r.review?.comment && <span className="text-[8px]">💬</span>}
+                        {task.rounds.map((r) => {
+                          const isRoundInherited = run.continuationRound !== undefined && r.round < run.continuationRound;
+                          return (
+                            <div
+                              key={r.round}
+                              className={`group relative rounded px-1.5 py-0.5 text-[10px] font-semibold border flex items-center gap-0.5 transition-all hover:scale-105 select-none ${
+                                isRoundInherited
+                                  ? 'opacity-40 border-dashed border-zinc-300 bg-zinc-50/50 text-zinc-400 hover:opacity-100 hover:border-zinc-400'
+                                  : r.review?.action === 'revise'
+                                    ? 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 hover:border-amber-300'
+                                    : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-300'
+                              }`}
+                            >
+                              <span>R{r.round}</span>
+                              {r.review?.comment && <span className="text-[8px]">💬</span>}
 
-                            {/* Floating review summary */}
-                            {r.review?.comment && (
-                              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-[99] w-52 rounded-xl bg-zinc-950 text-white p-3 text-[10px] leading-relaxed shadow-xl border border-zinc-800 backdrop-blur-sm pointer-events-none transition-opacity">
-                                <div className="font-bold border-b border-white/10 pb-1 mb-1 flex justify-between items-center text-zinc-300">
-                                  <span>{r.review.action === 'revise' ? '↺ Revision' : '✓ Approved'}</span>
-                                  <span className="text-zinc-500 font-normal font-mono">{formatTime(r.review.reviewedAt)}</span>
+                              {/* Floating review summary */}
+                              {r.review?.comment && (
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-[99] w-52 rounded-xl bg-zinc-950 text-white p-3 text-[10px] leading-relaxed shadow-xl border border-zinc-800 backdrop-blur-sm pointer-events-none transition-opacity">
+                                  <div className="font-bold border-b border-white/10 pb-1 mb-1 flex justify-between items-center text-zinc-300">
+                                    <span>{isRoundInherited ? '📥 已复用轮次' : r.review.action === 'revise' ? '↺ Revision' : '✓ Approved'}</span>
+                                    <span className="text-zinc-500 font-normal font-mono">{formatTime(r.review.reviewedAt)}</span>
+                                  </div>
+                                  <p className="italic text-zinc-200 font-medium">"{r.review.comment}"</p>
                                 </div>
-                                <p className="italic text-zinc-200 font-medium">"{r.review.comment}"</p>
-                              </div>
-                            )}
-                          </div>
-                        ))}
+                              )}
+                            </div>
+                          );
+                        })}
 
                         {/* Current round if in progress or waiting */}
                         {(isRunning || isAwaiting) && (
@@ -1783,46 +1891,48 @@ function RunDetail({
   const awaitingTask = run.tasks.find((t) => t.status === 'awaiting_review' || t.status === 'interrupted');
   const [viewTab, setViewTab] = useState<'map' | 'timeline' | 'tasks'>('map');
 
-  const parentRun = run.continuedFromRunId ? runs.find(r => r.id === run.continuedFromRunId) : null;
-  const childRun = runs.find(r => r.continuedFromRunId === run.id);
+  const lineageChain = getLineageChain(run, runs);
 
   return (
     <div className="h-full overflow-y-auto">
-      {/* Lineage Ribbon */}
-      {(parentRun || childRun) && (
-        <div className="bg-indigo-50/60 border-b border-indigo-100/50 px-5 py-2.5 flex items-center gap-3 text-xs select-none">
-          <span className="text-indigo-600 font-bold uppercase tracking-wider text-[9px] bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded">
-            Lineage Tree
-          </span>
-          {parentRun && (
-            <button
-              onClick={() => onSelectRun(parentRun.id)}
-              className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-800 hover:underline font-semibold"
-            >
-              ← Continued from {parentRun.pipelineName} ({parentRun.id.slice(-6)})
-            </button>
-          )}
-          {parentRun && childRun && <span className="text-indigo-200 font-bold">·</span>}
-          {childRun && (
-            <button
-              onClick={() => onSelectRun(childRun.id)}
-              className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-800 hover:underline font-semibold"
-            >
-              Continued as next branch ({childRun.id.slice(-6)}) →
-            </button>
-          )}
-        </div>
-      )}
 
       <div className="px-5 py-5 border-b border-zinc-100">
         {/* Header */}
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
               <span className="text-xs font-mono text-zinc-400">{run.pipelineId}</span>
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusColors(run.status)}`}>
                 {statusLabel(run.status)}
               </span>
+
+              {/* Premium Version Switcher pill */}
+              {lineageChain.length > 1 && (
+                <div className="relative flex items-center">
+                  <select
+                    value={run.id}
+                    onChange={(e) => onSelectRun(e.target.value)}
+                    className="appearance-none rounded-full bg-indigo-50 border border-indigo-200 pl-3 pr-7 py-0.5 text-[10px] font-bold text-indigo-700 hover:bg-indigo-100 hover:border-indigo-300 transition-all outline-none cursor-pointer shadow-sm"
+                  >
+                    {lineageChain.map((r, idx) => {
+                      const isCurrent = r.id === run.id;
+                      const label = idx === 0
+                        ? `🎬 原始执行`
+                        : `${r.continuationType === 'branch' ? '🌱 分支' : '↻ 重跑'}: ${r.continuationTaskName || '任务'} (R${r.continuationRound || 1})`;
+                      return (
+                        <option key={r.id} value={r.id}>
+                          {label} {isCurrent ? ' (当前)' : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-indigo-500">
+                    <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </div>
+                </div>
+              )}
             </div>
             <h2 className="text-sm font-semibold text-zinc-800 leading-snug">{run.pipelineName}</h2>
           </div>
@@ -1956,7 +2066,7 @@ function RunCard({ run, selected, onClick, onDelete, hasChild, collapsed, onTogg
     <div
       onClick={onClick}
       className={`w-full group relative flex flex-col gap-0.5 pl-2 pr-4 py-2.5 text-left hover:bg-zinc-50 cursor-pointer transition-colors ${
-        selected ? 'bg-indigo-50/50 border-l-2 border-l-indigo-400' : 'border-l-2 border-l-transparent'
+        selected ? 'bg-indigo-50/40 border-l-2 border-l-indigo-500 font-medium' : 'border-l-2 border-l-transparent'
       }`}
     >
       {/* Line 1: [collapse btn] goal + status */}
@@ -1975,24 +2085,27 @@ function RunCard({ run, selected, onClick, onDelete, hasChild, collapsed, onTogg
           ) : null}
         </div>
         <p className={`text-xs truncate leading-snug flex-1 pr-1 ${
-          isChild ? 'text-zinc-500' : 'text-zinc-700 font-medium'
-        }`}>{run.goal}</p>
+          isChild ? 'text-indigo-600 font-bold' : 'text-zinc-700 font-semibold'
+        }`}>
+          {isChild && run.continuationTaskName ? (
+            <span className="flex items-center gap-1">
+              <span>{run.continuationType === 'branch' ? '🌱' : '↻'}</span>
+              <span>重跑: {run.continuationTaskName} (R{run.continuationRound})</span>
+            </span>
+          ) : run.goal}
+        </p>
         <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusColors(run.status)}`}>
           {statusLabel(run.status)}
         </span>
       </div>
       {/* Line 2: type badge (if any) + time info */}
-      <div className="flex items-center gap-1.5 text-[10px] text-zinc-300 pl-6">
-        {run.continuationType && (
-          <span className={`shrink-0 inline-flex items-center rounded px-1 py-0.5 text-[9px] font-bold ${
-            run.continuationType === 'branch'
-              ? 'bg-emerald-50 border border-emerald-200 text-emerald-700'
-              : 'bg-indigo-50 border border-indigo-200 text-indigo-700'
-          }`}>
-            {run.continuationType === 'branch' ? '🌱 分支' : '↻ 重跑'}
-            {run.continuationTaskName ? `: ${run.continuationTaskName} (R${run.continuationRound})` : ''}
+      <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 pl-6">
+        {isChild && (
+          <span className="text-zinc-500 font-normal truncate max-w-[130px] select-none" title={run.goal}>
+            目标: {run.goal}
           </span>
         )}
+        {isChild && <span className="select-none text-zinc-300">·</span>}
         <span>{formatTime(run.startedAt)}</span>
         <span>·</span>
         <span>{formatDuration(run.durationMs)}</span>
@@ -2029,12 +2142,13 @@ function RunCard({ run, selected, onClick, onDelete, hasChild, collapsed, onTogg
 
 export function RunsPage() {
   const { t } = useTranslation();
+  const initialRouteRef = useRef(readRunsHashParams());
   const [agents, setAgents] = useState<Agent[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(initialRouteRef.current.taskId);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialRouteRef.current.runId);
   const [selectedRun, setSelectedRun] = useState<RunRecord | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [collapsedPipelines, setCollapsedPipelines] = useState<Set<string>>(new Set());
@@ -2330,7 +2444,7 @@ export function RunsPage() {
               <p className="text-xs text-zinc-400">{t('runs.empty', 'No runs yet. Execute a pipeline to see history here.')}</p>
             </div>
           ) : (
-            buildGroupedRunList(runs, collapsedPipelines, collapsedRuns).map((item) => {
+            buildGroupedRunList(runs.filter(r => !r.continuedFromRunId), collapsedPipelines, collapsedRuns).map((item) => {
               if (item.type === 'group') {
                 return (
                   <div
@@ -2353,18 +2467,21 @@ export function RunsPage() {
               return (
                 <div key={run.id} className="flex items-stretch border-b border-zinc-100/50">
                   {depth > 0 && (
-                    <div className="flex shrink-0 self-stretch" style={{ width: `${depth * 14}px` }}>
-                      {Array.from({ length: depth }).map((_, i) => (
-                        <div key={i} className="w-[14px] shrink-0 flex justify-center self-stretch">
-                          <div className="border-l-2 border-zinc-200 self-stretch" />
-                        </div>
-                      ))}
+                    <div className="flex shrink-0 self-stretch w-6 justify-center relative select-none">
+                      {/* A continuous timeline vertical line */}
+                      <div className="absolute top-0 bottom-0 left-[11px] border-l-2 border-zinc-200" />
+                      {/* Timeline dot node */}
+                      <div className={`absolute top-[16px] left-[8px] w-2.5 h-2.5 rounded-full border-2 border-white ring-1 transition-all ${
+                        selectedId === run.id
+                          ? 'bg-indigo-500 ring-indigo-200 scale-110 shadow-sm'
+                          : 'bg-zinc-300 ring-zinc-100'
+                      }`} />
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
                     <RunCard
                       run={run}
-                      selected={selectedId === run.id}
+                      selected={selectedId === run.id || getRootRunId(selectedId, runs) === run.id}
                       onDelete={() => handleDeleteRun(run.id)}
                       onClick={() => setSelectedId(run.id)}
                       hasChild={hasChild}
