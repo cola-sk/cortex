@@ -7,6 +7,7 @@ import {
   ReactFlow,
   Background,
   Controls,
+  BezierEdge,
   MiniMap,
   MarkerType,
   Handle,
@@ -14,6 +15,7 @@ import {
   useReactFlow,
   type Node,
   type Edge,
+  type EdgeProps,
   type NodeProps,
 } from '@xyflow/react';
 
@@ -1445,7 +1447,7 @@ interface WorkflowDAGMapProps {
   run: RunRecord;
   pipelines: Pipeline[];
   agents: Agent[];
-  onSelectTask: (taskId: string, runId?: string) => void;
+  onSelectTask: (taskId: string, runId?: string, context?: { task?: RunTaskRecord; run?: RunRecord }) => void;
   onInterruptTask?: (taskId: string) => void;
   onContinueStarted?: (newRunId: string) => void;
   runs?: RunSummary[];
@@ -1468,18 +1470,66 @@ interface TaskCardNodeData {
   agents: Agent[];
   isCurrentVersion: boolean;
   onSelectRun?: (runId: string) => void;
-  onSelectTask: (taskId: string, runId?: string) => void;
+  onSelectTask: (taskId: string, runId?: string, context?: { task?: RunTaskRecord; run?: RunRecord }) => void;
   onInterruptTask?: (taskId: string) => void;
   setBranchTask: (task: RunTaskRecord | null) => void;
   setReRunTask: (task: RunTaskRecord | null) => void;
   setModalRun: (run: RunRecord | null) => void;
   run: RunRecord;
+  setSelectedNodeId?: (nodeId: string | null) => void;
 }
 
 type CustomNode = Node<TaskCardNodeData, 'taskCard'>;
 
 const nodeTypes = {
   taskCard: TaskCardNode,
+};
+
+interface SourceDotEdgeData {
+  sourceDotColor?: string;
+  sourceDotStroke?: string;
+  sourceDotRadius?: number;
+}
+
+function SourceDotEdge(props: EdgeProps) {
+  const edgeData = props.data as SourceDotEdgeData | undefined;
+  const fallbackStroke = typeof props.style?.stroke === 'string' ? props.style.stroke : '#cbd5e1';
+  const dotColor = edgeData?.sourceDotColor ?? fallbackStroke;
+  const dotStroke = edgeData?.sourceDotStroke ?? '#ffffff';
+  const dotRadius = edgeData?.sourceDotRadius ?? 6.5;
+  let dotX = props.sourceX;
+  let dotY = props.sourceY;
+
+  // Position the starting dot perfectly on the card border (50% on, 50% off)
+  // based on which handle it starts from, keeping it perfectly aligned with the line.
+  if (props.sourceHandleId === 'right') {
+    // Right handle: offset is 14px horizontally. Pull it straight back onto the right border.
+    dotX = props.sourceX - 14;
+    dotY = props.sourceY;
+  } else {
+    // Bottom handle: offset is 12px vertically. Pull it straight back onto the bottom border.
+    dotX = props.sourceX;
+    dotY = props.sourceY - 12;
+  }
+
+  return (
+    <>
+      <BezierEdge {...props} />
+      <circle
+        cx={dotX}
+        cy={dotY}
+        r={dotRadius}
+        fill={dotColor}
+        stroke={dotStroke}
+        strokeWidth={2.2}
+        pointerEvents="none"
+      />
+    </>
+  );
+}
+
+const edgeTypes = {
+  sourceDot: SourceDotEdge,
 };
 
 function TaskCardNode({ data }: NodeProps<CustomNode>) {
@@ -1493,7 +1543,8 @@ function TaskCardNode({ data }: NodeProps<CustomNode>) {
     setBranchTask,
     setReRunTask,
     setModalRun,
-    run
+    run,
+    setSelectedNodeId
   } = data;
 
   const { task, run: nodeRun, roundLabel } = node;
@@ -1538,10 +1589,6 @@ function TaskCardNode({ data }: NodeProps<CustomNode>) {
 
   return (
     <div
-      onClick={() => {
-        if (onSelectRun) onSelectRun(node.runId);
-        onSelectTask(task.taskId, node.runId);
-      }}
       className={`w-[260px] rounded-xl border p-4 shadow-sm hover:shadow-md cursor-pointer transition-all hover:-translate-y-0.5 backdrop-blur-sm relative group text-left ${
         isCurrentVersion
           ? 'ring-2 ring-indigo-500/10 border-indigo-300 shadow-indigo-100/50'
@@ -1549,10 +1596,16 @@ function TaskCardNode({ data }: NodeProps<CustomNode>) {
       } ${bgClass}`}
     >
       {/* Top/Bottom handles: used by vertical logical-dependency edges */}
-      <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-indigo-300 border-none opacity-0 group-hover:opacity-100 transition-opacity" />
+      <Handle
+        id="top"
+        type="target"
+        position={Position.Top}
+        className="w-2 h-2 !bg-indigo-300 border-none opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ top: -12 }}
+      />
       {/* Left/Right handles: used by horizontal same-level retry lineage edges */}
-      <Handle id="left" type="target" position={Position.Left} style={{ top: '50%', opacity: 0 }} />
-      <Handle id="right" type="source" position={Position.Right} style={{ top: '50%', opacity: 0 }} />
+      <Handle id="left" type="target" position={Position.Left} style={{ top: '50%', opacity: 0, left: -14 }} />
+      <Handle id="right" type="source" position={Position.Right} style={{ top: '50%', opacity: 0, right: -14 }} />
 
       <div className="flex items-center gap-1.5 mb-1.5">
         <span className={`w-2 h-2 rounded-full shrink-0 ${statusDotClass}`} />
@@ -1583,7 +1636,7 @@ function TaskCardNode({ data }: NodeProps<CustomNode>) {
       )}
 
       {task.status !== 'pending' && (
-        <div className="flex items-center justify-between border-t border-zinc-100/60 pt-2" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-t border-zinc-100/60 pt-2">
           <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
             isDone ? 'bg-emerald-100/60 text-emerald-700' :
             isRunning ? 'bg-blue-100/60 text-blue-700 animate-pulse' :
@@ -1640,7 +1693,13 @@ function TaskCardNode({ data }: NodeProps<CustomNode>) {
         </div>
       )}
 
-      <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-indigo-300 border-none opacity-0 group-hover:opacity-100 transition-opacity" />
+      <Handle
+        id="bottom"
+        type="source"
+        position={Position.Bottom}
+        className="w-2 h-2 !bg-indigo-300 border-none opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ bottom: -12 }}
+      />
     </div>
   );
 }
@@ -1660,6 +1719,12 @@ function WorkflowDAGMap({
   const [reRunTask, setReRunTask] = useState<RunTaskRecord | null>(null);
   const [modalRun, setModalRun] = useState<RunRecord | null>(null);
   const [mapMode, setMapMode] = useState<'lineage' | 'current'>('lineage');
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  // Reset selected node when the run changes
+  useEffect(() => {
+    setSelectedNodeId(null);
+  }, [run.id]);
 
   const [lineageRuns, setLineageRuns] = useState<Record<string, RunRecord>>({});
   const [loadingLineage, setLoadingLineage] = useState(false);
@@ -1669,23 +1734,42 @@ function WorkflowDAGMap({
     return pipeline?.tasks.find((t) => t.id === taskId)?.dependsOn || [];
   }, [pipeline]);
 
-  // Load all runs in the lineage chain to extract full task details
+  const lineageSummaries = useMemo(() => {
+    return runs ? getLineageChain(run, runs) : [];
+  }, [run, runs]);
+  const lineageIdsStr = useMemo(() => {
+    return lineageSummaries.map(s => s.id).join(',');
+  }, [lineageSummaries]);
+
+  // Load missing historical runs in the lineage chain to extract full task details.
+  // Use lineageIdsStr dependency to prevent infinite fetch loops during live progress polling.
   useEffect(() => {
-    if (!runs) return;
+    if (lineageSummaries.length === 0) return;
+
     const fetchLineage = async () => {
+      const missingSummaries = lineageSummaries.filter(
+        s => s.id !== run.id && !lineageRuns[s.id]
+      );
+
+      if (missingSummaries.length === 0) {
+        // If all parent runs are already cached, just update the current run's reference (in case it changes)
+        setLineageRuns(prev => {
+          if (prev[run.id] === run) return prev;
+          return { ...prev, [run.id]: run };
+        });
+        return;
+      }
+
       setLoadingLineage(true);
-      const lineageSummaries = getLineageChain(run, runs);
-      const newMap: Record<string, RunRecord> = { [run.id]: run };
+      const newMap: Record<string, RunRecord> = { ...lineageRuns, [run.id]: run };
 
       await Promise.all(
-        lineageSummaries.map(async (summary) => {
-          if (summary.id !== run.id) {
-            try {
-              const fullRecord = await api.getRun(summary.id);
-              newMap[summary.id] = fullRecord;
-            } catch (err) {
-              console.error(`Failed to fetch run ${summary.id}:`, err);
-            }
+        missingSummaries.map(async (summary) => {
+          try {
+            const fullRecord = await api.getRun(summary.id);
+            newMap[summary.id] = fullRecord;
+          } catch (err) {
+            console.error(`Failed to fetch run ${summary.id}:`, err);
           }
         })
       );
@@ -1694,9 +1778,8 @@ function WorkflowDAGMap({
     };
 
     fetchLineage();
-  }, [run.id, runs]);
+  }, [run.id, lineageIdsStr]);
 
-  const lineageSummaries = runs ? getLineageChain(run, runs) : [];
   const showLineageTopology = lineageSummaries.length > 1;
 
   // Helper to identify which tasks are active versus inherited/reused for any run
@@ -1827,14 +1910,14 @@ function WorkflowDAGMap({
         };
         group.sort((a, b) => getRunOrder(a) - getRunOrder(b));
 
-        const rowWidth = (group.length - 1) * 320;
+        const rowWidth = (group.length - 1) * 380;
         const startX = -rowWidth / 2;
 
         group.forEach((node, idx) => {
           nodes.push({
             id: node.id,
             type: 'taskCard',
-            position: { x: startX + idx * 320, y: lvl * 280 + 40 },
+            position: { x: startX + idx * 380, y: lvl * 280 + 40 },
             data: {
               node,
               agents,
@@ -1845,7 +1928,8 @@ function WorkflowDAGMap({
               setBranchTask,
               setReRunTask,
               setModalRun,
-              run
+              run,
+              setSelectedNodeId
             },
           });
         });
@@ -1887,8 +1971,11 @@ function WorkflowDAGMap({
                   id: `edge_${sourceId}_to_${node.id}`,
                   source: sourceId,
                   target: node.id,
-                  type: 'bezier',
+                  sourceHandle: 'bottom',
+                  targetHandle: 'top',
+                  type: 'sourceDot',
                   style: { stroke: '#818cf8', strokeWidth: 2 },
+                  data: { sourceDotColor: '#818cf8' } satisfies SourceDotEdgeData,
                   markerEnd: { type: MarkerType.ArrowClosed, color: '#818cf8' },
                 });
               } else if (isFailedSource) {
@@ -1902,8 +1989,11 @@ function WorkflowDAGMap({
                     id: `edge_${sourceId}_to_${node.id}`,
                     source: sourceId,
                     target: node.id,
-                    type: 'bezier',
+                    sourceHandle: 'bottom',
+                    targetHandle: 'top',
+                    type: 'sourceDot',
                     style: { stroke: '#f87171', strokeWidth: 1.5, strokeDasharray: '4 4', opacity: 0.65 },
+                    data: { sourceDotColor: '#f87171' } satisfies SourceDotEdgeData,
                     markerEnd: { type: MarkerType.ArrowClosed, color: '#f87171' },
                   });
                 }
@@ -1915,8 +2005,11 @@ function WorkflowDAGMap({
                     id: `edge_${sourceId}_to_${node.id}`,
                     source: sourceId,
                     target: node.id,
-                    type: 'bezier',
+                    sourceHandle: 'bottom',
+                    targetHandle: 'top',
+                    type: 'sourceDot',
                     style: { stroke: '#a1a1aa', strokeWidth: 1.5, strokeDasharray: '4 4', opacity: 0.5 },
+                    data: { sourceDotColor: '#a1a1aa' } satisfies SourceDotEdgeData,
                     markerEnd: { type: MarkerType.ArrowClosed, color: '#a1a1aa' },
                   });
                 }
@@ -1926,8 +2019,11 @@ function WorkflowDAGMap({
                   id: `edge_${sourceId}_to_${node.id}`,
                   source: sourceId,
                   target: node.id,
-                  type: 'bezier',
+                  sourceHandle: 'bottom',
+                  targetHandle: 'top',
+                  type: 'sourceDot',
                   style: { stroke: '#cbd5e1', strokeWidth: 1.5 },
+                  data: { sourceDotColor: '#cbd5e1' } satisfies SourceDotEdgeData,
                   markerEnd: { type: MarkerType.ArrowClosed, color: '#cbd5e1' },
                 });
               }
@@ -1956,10 +2052,10 @@ function WorkflowDAGMap({
             // instead of curving upward through parent rows.
             sourceHandle: 'right',
             targetHandle: 'left',
-            type: 'bezier',
+            type: 'sourceDot',
             animated: true,
             style: { stroke: isBranch ? '#34d399' : '#f59e0b', strokeWidth: 2, strokeDasharray: '6 3' },
-            markerStart: isBranch ? 'branch-source-dot' : 'retry-source-dot',
+            data: { sourceDotColor: isBranch ? '#34d399' : '#f59e0b' } satisfies SourceDotEdgeData,
             markerEnd: { type: MarkerType.ArrowClosed, color: isBranch ? '#34d399' : '#f59e0b' },
             label: isBranch ? '🌱 branch' : '↻ retry',
             labelStyle: { fontSize: 9, fontWeight: 700, fill: isBranch ? '#065f46' : '#92400e' },
@@ -1980,7 +2076,7 @@ function WorkflowDAGMap({
       Object.keys(levelGroups).forEach((lvlStr) => {
         const lvl = parseInt(lvlStr, 10);
         const group = levelGroups[lvl];
-        const rowWidth = (group.length - 1) * 320;
+        const rowWidth = (group.length - 1) * 380;
         const startX = -rowWidth / 2;
 
         group.forEach((task, idx) => {
@@ -1996,7 +2092,7 @@ function WorkflowDAGMap({
           nodes.push({
             id: mockNode.id,
             type: 'taskCard',
-            position: { x: startX + idx * 320, y: lvl * 280 + 40 },
+            position: { x: startX + idx * 380, y: lvl * 280 + 40 },
             data: {
               node: mockNode,
               agents,
@@ -2007,7 +2103,8 @@ function WorkflowDAGMap({
               setBranchTask,
               setReRunTask,
               setModalRun,
-              run
+              run,
+              setSelectedNodeId
             },
           });
         });
@@ -2020,8 +2117,11 @@ function WorkflowDAGMap({
             id: `edge_${run.id}_${depId}_to_${run.id}_${task.taskId}`,
             source: `${run.id}_${depId}`,
             target: `${run.id}_${task.taskId}`,
-            type: 'bezier',
+            sourceHandle: 'bottom',
+            targetHandle: 'top',
+            type: 'sourceDot',
             style: { stroke: '#cbd5e1', strokeWidth: 2 },
+            data: { sourceDotColor: '#cbd5e1' } satisfies SourceDotEdgeData,
             markerEnd: {
               type: MarkerType.ArrowClosed,
               color: '#cbd5e1',
@@ -2031,16 +2131,65 @@ function WorkflowDAGMap({
       });
     }
 
-    return { flowNodes: nodes, flowEdges: edges };
-  }, [run, runs, lineageRuns, mapMode, pipeline, agents, onSelectRun, onSelectTask, onInterruptTask]);
+    // Post-process edges to handle active task highlights and animations
+    const processedEdges = edges.map((edge) => {
+      const isSelected = selectedNodeId !== null;
+      if (!isSelected) {
+        // Default mode: all edges are static
+        return {
+          ...edge,
+          animated: false,
+        };
+      }
+
+      const isConnected = edge.source === selectedNodeId || edge.target === selectedNodeId;
+      if (isConnected) {
+        // Highlighted path: make it dynamic/animated and ensure full opacity
+        const existingStyle = edge.style || {};
+        return {
+          ...edge,
+          animated: true,
+          style: {
+            ...existingStyle,
+            strokeWidth: typeof existingStyle.strokeWidth === 'number' ? existingStyle.strokeWidth + 0.5 : 2.5,
+            opacity: 1,
+          },
+        };
+      } else {
+        // Muted path: dim the inactive edges and turn off animation
+        const existingStyle = edge.style || {};
+        return {
+          ...edge,
+          animated: false,
+          style: {
+            ...existingStyle,
+            opacity: 0.15,
+          },
+          label: undefined, // Hide labels for inactive edges to declutter
+        };
+      }
+    });
+
+    return { flowNodes: nodes, flowEdges: processedEdges };
+  }, [run, runs, lineageRuns, mapMode, pipeline, agents, onSelectRun, onSelectTask, onInterruptTask, selectedNodeId]);
 
   const fitTrigger = `${run.id}:${mapMode}:${flowNodes.length}:${flowEdges.length}:${isActive ? 'active' : 'hidden'}`;
-  const handleNodeClick = useCallback((_event: unknown, node: Node<TaskCardNodeData>) => {
+
+  const handleNodeClick = useCallback((event: React.MouseEvent, node: Node<TaskCardNodeData>) => {
+    const target = event.target as HTMLElement;
+    // Prevent selection if clicked on buttons or other interactive controls inside the card
+    if (target.closest('button') || target.closest('svg') || target.closest('select')) {
+      return;
+    }
+    setSelectedNodeId(node.id);
     const taskNode = node.data?.node;
     if (!taskNode) return;
-    if (onSelectRun) onSelectRun(taskNode.runId);
-    onSelectTask(taskNode.taskId, taskNode.runId);
-  }, [onSelectRun, onSelectTask]);
+    onSelectTask(taskNode.taskId, taskNode.runId, { task: taskNode.task, run: taskNode.run });
+  }, [onSelectTask]);
+
+  const handlePaneClick = useCallback(() => {
+    setSelectedNodeId(null);
+  }, []);
 
   return (
     <>
@@ -2092,13 +2241,14 @@ function WorkflowDAGMap({
           nodes={flowNodes}
           edges={flowEdges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           onNodeClick={handleNodeClick}
+          onPaneClick={handlePaneClick}
           minZoom={0.2}
           maxZoom={1.5}
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}
         >
-          <RetryEdgeMarkerDefs />
           <MapAutoFit trigger={fitTrigger} active={isActive} />
           <Background color="#cbd5e1" gap={18} size={1} />
           <Controls className="!bg-white !border-zinc-200 !shadow-md !rounded-lg" />
@@ -2192,7 +2342,7 @@ function WorkflowDAGMap({
 
 interface ChronologicalTimelineProps {
   run: RunRecord;
-  onSelectTask: (taskId: string, runId?: string) => void;
+  onSelectTask: (taskId: string, runId?: string, context?: { task?: RunTaskRecord; run?: RunRecord }) => void;
 }
 
 function ChronologicalTimeline({ run, onSelectTask }: ChronologicalTimelineProps) {
@@ -2348,55 +2498,21 @@ function ChronologicalTimeline({ run, onSelectTask }: ChronologicalTimelineProps
   );
 }
 
-/**
- * Injects hidden SVG <defs> for custom edge markers into the React Flow container.
- * The retry-source-dot / branch-source-dot markers are rendered as filled circles
- * at the START of lineage retry/branch edges, making the origin node unambiguous
- * even when the edge spans across multiple cards.
- */
-function RetryEdgeMarkerDefs() {
-  return (
-    <svg style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-      <defs>
-        {/* Amber filled circle — start marker for retry edges */}
-        <marker
-          id="retry-source-dot"
-          viewBox="0 0 10 10"
-          refX="5"
-          refY="5"
-          markerWidth="6"
-          markerHeight="6"
-          orient="auto"
-        >
-          <circle cx="5" cy="5" r="4.5" fill="#f59e0b" stroke="#fff" strokeWidth="1" />
-        </marker>
-        {/* Emerald filled circle — start marker for branch edges */}
-        <marker
-          id="branch-source-dot"
-          viewBox="0 0 10 10"
-          refX="5"
-          refY="5"
-          markerWidth="6"
-          markerHeight="6"
-          orient="auto"
-        >
-          <circle cx="5" cy="5" r="4.5" fill="#34d399" stroke="#fff" strokeWidth="1" />
-        </marker>
-      </defs>
-    </svg>
-  );
-}
-
 function MapAutoFit({ trigger, active }: { trigger: string; active: boolean }) {
   const { fitView } = useReactFlow();
+  const fitViewRef = useRef(fitView);
+
+  useEffect(() => {
+    fitViewRef.current = fitView;
+  }, [fitView]);
 
   useEffect(() => {
     if (!active) return;
     const timer = window.setTimeout(() => {
-      fitView({ padding: 0.2, duration: 240 });
+      fitViewRef.current({ padding: 0.2, duration: 240 });
     }, 30);
     return () => window.clearTimeout(timer);
-  }, [active, trigger, fitView]);
+  }, [active, trigger]);
 
   return null;
 }
@@ -2419,7 +2535,7 @@ function RunDetail({
   onReviewSubmitted: () => void;
   onContinueStarted: (newRunId: string) => void;
   onInterruptTask?: (taskId: string) => void;
-  onSelectTask: (taskId: string, runId?: string) => void;
+  onSelectTask: (taskId: string, runId?: string, context?: { task?: RunTaskRecord; run?: RunRecord }) => void;
   onSelectRun: (runId: string) => void;
 }) {
   const awaitingTask = run.tasks.find((t) => t.status === 'awaiting_review' || t.status === 'interrupted');
@@ -2685,6 +2801,8 @@ function RunCard({ run, selected, onClick, onDelete, hasChild, collapsed, onTogg
 type ActiveTaskSelection = {
   runId: string;
   taskId: string;
+  taskSnapshot?: RunTaskRecord;
+  runSnapshot?: RunRecord;
 };
 
 export function RunsPage() {
@@ -2801,13 +2919,15 @@ export function RunsPage() {
     setSelectedId(runId);
   }, []);
 
-  const handleSelectTask = useCallback((taskId: string, runId?: string) => {
+  const handleSelectTask = useCallback((taskId: string, runId?: string, context?: { task?: RunTaskRecord; run?: RunRecord }) => {
     const targetRunId = runId ?? selectedRun?.id ?? selectedId;
     if (!targetRunId) return;
-    setActiveTaskSelection({ runId: targetRunId, taskId });
-    if (targetRunId !== selectedId) {
-      setSelectedId(targetRunId);
-    }
+    setActiveTaskSelection({
+      runId: targetRunId,
+      taskId,
+      taskSnapshot: context?.task,
+      runSnapshot: context?.run,
+    });
   }, [selectedId, selectedRun?.id]);
 
   const handleInterruptTask = async (taskId: string) => {
@@ -3151,13 +3271,27 @@ export function RunsPage() {
       </div>
 
       {/* Task Drawer Popup for Map and Timeline clicks */}
-      {activeTaskSelection && selectedRun && selectedRun.id === activeTaskSelection.runId && (
+      {activeTaskSelection && (
         (() => {
-          const task = selectedRun.tasks.find((t) => t.taskId === activeTaskSelection.taskId);
+          const runForDialog = (
+            activeTaskSelection.runSnapshot && activeTaskSelection.runSnapshot.id === activeTaskSelection.runId
+              ? activeTaskSelection.runSnapshot
+              : (selectedRun && selectedRun.id === activeTaskSelection.runId ? selectedRun : null)
+          );
+
+          const task = (
+            activeTaskSelection.taskSnapshot
+            && activeTaskSelection.taskSnapshot.taskId === activeTaskSelection.taskId
+            && runForDialog
+            && runForDialog.id === activeTaskSelection.runId
+          )
+            ? activeTaskSelection.taskSnapshot
+            : runForDialog?.tasks.find((t) => t.taskId === activeTaskSelection.taskId);
+
           return task ? (
             <TaskDetailDialog
               task={task}
-              run={selectedRun}
+              run={runForDialog as RunRecord}
               agents={agents}
               onContinueStarted={(newRunId) => {
                 setSelectedId(newRunId);
@@ -3172,7 +3306,13 @@ export function RunsPage() {
                 }
               }}
             />
-          ) : null;
+          ) : (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-[1px]">
+              <div className="rounded-lg border border-zinc-200 bg-white px-4 py-3 text-xs text-zinc-500 shadow-sm">
+                正在加载任务详情...
+              </div>
+            </div>
+          );
         })()
       )}
     </div>

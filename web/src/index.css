@@ -77,7 +77,7 @@
    ========================================================================== */
 .premium-markdown {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  line-height: 1.55 !important;
+  line-height: 1.75 !important;
   font-size: 14px !important;
   color: #3f3f46 !important; /* zinc-700 */
   letter-spacing: -0.01em !important;
@@ -177,51 +177,51 @@
 }
 
 .premium-markdown p {
-  margin-top: 6px !important;
-  margin-bottom: 6px !important;
+  margin-top: 8px !important;
+  margin-bottom: 8px !important;
 }
 
-/* Bold / Strong term styling - premium neutral gray capsule blocks */
+/* Bold / Strong term styling - premium clean high-contrast text, avoiding chaotic tags */
 .premium-markdown strong {
   font-weight: 600 !important;
-  color: #18181b !important; /* zinc-900 */
-  background-color: #f4f4f5 !important; /* zinc-100 */
-  border: 1px solid #e4e4e7 !important; /* zinc-200 */
-  padding: 1px 5px !important;
-  border-radius: 4px !important;
+  color: #09090b !important; /* zinc-950 */
+  background-color: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
 }
 
 .premium-markdown.prose-invert strong,
 .dark .premium-markdown strong {
-  color: #f4f4f5 !important; /* zinc-100 */
-  background-color: #27272a !important; /* zinc-800 */
-  border: 1px solid #3f3f46 !important; /* zinc-700 */
+  color: #ffffff !important;
+  background-color: transparent !important;
+  border: none !important;
 }
 
 /* Elegant spacing and bullet indicators for Unordered Lists - descendant selector to ensure deeply nested lists are covered */
 .premium-markdown ul {
   list-style-type: none !important;
   padding-left: 0 !important;
-  margin-top: 6px !important;
-  margin-bottom: 6px !important;
+  margin-top: 8px !important;
+  margin-bottom: 8px !important;
 }
 
 .premium-markdown ul li {
   position: relative !important;
   padding-left: 18px !important;
-  margin-top: 4px !important;
-  margin-bottom: 4px !important;
+  margin-top: 6px !important;
+  margin-bottom: 6px !important;
 }
 
 .premium-markdown ul li::before {
   content: "" !important;
   position: absolute !important;
   left: 4px !important;
-  top: 9px !important;
-  width: 4.5px !important;
-  height: 4.5px !important;
+  top: 0.55em !important; /* Scale bullet vertical position with line-height */
+  width: 5px !important;
+  height: 5px !important;
   border-radius: 50% !important;
-  background-color: #a1a1aa !important; /* zinc-400 gray bullet */
+  background-color: #71717a !important; /* zinc-500 gray bullet */
   box-shadow: none !important;
 }
 
@@ -230,15 +230,15 @@
   counter-reset: ol-counter !important;
   list-style-type: none !important;
   padding-left: 0 !important;
-  margin-top: 6px !important;
-  margin-bottom: 6px !important;
+  margin-top: 8px !important;
+  margin-bottom: 8px !important;
 }
 
 .premium-markdown ol li {
   position: relative !important;
   padding-left: 20px !important;
-  margin-top: 4px !important;
-  margin-bottom: 4px !important;
+  margin-top: 6px !important;
+  margin-bottom: 6px !important;
   counter-increment: ol-counter !important;
 }
 
@@ -246,6 +246,8 @@
   content: counter(ol-counter) "." !important;
   position: absolute !important;
   left: 0 !important;
+  top: 0 !important;
+  line-height: inherit !important; /* Perfectly align list number with top of text line */
   color: #71717a !important; /* zinc-500 neutral gray */
   font-weight: 600 !important;
   font-variant-numeric: tabular-nums !important;
@@ -259,23 +261,33 @@
   border-radius: 0 !important;
 }
 
-/* Inline Code Element - Gray-theme */
+/* Align first child inside a list item properly with the list indicator */
+.premium-markdown li > p:first-child,
+.premium-markdown li > blockquote:first-child {
+  margin-top: 0 !important;
+}
+
+/* Inline Code Element - refined gray pill capsules with vertical align protection */
 .premium-markdown :not(pre) > code {
   font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace !important;
   font-size: 0.85em !important;
-  background-color: #f4f4f5 !important; /* zinc-100 */
-  color: #27272a !important; /* zinc-800 */
-  padding: 2px 5px !important;
+  background-color: rgba(244, 244, 245, 0.9) !important; /* zinc-100 with opacity */
+  color: #1f2937 !important; /* zinc-800/900 */
+  padding: 1.5px 4.5px !important;
+  margin: 0 1px !important;
   border-radius: 4px !important;
   border: 1px solid #e4e4e7 !important; /* zinc-200 */
   font-weight: 500 !important;
+  display: inline-block !important;
+  vertical-align: middle !important;
+  line-height: 1.2 !important; /* Protect height of line-box */
 }
 
 .premium-markdown.prose-invert :not(pre) > code,
 .dark .premium-markdown :not(pre) > code {
-  background-color: #27272a !important; /* zinc-800 */
+  background-color: rgba(39, 39, 42, 0.6) !important; /* zinc-800 with opacity */
   color: #e4e4e7 !important; /* zinc-200 */
-  border-color: #3f3f46 !important; /* zinc-700 */
+  border-color: rgba(63, 63, 70, 0.4) !important; /* zinc-700 with opacity */
 }
 
 /* Pre-formatted Code Blocks */
@@ -329,40 +341,42 @@
 .premium-markdown table {
   width: 100% !important;
   border-collapse: collapse !important;
-  margin: 12px 0 !important;
+  margin: 14px 0 !important;
   font-size: 13px !important;
-  border: 1px solid rgba(228, 228, 231, 0.5) !important;
+  border: 1px solid rgba(228, 228, 231, 0.6) !important;
   border-radius: 6px !important;
   overflow: hidden !important;
 }
 
 .premium-markdown.prose-invert table,
 .dark .premium-markdown table {
-  border-color: rgba(63, 63, 70, 0.5) !important;
+  border-color: rgba(63, 63, 70, 0.6) !important;
 }
 
 .premium-markdown th,
 .premium-markdown td {
-  padding: 8px 12px !important;
-  border-bottom: 1px solid rgba(228, 228, 231, 0.5) !important;
+  padding: 10px 14px !important;
+  border-bottom: 1px solid rgba(228, 228, 231, 0.6) !important;
   text-align: left !important;
+  line-height: 1.6 !important;
 }
 
 .premium-markdown.prose-invert th,
 .premium-markdown.prose-invert td,
 .dark .premium-markdown th,
 .dark .premium-markdown td {
-  border-bottom-color: rgba(63, 63, 70, 0.5) !important;
+  border-bottom-color: rgba(63, 63, 70, 0.6) !important;
 }
 
 .premium-markdown th {
-  background-color: #f8fafc !important;
+  background-color: #f4f4f5 !important; /* Zinc-100 modern gray */
   font-weight: 600 !important;
-  color: #0f172a !important;
+  color: #18181b !important; /* Zinc-900 */
+  white-space: nowrap !important; /* Prevent header wrapping vertically (e.g. 编译状态 -> 编\n译\n状\n态) */
 }
 
 .premium-markdown.prose-invert th,
 .dark .premium-markdown th {
-  background-color: rgba(30, 41, 59, 0.25) !important;
-  color: #f1f5f9 !important;
+  background-color: rgba(39, 39, 42, 0.5) !important; /* Dark mode header bg */
+  color: #f4f4f5 !important;
 }
