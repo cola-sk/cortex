@@ -1868,25 +1868,34 @@ function WorkflowDAGMap({
                   markerEnd: { type: MarkerType.ArrowClosed, color: '#818cf8' },
                 });
               } else if (isFailedSource) {
-                // Dashed red: upstream task failed — this explains the retry or downstream skip
-                edges.push({
-                  id: `edge_${sourceId}_to_${node.id}`,
-                  source: sourceId,
-                  target: node.id,
-                  type: 'bezier',
-                  style: { stroke: '#f87171', strokeWidth: 1.5, strokeDasharray: '4 4', opacity: 0.65 },
-                  markerEnd: { type: MarkerType.ArrowClosed, color: '#f87171' },
-                });
+                // Red dashed: upstream task failed — ONLY draw this "causal failure" edge when the
+                // target is also a non-success result (skipped / error). If the target is running or
+                // done, it clearly got its input from somewhere valid (e.g. a sibling-branch run),
+                // so showing a red line from a failed ancestor would be misleading.
+                const targetIsBlockedOrFailed = node.task.status === 'skipped' || node.task.status === 'error' || node.task.status === 'terminated';
+                if (targetIsBlockedOrFailed) {
+                  edges.push({
+                    id: `edge_${sourceId}_to_${node.id}`,
+                    source: sourceId,
+                    target: node.id,
+                    type: 'bezier',
+                    style: { stroke: '#f87171', strokeWidth: 1.5, strokeDasharray: '4 4', opacity: 0.65 },
+                    markerEnd: { type: MarkerType.ArrowClosed, color: '#f87171' },
+                  });
+                }
               } else if (isSkippedSource) {
-                // Dashed zinc: upstream was skipped, this is also implicitly skipped
-                edges.push({
-                  id: `edge_${sourceId}_to_${node.id}`,
-                  source: sourceId,
-                  target: node.id,
-                  type: 'bezier',
-                  style: { stroke: '#a1a1aa', strokeWidth: 1.5, strokeDasharray: '4 4', opacity: 0.5 },
-                  markerEnd: { type: MarkerType.ArrowClosed, color: '#a1a1aa' },
-                });
+                // Dashed zinc: upstream was skipped, cascading skip signal — same gate as above.
+                const targetIsSkipped = node.task.status === 'skipped';
+                if (targetIsSkipped) {
+                  edges.push({
+                    id: `edge_${sourceId}_to_${node.id}`,
+                    source: sourceId,
+                    target: node.id,
+                    type: 'bezier',
+                    style: { stroke: '#a1a1aa', strokeWidth: 1.5, strokeDasharray: '4 4', opacity: 0.5 },
+                    markerEnd: { type: MarkerType.ArrowClosed, color: '#a1a1aa' },
+                  });
+                }
               } else {
                 // Fallback for running/pending states: neutral solid grey
                 edges.push({
