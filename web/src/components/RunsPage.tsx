@@ -1879,9 +1879,9 @@ function WorkflowDAGMap({
         fullRun.tasks.forEach((task) => {
           const isActive = activeTaskIds === null || activeTaskIds.has(task.taskId);
           if (isActive) {
-            // For historical runs, hide tasks that were never executed (skipped or pending placeholders)
-            // to keep the lineage graph clean, compact, and focused on actual evolution paths.
-            if (!isCurrent && (task.status === 'skipped' || task.status === 'pending')) {
+            // Hide skipped tasks across all runs (since they never executed).
+            // For pending tasks, hide them if they are in a historical/future run (not current) to avoid clutter.
+            if (task.status === 'skipped' || (!isCurrent && task.status === 'pending')) {
               return;
             }
 
