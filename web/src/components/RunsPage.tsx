@@ -1445,7 +1445,7 @@ interface WorkflowDAGMapProps {
   run: RunRecord;
   pipelines: Pipeline[];
   agents: Agent[];
-  onSelectTask: (taskId: string) => void;
+  onSelectTask: (taskId: string, runId?: string) => void;
   onInterruptTask?: (taskId: string) => void;
   onContinueStarted?: (newRunId: string) => void;
   runs?: RunSummary[];
@@ -1468,7 +1468,7 @@ interface TaskCardNodeData {
   agents: Agent[];
   isCurrentVersion: boolean;
   onSelectRun?: (runId: string) => void;
-  onSelectTask: (taskId: string) => void;
+  onSelectTask: (taskId: string, runId?: string) => void;
   onInterruptTask?: (taskId: string) => void;
   setBranchTask: (task: RunTaskRecord | null) => void;
   setReRunTask: (task: RunTaskRecord | null) => void;
@@ -1540,7 +1540,7 @@ function TaskCardNode({ data }: NodeProps<CustomNode>) {
     <div
       onClick={() => {
         if (onSelectRun) onSelectRun(node.runId);
-        onSelectTask(task.taskId);
+        onSelectTask(task.taskId, node.runId);
       }}
       className={`w-[260px] rounded-xl border p-4 shadow-sm hover:shadow-md cursor-pointer transition-all hover:-translate-y-0.5 backdrop-blur-sm relative group text-left ${
         isCurrentVersion
@@ -1959,6 +1959,7 @@ function WorkflowDAGMap({
             type: 'bezier',
             animated: true,
             style: { stroke: isBranch ? '#34d399' : '#f59e0b', strokeWidth: 2, strokeDasharray: '6 3' },
+            markerStart: isBranch ? 'branch-source-dot' : 'retry-source-dot',
             markerEnd: { type: MarkerType.ArrowClosed, color: isBranch ? '#34d399' : '#f59e0b' },
             label: isBranch ? '🌱 branch' : '↻ retry',
             labelStyle: { fontSize: 9, fontWeight: 700, fill: isBranch ? '#065f46' : '#92400e' },
@@ -2034,6 +2035,12 @@ function WorkflowDAGMap({
   }, [run, runs, lineageRuns, mapMode, pipeline, agents, onSelectRun, onSelectTask, onInterruptTask]);
 
   const fitTrigger = `${run.id}:${mapMode}:${flowNodes.length}:${flowEdges.length}:${isActive ? 'active' : 'hidden'}`;
+  const handleNodeClick = useCallback((_event: unknown, node: Node<TaskCardNodeData>) => {
+    const taskNode = node.data?.node;
+    if (!taskNode) return;
+    if (onSelectRun) onSelectRun(taskNode.runId);
+    onSelectTask(taskNode.taskId, taskNode.runId);
+  }, [onSelectRun, onSelectTask]);
 
   return (
     <>
@@ -2085,12 +2092,13 @@ function WorkflowDAGMap({
           nodes={flowNodes}
           edges={flowEdges}
           nodeTypes={nodeTypes}
-          fitView
+          onNodeClick={handleNodeClick}
           minZoom={0.2}
           maxZoom={1.5}
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}
         >
+          <RetryEdgeMarkerDefs />
           <MapAutoFit trigger={fitTrigger} active={isActive} />
           <Background color="#cbd5e1" gap={18} size={1} />
           <Controls className="!bg-white !border-zinc-200 !shadow-md !rounded-lg" />
@@ -2184,7 +2192,7 @@ function WorkflowDAGMap({
 
 interface ChronologicalTimelineProps {
   run: RunRecord;
-  onSelectTask: (taskId: string) => void;
+  onSelectTask: (taskId: string, runId?: string) => void;
 }
 
 function ChronologicalTimeline({ run, onSelectTask }: ChronologicalTimelineProps) {
@@ -2235,7 +2243,7 @@ function ChronologicalTimeline({ run, onSelectTask }: ChronologicalTimelineProps
                       R{item.round.round}
                     </span>
                     <span 
-                      onClick={() => onSelectTask(item.task!.taskId)}
+                      onClick={() => onSelectTask(item.task!.taskId, run.id)}
                       className="text-xs font-bold text-zinc-800 cursor-pointer hover:text-indigo-600 hover:underline"
                     >
                       {item.task.taskName}
@@ -2340,6 +2348,45 @@ function ChronologicalTimeline({ run, onSelectTask }: ChronologicalTimelineProps
   );
 }
 
+/**
+ * Injects hidden SVG <defs> for custom edge markers into the React Flow container.
+ * The retry-source-dot / branch-source-dot markers are rendered as filled circles
+ * at the START of lineage retry/branch edges, making the origin node unambiguous
+ * even when the edge spans across multiple cards.
+ */
+function RetryEdgeMarkerDefs() {
+  return (
+    <svg style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden', pointerEvents: 'none' }}>
+      <defs>
+        {/* Amber filled circle — start marker for retry edges */}
+        <marker
+          id="retry-source-dot"
+          viewBox="0 0 10 10"
+          refX="5"
+          refY="5"
+          markerWidth="6"
+          markerHeight="6"
+          orient="auto"
+        >
+          <circle cx="5" cy="5" r="4.5" fill="#f59e0b" stroke="#fff" strokeWidth="1" />
+        </marker>
+        {/* Emerald filled circle — start marker for branch edges */}
+        <marker
+          id="branch-source-dot"
+          viewBox="0 0 10 10"
+          refX="5"
+          refY="5"
+          markerWidth="6"
+          markerHeight="6"
+          orient="auto"
+        >
+          <circle cx="5" cy="5" r="4.5" fill="#34d399" stroke="#fff" strokeWidth="1" />
+        </marker>
+      </defs>
+    </svg>
+  );
+}
+
 function MapAutoFit({ trigger, active }: { trigger: string; active: boolean }) {
   const { fitView } = useReactFlow();
 
@@ -2372,7 +2419,7 @@ function RunDetail({
   onReviewSubmitted: () => void;
   onContinueStarted: (newRunId: string) => void;
   onInterruptTask?: (taskId: string) => void;
-  onSelectTask: (taskId: string) => void;
+  onSelectTask: (taskId: string, runId?: string) => void;
   onSelectRun: (runId: string) => void;
 }) {
   const awaitingTask = run.tasks.find((t) => t.status === 'awaiting_review' || t.status === 'interrupted');
@@ -2451,7 +2498,7 @@ function RunDetail({
               </div>
             </div>
             <button
-              onClick={() => onSelectTask(awaitingTask.taskId)}
+              onClick={() => onSelectTask(awaitingTask.taskId, run.id)}
               className="shrink-0 rounded-lg bg-amber-600 hover:bg-amber-700 px-3 py-1.5 text-[10px] font-bold text-white shadow-sm transition-colors active:scale-95 cursor-pointer ml-3"
             >
               ✍️ 去处理
@@ -2635,13 +2682,21 @@ function RunCard({ run, selected, onClick, onDelete, hasChild, collapsed, onTogg
 // RunsPage
 // ─────────────────────────────────────────────────────────────────────────────
 
+type ActiveTaskSelection = {
+  runId: string;
+  taskId: string;
+};
+
 export function RunsPage() {
   const { t } = useTranslation();
   const initialRouteRef = useRef(readRunsHashParams());
   const [agents, setAgents] = useState<Agent[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(initialRouteRef.current.taskId);
+  const [activeTaskSelection, setActiveTaskSelection] = useState<ActiveTaskSelection | null>(() => {
+    const { runId, taskId } = initialRouteRef.current;
+    return runId && taskId ? { runId, taskId } : null;
+  });
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(initialRouteRef.current.runId);
   const [selectedRun, setSelectedRun] = useState<RunRecord | null>(null);
@@ -2691,6 +2746,7 @@ export function RunsPage() {
         if (selectedId === runId) {
           setSelectedId(null);
           setSelectedRun(null);
+          setActiveTaskSelection(null);
         }
         await load(true);
       }
@@ -2731,6 +2787,7 @@ export function RunsPage() {
     if (selectedId && deletedIds.has(selectedId)) {
       setSelectedId(null);
       setSelectedRun(null);
+      setActiveTaskSelection(null);
     }
 
     await load(true);
@@ -2739,6 +2796,19 @@ export function RunsPage() {
       alert(`已删除 ${deletedIds.size} 条记录，仍有 ${failed} 条删除失败，请刷新后重试。`);
     }
   }, [runs, selectedId, load]);
+
+  const handleSelectRun = useCallback((runId: string) => {
+    setSelectedId(runId);
+  }, []);
+
+  const handleSelectTask = useCallback((taskId: string, runId?: string) => {
+    const targetRunId = runId ?? selectedRun?.id ?? selectedId;
+    if (!targetRunId) return;
+    setActiveTaskSelection({ runId: targetRunId, taskId });
+    if (targetRunId !== selectedId) {
+      setSelectedId(targetRunId);
+    }
+  }, [selectedId, selectedRun?.id]);
 
   const handleInterruptTask = async (taskId: string) => {
     if (!selectedId) return;
@@ -3066,8 +3136,8 @@ export function RunsPage() {
               load(true);
             }}
             onInterruptTask={handleInterruptTask}
-            onSelectTask={(taskId) => setActiveTaskId(taskId)}
-            onSelectRun={(runId) => setSelectedId(runId)}
+            onSelectTask={handleSelectTask}
+            onSelectRun={handleSelectRun}
           />
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-center px-8">
@@ -3081,9 +3151,9 @@ export function RunsPage() {
       </div>
 
       {/* Task Drawer Popup for Map and Timeline clicks */}
-      {activeTaskId && selectedRun && (
+      {activeTaskSelection && selectedRun && selectedRun.id === activeTaskSelection.runId && (
         (() => {
-          const task = selectedRun.tasks.find(t => t.taskId === activeTaskId);
+          const task = selectedRun.tasks.find((t) => t.taskId === activeTaskSelection.taskId);
           return task ? (
             <TaskDetailDialog
               task={task}
@@ -3093,7 +3163,7 @@ export function RunsPage() {
                 setSelectedId(newRunId);
                 load(true);
               }}
-              onClose={() => setActiveTaskId(null)}
+              onClose={() => setActiveTaskSelection(null)}
               onInterrupt={handleInterruptTask ? () => handleInterruptTask(task.taskId) : undefined}
               onReviewSubmitted={() => {
                 // Refresh the run detail after review submission
