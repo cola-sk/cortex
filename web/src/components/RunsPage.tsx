@@ -663,6 +663,7 @@ function TaskDetailDialog({
   agents = [],
   onContinueStarted,
   onInterrupt,
+  onReviewSubmitted,
 }: {
   task: RunTaskRecord;
   onClose: () => void;
@@ -670,6 +671,7 @@ function TaskDetailDialog({
   agents?: Agent[];
   onContinueStarted?: (newRunId: string) => void;
   onInterrupt?: () => void;
+  onReviewSubmitted?: () => void;
 }) {
   const toolCallCount = (task.toolEvents ?? []).flat().filter((e) => e.type === 'tool_use').length;
 
@@ -679,7 +681,8 @@ function TaskDetailDialog({
     return () => window.removeEventListener('keydown', fn);
   }, [onClose]);
 
-  const showContinuePanel = run && agents && onContinueStarted && (task.status === 'error' || task.status === 'interrupted' || task.status === 'terminated');
+  const showReviewPanel = run && agents && onReviewSubmitted && (task.status === 'awaiting_review' || task.status === 'interrupted');
+  const showContinuePanel = run && agents && onContinueStarted && (task.status === 'error' || task.status === 'terminated' || (task.status === 'interrupted' && !onReviewSubmitted));
 
   return (
     <>
@@ -764,6 +767,21 @@ function TaskDetailDialog({
             />
           </div>
         )}
+
+        {showReviewPanel && (
+          <div className="border-t border-zinc-150 bg-zinc-50 px-4 py-4 shrink-0 shadow-lg">
+            <RunDetailReviewPanel
+              runId={run.id}
+              run={run}
+              task={task}
+              agents={agents}
+              onSubmitted={() => {
+                onReviewSubmitted?.();
+                onClose();
+              }}
+            />
+          </div>
+        )}
       </div>
     </>
   );
@@ -779,12 +797,14 @@ function TaskRow({
   agents = [],
   onContinueStarted,
   onInterrupt,
+  onReviewSubmitted,
 }: {
   task: RunTaskRecord;
   run?: RunRecord;
   agents?: Agent[];
   onContinueStarted?: (newRunId: string) => void;
   onInterrupt?: () => void;
+  onReviewSubmitted?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -854,6 +874,7 @@ function TaskRow({
         onContinueStarted={onContinueStarted}
         onClose={() => setShowModal(false)}
         onInterrupt={onInterrupt}
+        onReviewSubmitted={onReviewSubmitted}
       />
     )}
     </>
@@ -2047,7 +2068,7 @@ function WorkflowDAGMap({
       )}
 
       {/* Main Panel View utilizing React Flow Canvas */}
-      <div className="w-full h-[540px] bg-zinc-50/20 relative select-none">
+      <div className="w-full flex-1 bg-zinc-50/20 relative select-none">
         {loadingLineage && Object.keys(lineageRuns).length < lineageSummaries.length ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-50/70 z-10 text-zinc-400 text-xs backdrop-blur-[1px]">
             <Spinner />
@@ -2340,9 +2361,9 @@ function RunDetail({
   const lineageChain = getLineageChain(run, runs);
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full flex flex-col overflow-hidden bg-white">
 
-      <div className="px-5 py-5 border-b border-zinc-100">
+      <div className="px-5 py-5 border-b border-zinc-100 shrink-0">
         {/* Header */}
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="min-w-0">
@@ -2392,16 +2413,35 @@ function RunDetail({
         </div>
 
         {/* Stats bar */}
-        <div className="flex items-center gap-4 text-xs text-zinc-500">
+        <div className="flex items-center gap-4 text-xs text-zinc-500 mb-1">
           <span>⏱ {formatDuration(run.durationMs)}</span>
           <span>📋 {run.taskCount} task{run.taskCount !== 1 ? 's' : ''}</span>
           {run.toolCallCount > 0 && <span>🔧 {run.toolCallCount} tool call{run.toolCallCount !== 1 ? 's' : ''}</span>}
           <span className="text-zinc-300 font-mono text-[10px]">{run.id}</span>
         </div>
+
+        {/* Premium sticky alert banner for awaiting review */}
+        {awaitingTask && (
+          <div className="mt-3 p-3 bg-amber-50 border border-amber-200/80 rounded-xl flex items-center justify-between shadow-sm">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="text-amber-500 text-sm shrink-0">⏸</span>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-amber-800">流水线已暂停，等待人工 Review</p>
+                <p className="text-[10px] text-amber-600 truncate mt-0.5">任务: {awaitingTask.taskName}</p>
+              </div>
+            </div>
+            <button
+              onClick={() => onSelectTask(awaitingTask.taskId)}
+              className="shrink-0 rounded-lg bg-amber-600 hover:bg-amber-700 px-3 py-1.5 text-[10px] font-bold text-white shadow-sm transition-colors active:scale-95 cursor-pointer ml-3"
+            >
+              ✍️ 去处理
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Tabs list styled for high aesthetics */}
-      <div className="flex border-b border-zinc-200 bg-zinc-50/50 px-5">
+      <div className="flex border-b border-zinc-200 bg-zinc-50/50 px-5 shrink-0">
         <button
           onClick={() => setViewTab('map')}
           className={`px-4 py-2.5 text-xs font-bold border-b-2 transition-all -mb-px flex items-center gap-1.5 ${
@@ -2435,63 +2475,47 @@ function RunDetail({
       </div>
 
       {/* Tab Panels */}
-      {viewTab === 'map' && (
-        <WorkflowDAGMap
-          run={run}
-          pipelines={pipelines}
-          agents={agents}
-          onSelectTask={onSelectTask}
-          onInterruptTask={onInterruptTask}
-          onContinueStarted={onContinueStarted}
-          runs={runs}
-          onSelectRun={onSelectRun}
-        />
-      )}
-
-      {viewTab === 'timeline' && (
-        <ChronologicalTimeline
-          run={run}
-          onSelectTask={onSelectTask}
-        />
-      )}
-
-      {viewTab === 'tasks' && (
-        <div className="px-5 py-4 space-y-3">
-          {run.tasks.map((task) => (
-            <TaskRow
-              key={task.taskId}
-              task={task}
+      <div className="flex-1 overflow-hidden min-h-0 relative bg-zinc-50/10 flex flex-col">
+        {viewTab === 'map' && (
+          <div className="flex-1 min-h-0 flex flex-col">
+            <WorkflowDAGMap
               run={run}
+              pipelines={pipelines}
               agents={agents}
+              onSelectTask={onSelectTask}
+              onInterruptTask={onInterruptTask}
               onContinueStarted={onContinueStarted}
-              onInterrupt={onInterruptTask ? () => onInterruptTask(task.taskId) : undefined}
+              runs={runs}
+              onSelectRun={onSelectRun}
             />
-          ))}
-        </div>
-      )}
+          </div>
+        )}
 
-      {/* Action panel: place below history/task entries */}
-      {awaitingTask && (
-        <div className="px-5 pb-4 pt-2 border-t border-zinc-100">
-          <RunDetailReviewPanel
-            runId={run.id}
-            run={run}
-            task={awaitingTask}
-            agents={agents}
-            onSubmitted={onReviewSubmitted}
-          />
-        </div>
-      )}
+        {viewTab === 'timeline' && (
+          <div className="h-full overflow-y-auto">
+            <ChronologicalTimeline
+              run={run}
+              onSelectTask={onSelectTask}
+            />
+          </div>
+        )}
 
-      {!awaitingTask && (run.status === 'error' || run.status === 'terminated') && (
-        <div className="px-5 pb-4 pt-2 border-t border-zinc-100">
-          <RunDetailContinuePanel
-            run={run}
-            agents={agents}
-            onStarted={onContinueStarted}
-          />
-        </div>
-      )}
+        {viewTab === 'tasks' && (
+          <div className="h-full overflow-y-auto px-5 py-4 space-y-3">
+            {run.tasks.map((task) => (
+              <TaskRow
+                key={task.taskId}
+                task={task}
+                run={run}
+                agents={agents}
+                onContinueStarted={onContinueStarted}
+                onInterrupt={onInterruptTask ? () => onInterruptTask(task.taskId) : undefined}
+                onReviewSubmitted={onReviewSubmitted}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2995,6 +3019,12 @@ export function RunsPage() {
               }}
               onClose={() => setActiveTaskId(null)}
               onInterrupt={handleInterruptTask ? () => handleInterruptTask(task.taskId) : undefined}
+              onReviewSubmitted={() => {
+                // Refresh the run detail after review submission
+                if (selectedId) {
+                  api.getRun(selectedId).then(setSelectedRun).catch(() => {});
+                }
+              }}
             />
           ) : null;
         })()
