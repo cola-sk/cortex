@@ -1525,7 +1525,11 @@ function TaskCardNode({ data }: NodeProps<CustomNode>) {
           : ''
       } ${bgClass}`}
     >
+      {/* Top/Bottom handles: used by vertical logical-dependency edges */}
       <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-indigo-300 border-none opacity-0 group-hover:opacity-100 transition-opacity" />
+      {/* Left/Right handles: used by horizontal same-level retry lineage edges */}
+      <Handle id="left" type="target" position={Position.Left} style={{ top: '50%', opacity: 0 }} />
+      <Handle id="right" type="source" position={Position.Right} style={{ top: '50%', opacity: 0 }} />
 
       <div className="flex items-center gap-1.5 mb-1.5">
         <span className={`w-2 h-2 rounded-full shrink-0 ${statusDotClass}`} />
@@ -1903,21 +1907,29 @@ function WorkflowDAGMap({
         });
 
         // B. Version lineage transition edges (marching ants animation)
-        // The FAILED task in the old run gets a dashed emerald arrow pointing TO the new retry task.
-        // This makes it crystal clear: "this failed → triggered a retry here"
+        // The FAILED task in the old run gets an amber dashed arrow pointing TO the new retry task.
+        // Source: the SAME TASK in the previous run (e.g. R2_落地者 error → R3_落地者 running)
+        // Since source and target are ALWAYS the same taskId, they are always at the same pipeline level.
+        // To avoid a misleading U-shaped upward route through upper rows, we use the horizontal
+        // left/right side handles instead of the default top/bottom handles.
         if (node.run.continuationTaskId === node.taskId && node.run.continuedFromRunId) {
           const sourceId = `${node.run.continuedFromRunId}_${node.taskId}`;
+          const isBranch = node.run.continuationType === 'branch';
           edges.push({
             id: `edge_lineage_${node.run.continuedFromRunId}_to_${node.id}`,
             source: sourceId,
             target: node.id,
-            type: 'smoothstep',
+            // Use right → left handles so the edge routes horizontally at the same row
+            // instead of curving upward through parent rows.
+            sourceHandle: 'right',
+            targetHandle: 'left',
+            type: 'bezier',
             animated: true,
-            style: { stroke: '#f59e0b', strokeWidth: 2, strokeDasharray: '6 3' },
-            markerEnd: { type: MarkerType.ArrowClosed, color: '#f59e0b' },
-            label: node.run.continuationType === 'branch' ? '🌱 branch' : '↻ retry',
-            labelStyle: { fontSize: 9, fontWeight: 700, fill: '#92400e', backgroundColor: '#fef3c7', padding: '2px 6px' },
-            labelBgStyle: { fill: '#fef3c7', borderRadius: 4 },
+            style: { stroke: isBranch ? '#34d399' : '#f59e0b', strokeWidth: 2, strokeDasharray: '6 3' },
+            markerEnd: { type: MarkerType.ArrowClosed, color: isBranch ? '#34d399' : '#f59e0b' },
+            label: isBranch ? '🌱 branch' : '↻ retry',
+            labelStyle: { fontSize: 9, fontWeight: 700, fill: isBranch ? '#065f46' : '#92400e' },
+            labelBgStyle: { fill: isBranch ? '#d1fae5' : '#fef3c7', borderRadius: 4 },
           });
         }
       });
