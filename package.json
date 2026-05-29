@@ -42,6 +42,7 @@
     "@anthropic-ai/sdk": "^0.95.2",
     "@tailwindcss/typography": "^0.5.19",
     "@types/js-yaml": "^4.0.9",
+    "@xyflow/react": "^12.10.2",
     "cors": "^2.8.6",
     "execa": "^9.6.1",
     "express": "^5.2.1",
