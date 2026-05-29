@@ -819,6 +819,10 @@ app.post('/api/runs/:runId/continue', (req, res) => {
       },
     });
 
+    const sourceTaskAgents = sourceTask.agents && sourceTask.agents.length > 0 ? sourceTask.agents : undefined;
+    const fallbackTaskAgents = Array.isArray(continuationTask.agent) ? continuationTask.agent : [continuationTask.agent];
+    const effectiveContinuationAgents = agentId ? [agentId] : (sourceTaskAgents ?? fallbackTaskAgents);
+
     const newRun: RunRecord = {
       id: newRunId,
       pipelineId: sourceRun.pipelineId,
@@ -836,12 +840,13 @@ app.post('/api/runs/:runId/continue', (req, res) => {
       tasks: plan.tasks.map((task) => {
         const previous = sourceTaskMap.get(task.id);
         const defaultAgents = Array.isArray(task.agent) ? task.agent : [task.agent];
-        const assignedAgents = task.id === taskId && agentId ? [agentId] : defaultAgents;
+        const previousAgents = previous?.agents && previous.agents.length > 0 ? previous.agents : undefined;
+        const assignedAgents = task.id === taskId ? effectiveContinuationAgents : defaultAgents;
 
         if (task.id !== taskId && previous?.status === 'done') {
           return {
             ...previous,
-            agents: assignedAgents,
+            agents: previousAgents ?? defaultAgents,
             input: task.input,
             gitDiff: task.gitDiff,
           };
@@ -888,7 +893,8 @@ app.post('/api/runs/:runId/continue', (req, res) => {
       initialResults,
       initialCompletedTaskIds,
       initialTaskRounds,
-      taskAgentOverrides: agentId ? { [taskId]: [agentId] } : undefined,
+      // Preserve the historical task agent by default; explicit UI selection still overrides.
+      taskAgentOverrides: { [taskId]: effectiveContinuationAgents },
     };
 
     const taskStartTimes = new Map<string, number>();
@@ -1216,6 +1222,10 @@ app.post('/api/runs/:runId/branch', (req, res) => {
       });
     }
 
+    const sourceTaskAgents = sourceTask.agents && sourceTask.agents.length > 0 ? sourceTask.agents : undefined;
+    const fallbackTaskAgents = Array.isArray(continuationTask.agent) ? continuationTask.agent : [continuationTask.agent];
+    const effectiveContinuationAgents = agentId ? [agentId] : (sourceTaskAgents ?? fallbackTaskAgents);
+
     const newRun: RunRecord = {
       id: newRunId,
       pipelineId: sourceRun.pipelineId,
@@ -1233,12 +1243,13 @@ app.post('/api/runs/:runId/branch', (req, res) => {
       tasks: plan.tasks.map((task) => {
         const previous = sourceTaskMap.get(task.id);
         const defaultAgents = Array.isArray(task.agent) ? task.agent : [task.agent];
-        const assignedAgents = task.id === taskId && agentId ? [agentId] : defaultAgents;
+        const previousAgents = previous?.agents && previous.agents.length > 0 ? previous.agents : undefined;
+        const assignedAgents = task.id === taskId ? effectiveContinuationAgents : defaultAgents;
 
         if (task.id !== taskId && !downstreamTaskIds.has(task.id) && previous?.status === 'done') {
           return {
             ...previous,
-            agents: defaultAgents,
+            agents: previousAgents ?? defaultAgents,
             input: task.input,
             gitDiff: task.gitDiff,
           };
@@ -1287,7 +1298,8 @@ app.post('/api/runs/:runId/branch', (req, res) => {
       initialResults,
       initialCompletedTaskIds,
       initialTaskRounds,
-      taskAgentOverrides: agentId ? { [taskId]: [agentId] } : undefined,
+      // Preserve the historical task agent by default; explicit UI selection still overrides.
+      taskAgentOverrides: { [taskId]: effectiveContinuationAgents },
     };
 
     const taskStartTimes = new Map<string, number>();

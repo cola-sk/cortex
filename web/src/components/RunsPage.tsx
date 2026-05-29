@@ -1448,7 +1448,7 @@ interface WorkflowDAGMapProps {
   pipelines: Pipeline[];
   agents: Agent[];
   onSelectTask: (taskId: string, runId?: string, context?: { task?: RunTaskRecord; run?: RunRecord }) => void;
-  onInterruptTask?: (taskId: string) => void;
+  onInterruptTask?: (taskId: string, runId?: string) => void;
   onContinueStarted?: (newRunId: string) => void;
   runs?: RunSummary[];
   onSelectRun?: (runId: string) => void;
@@ -1471,7 +1471,7 @@ interface TaskCardNodeData {
   isCurrentVersion: boolean;
   onSelectRun?: (runId: string) => void;
   onSelectTask: (taskId: string, runId?: string, context?: { task?: RunTaskRecord; run?: RunRecord }) => void;
-  onInterruptTask?: (taskId: string) => void;
+  onInterruptTask?: (taskId: string, runId?: string) => void;
   setBranchTask: (task: RunTaskRecord | null) => void;
   setReRunTask: (task: RunTaskRecord | null) => void;
   setModalRun: (run: RunRecord | null) => void;
@@ -1531,6 +1531,10 @@ function SourceDotEdge(props: EdgeProps) {
 const edgeTypes = {
   sourceDot: SourceDotEdge,
 };
+
+function isRunInProgress(status: RunSummary['status'] | RunRecord['status']): boolean {
+  return status === 'running' || status === 'awaiting_review' || status === 'interrupted';
+}
 
 function TaskCardNode({ data }: NodeProps<CustomNode>) {
   const {
@@ -1655,7 +1659,7 @@ function TaskCardNode({ data }: NodeProps<CustomNode>) {
                 onClick={(e) => {
                   e.stopPropagation();
                   if (window.confirm("确定要终止该任务的执行吗？")) {
-                    onInterruptTask(task.taskId);
+                    onInterruptTask(task.taskId, nodeRun.id);
                   }
                 }}
                 className="flex items-center justify-center gap-0.5 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 px-1.5 py-0.5 text-[8px] font-bold text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
@@ -1729,6 +1733,14 @@ function WorkflowDAGMap({
   const [lineageRuns, setLineageRuns] = useState<Record<string, RunRecord>>({});
   const [loadingLineage, setLoadingLineage] = useState(false);
 
+  // Keep current run snapshot in sync for real-time status updates (e.g. review submit).
+  useEffect(() => {
+    setLineageRuns((prev) => {
+      if (prev[run.id] === run) return prev;
+      return { ...prev, [run.id]: run };
+    });
+  }, [run]);
+
   const pipeline = pipelines.find((p) => p.id === run.pipelineId);
   const getDeps = useCallback((taskId: string) => {
     return pipeline?.tasks.find((t) => t.id === taskId)?.dependsOn || [];
@@ -1737,26 +1749,30 @@ function WorkflowDAGMap({
   const lineageSummaries = useMemo(() => {
     return runs ? getLineageChain(run, runs) : [];
   }, [run, runs]);
-  const lineageIdsStr = useMemo(() => {
-    return lineageSummaries.map(s => s.id).join(',');
+  const lineageSnapshotKey = useMemo(() => {
+    return lineageSummaries
+      .map((s) => `${s.id}:${s.status}:${s.finishedAt ?? ''}:${s.durationMs ?? ''}`)
+      .join('|');
   }, [lineageSummaries]);
 
   // Load missing historical runs in the lineage chain to extract full task details.
-  // Use lineageIdsStr dependency to prevent infinite fetch loops during live progress polling.
+  // Refresh when lineage run snapshot metadata changes, so map statuses stay in sync.
   useEffect(() => {
     if (lineageSummaries.length === 0) return;
 
     const fetchLineage = async () => {
-      const missingSummaries = lineageSummaries.filter(
-        s => s.id !== run.id && !lineageRuns[s.id]
+      const staleOrMissingSummaries = lineageSummaries.filter(
+        (s) => {
+          if (s.id === run.id) return false;
+          const cached = lineageRuns[s.id];
+          if (!cached) return true;
+          return cached.status !== s.status
+            || cached.finishedAt !== s.finishedAt
+            || cached.durationMs !== s.durationMs;
+        },
       );
 
-      if (missingSummaries.length === 0) {
-        // If all parent runs are already cached, just update the current run's reference (in case it changes)
-        setLineageRuns(prev => {
-          if (prev[run.id] === run) return prev;
-          return { ...prev, [run.id]: run };
-        });
+      if (staleOrMissingSummaries.length === 0) {
         return;
       }
 
@@ -1764,7 +1780,7 @@ function WorkflowDAGMap({
       const newMap: Record<string, RunRecord> = { ...lineageRuns, [run.id]: run };
 
       await Promise.all(
-        missingSummaries.map(async (summary) => {
+        staleOrMissingSummaries.map(async (summary) => {
           try {
             const fullRecord = await api.getRun(summary.id);
             newMap[summary.id] = fullRecord;
@@ -1778,7 +1794,7 @@ function WorkflowDAGMap({
     };
 
     fetchLineage();
-  }, [run.id, lineageIdsStr]);
+  }, [run.id, lineageSnapshotKey]);
 
   const showLineageTopology = lineageSummaries.length > 1;
 
@@ -1871,17 +1887,21 @@ function WorkflowDAGMap({
       // 1. Gather all active ExecutionNodes across lineage
       const allNodesList: ExecutionNode[] = [];
       lineageSummaries.forEach((summary) => {
-        const fullRun = lineageRuns[summary.id] || (summary.id === run.id ? run : null);
+        // Always prefer the live "run" prop for current run; lineageRuns may lag behind.
+        const fullRun = summary.id === run.id ? run : (lineageRuns[summary.id] ?? null);
         if (!fullRun) return;
 
         const isCurrent = summary.id === run.id;
+        const isLiveRun = isRunInProgress(fullRun.status);
+        // Keep continuation-subtree filtering for every run to avoid unrelated columns.
+        // For in-progress runs, pending nodes inside the active subtree should remain visible.
         const activeTaskIds = getActiveTaskIdsForRun(fullRun);
         fullRun.tasks.forEach((task) => {
           const isActive = activeTaskIds === null || activeTaskIds.has(task.taskId);
           if (isActive) {
-            // Hide skipped tasks across all runs (since they never executed).
-            // For pending tasks, hide them if they are in a historical/future run (not current) to avoid clutter.
-            if (task.status === 'skipped' || (!isCurrent && task.status === 'pending')) {
+            // Hide skipped tasks across all runs (interrupted/terminated cascaded nodes).
+            // For pending tasks, hide only on fully historical runs.
+            if (task.status === 'skipped' || (!isCurrent && !isLiveRun && task.status === 'pending')) {
               return;
             }
 
@@ -1960,9 +1980,12 @@ function WorkflowDAGMap({
             if (visited.has(currentRunId)) break;
             visited.add(currentRunId);
 
-            const r = lineageRuns[currentRunId] || (currentRunId === run.id ? run : null);
+            // Always prefer the live "run" prop for current run; lineage cache is best-effort.
+            const r = currentRunId === run.id ? run : (lineageRuns[currentRunId] ?? null);
             if (!r) break;
 
+            // Keep edge selection aligned with node visibility rules:
+            // always follow continuation-subtree filtering.
             const activeIds = getActiveTaskIdsForRun(r);
             const isActive = activeIds === null || activeIds.has(depId);
             if (isActive) {
@@ -2541,7 +2564,7 @@ function RunDetail({
   runs: RunSummary[];
   onReviewSubmitted: () => void;
   onContinueStarted: (newRunId: string) => void;
-  onInterruptTask?: (taskId: string) => void;
+  onInterruptTask?: (taskId: string, runId?: string) => void;
   onSelectTask: (taskId: string, runId?: string, context?: { task?: RunTaskRecord; run?: RunRecord }) => void;
   onSelectRun: (runId: string) => void;
 }) {
@@ -2700,7 +2723,7 @@ function RunDetail({
                 run={run}
                 agents={agents}
                 onContinueStarted={onContinueStarted}
-                onInterrupt={onInterruptTask ? () => onInterruptTask(task.taskId) : undefined}
+                onInterrupt={onInterruptTask ? () => onInterruptTask(task.taskId, run.id) : undefined}
                 onReviewSubmitted={onReviewSubmitted}
               />
             ))}
@@ -2937,20 +2960,43 @@ export function RunsPage() {
     });
   }, [selectedId, selectedRun?.id]);
 
-  const handleInterruptTask = async (taskId: string) => {
-    if (!selectedId) return;
+  const handleInterruptTask = async (taskId: string, runId?: string) => {
+    const targetRunId = runId ?? selectedId;
+    if (!targetRunId) return;
     try {
-      await api.interruptTask(selectedId, taskId);
-      const detail = await api.getRun(selectedId);
-      setSelectedRun(detail);
+      await api.interruptTask(targetRunId, taskId);
+      const detail = await api.getRun(targetRunId);
+      if (selectedId === targetRunId) {
+        setSelectedRun(detail);
+      }
+      setActiveTaskSelection((prev) => {
+        if (!prev || prev.runId !== targetRunId) return prev;
+        const latestTask = detail.tasks.find((t) => t.taskId === prev.taskId);
+        return {
+          ...prev,
+          runSnapshot: detail,
+          taskSnapshot: latestTask ?? prev.taskSnapshot,
+        };
+      });
       // Trigger a reload of all runs to immediately update cards and sidebar state
       await load();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (isTerminationNoopMessage(message)) {
         try {
-          const detail = await api.getRun(selectedId);
-          setSelectedRun(detail);
+          const detail = await api.getRun(targetRunId);
+          if (selectedId === targetRunId) {
+            setSelectedRun(detail);
+          }
+          setActiveTaskSelection((prev) => {
+            if (!prev || prev.runId !== targetRunId) return prev;
+            const latestTask = detail.tasks.find((t) => t.taskId === prev.taskId);
+            return {
+              ...prev,
+              runSnapshot: detail,
+              taskSnapshot: latestTask ?? prev.taskSnapshot,
+            };
+          });
           await load();
         } catch {
           // Ignore refresh failure for idempotent terminate race.
@@ -2961,6 +3007,28 @@ export function RunsPage() {
       alert('Failed to terminate run: ' + message);
     }
   };
+
+  const refreshRunAfterReview = useCallback(async (runId: string) => {
+    try {
+      const detail = await api.getRun(runId);
+      if (selectedId === runId) {
+        setSelectedRun(detail);
+      }
+      setActiveTaskSelection((prev) => {
+        if (!prev || prev.runId !== runId) return prev;
+        const latestTask = detail.tasks.find((t) => t.taskId === prev.taskId);
+        return {
+          ...prev,
+          runSnapshot: detail,
+          taskSnapshot: latestTask ?? prev.taskSnapshot,
+        };
+      });
+    } catch {
+      // Ignore transient refresh failures; polling/SSE will reconcile shortly.
+    } finally {
+      await load(true);
+    }
+  }, [load, selectedId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -3256,10 +3324,7 @@ export function RunsPage() {
             pipelines={pipelines}
             runs={runs}
             onReviewSubmitted={() => {
-              // Refresh the run detail after review submission
-              if (selectedId) {
-                api.getRun(selectedId).then(setSelectedRun).catch(() => {});
-              }
+              void refreshRunAfterReview(selectedRun.id);
             }}
             onContinueStarted={(newRunId) => {
               setSelectedId(newRunId);
@@ -3311,11 +3376,10 @@ export function RunsPage() {
                 load(true);
               }}
               onClose={() => setActiveTaskSelection(null)}
-              onInterrupt={handleInterruptTask ? () => handleInterruptTask(task.taskId) : undefined}
+              onInterrupt={handleInterruptTask ? () => handleInterruptTask(task.taskId, runForDialog?.id) : undefined}
               onReviewSubmitted={() => {
-                // Refresh the run detail after review submission
-                if (selectedId) {
-                  api.getRun(selectedId).then(setSelectedRun).catch(() => {});
+                if (runForDialog?.id) {
+                  void refreshRunAfterReview(runForDialog.id);
                 }
               }}
             />
