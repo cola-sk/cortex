@@ -1585,7 +1585,7 @@ function TaskCardNode({ data }: NodeProps<CustomNode>) {
     statusDotClass = 'bg-zinc-300';
   }
 
-  const parentRoundText = nodeRun.continuedFromRunId ? `R${nodeRun.continuationRound ? Math.max(1, nodeRun.continuationRound - 1) : 1}` : null;
+  const parentRoundText = nodeRun.continuedFromRunId ? `Run ${nodeRun.continuationRound ? Math.max(1, nodeRun.continuationRound - 1) : 1}` : null;
 
   return (
     <div
@@ -1884,7 +1884,7 @@ function WorkflowDAGMap({
               taskId: task.taskId,
               task,
               run: fullRun,
-              roundLabel: `R${summary.continuationRound || 1}`,
+              roundLabel: `Run ${summary.continuationRound || 1}`,
               isCurrentVersion: summary.id === run.id,
             });
           }
@@ -2086,7 +2086,7 @@ function WorkflowDAGMap({
             taskId: task.taskId,
             task,
             run,
-            roundLabel: `R${run.continuationRound || 1}`,
+            roundLabel: `Run ${run.continuationRound || 1}`,
             isCurrentVersion: true,
           };
           nodes.push({
@@ -2568,7 +2568,7 @@ function RunDetail({
                       const isCurrent = r.id === run.id;
                       const label = idx === 0
                         ? `🎬 原始执行`
-                        : `${r.continuationType === 'branch' ? '🌱 分支' : '↻ 重跑'}: ${r.continuationTaskName || '任务'} (R${r.continuationRound || 1})`;
+                        : `${r.continuationType === 'branch' ? '🌱 分支' : '↻ 重跑'}: ${r.continuationTaskName || '任务'} (Run ${r.continuationRound || 1})`;
                       return (
                         <option key={r.id} value={r.id}>
                           {label} {isCurrent ? ' (当前)' : ''}
@@ -2746,7 +2746,7 @@ function RunCard({ run, selected, onClick, onDelete, hasChild, collapsed, onTogg
           {isChild && run.continuationTaskName ? (
             <span className="flex items-center gap-1">
               <span>{run.continuationType === 'branch' ? '🌱' : '↻'}</span>
-              <span>重跑: {run.continuationTaskName} (R{run.continuationRound})</span>
+              <span>{run.continuationType === 'branch' ? '分支' : '重跑'}: {run.continuationTaskName} (Run {run.continuationRound})</span>
             </span>
           ) : run.goal}
         </p>
