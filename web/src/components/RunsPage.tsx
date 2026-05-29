@@ -76,52 +76,73 @@ function readRunsHashParams(): { runId: string | null; taskId: string | null } {
 function getRootRunId(runId: string | null, allRuns: RunSummary[]): string | null {
   if (!runId) return null;
   const runMap = new Map(allRuns.map(r => [r.id, r]));
-  let current = runMap.get(runId);
-  if (!current) return runId;
-  while (current.continuedFromRunId && runMap.has(current.continuedFromRunId)) {
-    current = runMap.get(current.continuedFromRunId)!;
+  let currentId = runId;
+  const visited = new Set<string>();
+  while (true) {
+    if (visited.has(currentId)) break;
+    visited.add(currentId);
+    const current = runMap.get(currentId);
+    if (current && current.continuedFromRunId) {
+      currentId = current.continuedFromRunId;
+    } else {
+      break;
+    }
   }
-  if (current.continuedFromRunId) {
-    return current.continuedFromRunId;
-  }
-  return current.id;
+  return currentId;
 }
 
 function getLineageChain(currentRun: RunSummary | RunRecord | null, allRuns: RunSummary[]): RunSummary[] {
   if (!currentRun) return [];
-  const rootId = currentRun.continuedFromRunId || currentRun.id;
 
-  const lineageMap = new Map<string, RunSummary>();
+  // 1. Create a combined list of all runs + current run to prevent race condition timing issues
+  const combinedRunsMap = new Map<string, RunSummary>();
+  allRuns.forEach(r => combinedRunsMap.set(r.id, r));
 
-  // 1. Add all runs from allRuns that share the same lineage (either they are the root or they point to the root)
-  allRuns.forEach(r => {
-    if (r.id === rootId || r.continuedFromRunId === rootId) {
-      lineageMap.set(r.id, r);
+  const currentSummary: RunSummary = {
+    id: currentRun.id,
+    pipelineId: currentRun.pipelineId,
+    pipelineName: currentRun.pipelineName,
+    goal: currentRun.goal,
+    status: currentRun.status,
+    startedAt: currentRun.startedAt,
+    finishedAt: currentRun.finishedAt,
+    durationMs: currentRun.durationMs,
+    taskCount: currentRun.taskCount,
+    toolCallCount: currentRun.toolCallCount,
+    continuedFromRunId: currentRun.continuedFromRunId,
+    continuationTaskId: (currentRun as any).continuationTaskId,
+    continuationTaskName: (currentRun as any).continuationTaskName,
+    continuationType: (currentRun as any).continuationType,
+    continuationRound: (currentRun as any).continuationRound,
+  };
+  combinedRunsMap.set(currentRun.id, currentSummary);
+
+  const combinedRuns = Array.from(combinedRunsMap.values());
+
+  // Helper to trace the absolute root run ID upwards for any run
+  const findAbsoluteRootId = (runId: string) => {
+    let currentId = runId;
+    const visited = new Set<string>();
+    while (true) {
+      if (visited.has(currentId)) break;
+      visited.add(currentId);
+      const current = combinedRunsMap.get(currentId);
+      if (current && current.continuedFromRunId) {
+        currentId = current.continuedFromRunId;
+      } else {
+        break;
+      }
     }
-  });
+    return currentId;
+  };
 
-  // 2. Make sure the current run itself is included
-  if (!lineageMap.has(currentRun.id)) {
-    lineageMap.set(currentRun.id, {
-      id: currentRun.id,
-      pipelineId: currentRun.pipelineId,
-      pipelineName: currentRun.pipelineName,
-      goal: currentRun.goal,
-      status: currentRun.status,
-      startedAt: currentRun.startedAt,
-      finishedAt: currentRun.finishedAt,
-      durationMs: currentRun.durationMs,
-      taskCount: currentRun.taskCount,
-      toolCallCount: currentRun.toolCallCount,
-      continuedFromRunId: currentRun.continuedFromRunId,
-      continuationTaskId: (currentRun as any).continuationTaskId,
-      continuationTaskName: (currentRun as any).continuationTaskName,
-      continuationType: (currentRun as any).continuationType,
-      continuationRound: (currentRun as any).continuationRound,
-    });
-  }
+  // Find the absolute root ID of our current run
+  const targetRootId = findAbsoluteRootId(currentRun.id);
 
-  const chain = Array.from(lineageMap.values());
+  // 2. Filter out all runs that share this same absolute root ID
+  const chain = combinedRuns.filter(r => findAbsoluteRootId(r.id) === targetRootId);
+
+  // 3. Sort chronologically
   chain.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
   return chain;
 }
