@@ -1874,10 +1874,17 @@ function WorkflowDAGMap({
         const fullRun = lineageRuns[summary.id] || (summary.id === run.id ? run : null);
         if (!fullRun) return;
 
+        const isCurrent = summary.id === run.id;
         const activeTaskIds = getActiveTaskIdsForRun(fullRun);
         fullRun.tasks.forEach((task) => {
           const isActive = activeTaskIds === null || activeTaskIds.has(task.taskId);
           if (isActive) {
+            // For historical runs, hide tasks that were never executed (skipped or pending placeholders)
+            // to keep the lineage graph clean, compact, and focused on actual evolution paths.
+            if (!isCurrent && (task.status === 'skipped' || task.status === 'pending')) {
+              return;
+            }
+
             allNodesList.push({
               id: `${summary.id}_${task.taskId}`,
               runId: summary.id,
@@ -1885,7 +1892,7 @@ function WorkflowDAGMap({
               task,
               run: fullRun,
               roundLabel: `Run ${summary.continuationRound || 1}`,
-              isCurrentVersion: summary.id === run.id,
+              isCurrentVersion: isCurrent,
             });
           }
         });
