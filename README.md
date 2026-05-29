@@ -9,7 +9,7 @@ A multi-agent CI engine that composes AI models into visual pipelines with paral
 [中文文档](README.zh-CN.md)
 
 <p align="center">
-  <img src="public/workflow.png" alt="Cortex pipeline execution flow with multi-branch lineage and human steering" width="780">
+  <img src="public/screenshot-main.png" alt="Cortex multi-agent CI engine — visual pipeline execution with parallel workers, quality gates, and real-time streaming" width="780">
 </p>
 
 ## Overview
@@ -27,10 +27,10 @@ Cortex orchestrates multiple AI agents (Claude, Codex, Gemini, local models, cus
 
 ### Screenshots
 
-**Execution Lineage & DAG Map** — track multi-branch task flows, visualize run statuses, and steer execution with a real-time human-in-the-loop input gateway.
+**Run Review & Topology Map** — inspect task outputs, agent iterations, and human decisions alongside a real-time topology visualization of the pipeline DAG.
 
 <p align="center">
-  <img src="public/workflow.png" alt="Cortex interactive multi-branch workflow lineage map and human-in-the-loop execution" width="780">
+  <img src="public/screenshot-review.png" alt="Cortex run review panel with topology map and human-in-the-loop decisions" width="780">
 </p>
 
 **Action Timeline & Logs** — inspect the granular agent thoughts, tool usages, output snapshots, and chronological operator reviews/decisions across each iteration round.
