@@ -11,6 +11,7 @@ import {
   MarkerType,
   Handle,
   Position,
+  useReactFlow,
   type Node,
   type Edge,
   type NodeProps,
@@ -176,9 +177,9 @@ function buildGroupedRunList(
   });
 
   const sortedPipelines = Array.from(pipelineGroups.entries()).sort((a, b) => {
-    const latestA = Math.max(...a[1].runs.map(r => new Date(r.startedAt).getTime()));
-    const latestB = Math.max(...b[1].runs.map(r => new Date(r.startedAt).getTime()));
-    return latestB - latestA;
+    const firstA = Math.min(...a[1].runs.map(r => new Date(r.startedAt).getTime()));
+    const firstB = Math.min(...b[1].runs.map(r => new Date(r.startedAt).getTime()));
+    return firstA - firstB;
   });
 
   const result: GroupedRunItem[] = [];
@@ -211,7 +212,7 @@ function buildGroupedRunList(
       !pRunMap.has(r.continuedFromRunId) ||
       r.continuationType !== 'continue'
     );
-    rootRuns.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+    rootRuns.sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime());
 
     function traverse(run: RunSummary, depth: number, parentCollapsed: boolean) {
       if (parentCollapsed) return;
@@ -1449,6 +1450,7 @@ interface WorkflowDAGMapProps {
   onContinueStarted?: (newRunId: string) => void;
   runs?: RunSummary[];
   onSelectRun?: (runId: string) => void;
+  isActive: boolean;
 }
 
 interface ExecutionNode {
@@ -1652,6 +1654,7 @@ function WorkflowDAGMap({
   onContinueStarted,
   runs,
   onSelectRun,
+  isActive,
 }: WorkflowDAGMapProps) {
   const [branchTask, setBranchTask] = useState<RunTaskRecord | null>(null);
   const [reRunTask, setReRunTask] = useState<RunTaskRecord | null>(null);
@@ -2030,6 +2033,8 @@ function WorkflowDAGMap({
     return { flowNodes: nodes, flowEdges: edges };
   }, [run, runs, lineageRuns, mapMode, pipeline, agents, onSelectRun, onSelectTask, onInterruptTask]);
 
+  const fitTrigger = `${run.id}:${mapMode}:${flowNodes.length}:${flowEdges.length}:${isActive ? 'active' : 'hidden'}`;
+
   return (
     <>
       {/* Topology Header Mode Controller */}
@@ -2086,6 +2091,7 @@ function WorkflowDAGMap({
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}
         >
+          <MapAutoFit trigger={fitTrigger} active={isActive} />
           <Background color="#cbd5e1" gap={18} size={1} />
           <Controls className="!bg-white !border-zinc-200 !shadow-md !rounded-lg" />
         </ReactFlow>
@@ -2334,6 +2340,20 @@ function ChronologicalTimeline({ run, onSelectTask }: ChronologicalTimelineProps
   );
 }
 
+function MapAutoFit({ trigger, active }: { trigger: string; active: boolean }) {
+  const { fitView } = useReactFlow();
+
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setTimeout(() => {
+      fitView({ padding: 0.2, duration: 240 });
+    }, 30);
+    return () => window.clearTimeout(timer);
+  }, [active, trigger, fitView]);
+
+  return null;
+}
+
 function RunDetail({
   run,
   agents,
@@ -2487,6 +2507,7 @@ function RunDetail({
               onContinueStarted={onContinueStarted}
               runs={runs}
               onSelectRun={onSelectRun}
+              isActive={viewTab === 'map'}
             />
           </div>
         )}
@@ -2566,9 +2587,27 @@ function RunCard({ run, selected, onClick, onDelete, hasChild, collapsed, onTogg
             </span>
           ) : run.goal}
         </p>
-        <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusColors(run.status)}`}>
-          {statusLabel(run.status)}
-        </span>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (confirm('Are you sure you want to delete this run record?')) {
+                onDelete();
+              }
+            }}
+            className={`text-zinc-300 hover:text-red-500 transition-all p-1 rounded hover:bg-red-50 ${
+              selected ? 'opacity-90' : 'opacity-0 group-hover:opacity-100'
+            }`}
+            title="Delete run"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
+            </svg>
+          </button>
+          <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${statusColors(run.status)}`}>
+            {statusLabel(run.status)}
+          </span>
+        </div>
       </div>
       {/* Line 2: type badge (if any) + time info */}
       <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 pl-6">
@@ -2588,22 +2627,6 @@ function RunCard({ run, selected, onClick, onDelete, hasChild, collapsed, onTogg
           </>
         )}
       </div>
-
-      {/* Delete button (visible on hover) */}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          if (confirm('Are you sure you want to delete this run record?')) {
-            onDelete();
-          }
-        }}
-        className="absolute right-1.5 top-1.5 text-zinc-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-1 rounded hover:bg-red-50"
-        title="Delete run"
-      >
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-          <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
-        </svg>
-      </button>
     </div>
   );
 }
@@ -2652,14 +2675,14 @@ export function RunsPage() {
       if (!silent) setLoading(true);
       const data = await api.getRuns();
       setRuns(data);
-      // Auto-select most recent run
-      if (data.length > 0 && !selectedId) {
-        setSelectedId(data[0].id);
-      }
+      setSelectedId((prevSelected) => {
+        if (prevSelected || data.length === 0) return prevSelected;
+        return data[0].id;
+      });
     } catch { /* silent */ } finally {
       if (!silent) setLoading(false);
     }
-  }, [selectedId]);
+  }, []);
 
   const handleDeleteRun = useCallback(async (runId: string) => {
     try {
@@ -2675,6 +2698,47 @@ export function RunsPage() {
       alert(`Delete failed: ${(e as Error).message}`);
     }
   }, [selectedId, load]);
+
+  const handleDeletePipelineRuns = useCallback(async (pipelineId: string, pipelineName: string) => {
+    const targets = runs.filter((r) => r.pipelineId === pipelineId);
+    if (targets.length === 0) return;
+
+    if (!window.confirm(`确定删除一级菜单「${pipelineName}」下的全部 ${targets.length} 条运行记录吗？此操作不可撤销。`)) {
+      return;
+    }
+
+    const deletedIds = new Set<string>();
+    let failed = 0;
+
+    for (const item of targets) {
+      try {
+        const { success } = await api.deleteRun(item.id);
+        if (success) {
+          deletedIds.add(item.id);
+        } else {
+          failed += 1;
+        }
+      } catch {
+        failed += 1;
+      }
+    }
+
+    if (deletedIds.size === 0) {
+      alert('批量删除失败，请稍后重试。');
+      return;
+    }
+
+    if (selectedId && deletedIds.has(selectedId)) {
+      setSelectedId(null);
+      setSelectedRun(null);
+    }
+
+    await load(true);
+
+    if (failed > 0) {
+      alert(`已删除 ${deletedIds.size} 条记录，仍有 ${failed} 条删除失败，请刷新后重试。`);
+    }
+  }, [runs, selectedId, load]);
 
   const handleInterruptTask = async (taskId: string) => {
     if (!selectedId) return;
@@ -2921,7 +2985,7 @@ export function RunsPage() {
                 return (
                   <div
                     key={`g-${item.pipelineId}`}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-50 border-b border-zinc-100 cursor-pointer hover:bg-zinc-100/60 select-none sticky top-0 z-10"
+                    className="group flex items-center gap-1.5 px-3 py-1.5 bg-zinc-50 border-b border-zinc-100 cursor-pointer hover:bg-zinc-100/60 select-none sticky top-0 z-10"
                     onClick={() => togglePipelineCollapse(item.pipelineId)}
                   >
                     <svg
@@ -2932,6 +2996,18 @@ export function RunsPage() {
                     </svg>
                     <span className="text-[11px] font-semibold text-zinc-500 truncate flex-1">{item.pipelineName}</span>
                     <span className="text-[10px] text-zinc-300 shrink-0">{item.runCount}</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeletePipelineRuns(item.pipelineId, item.pipelineName);
+                      }}
+                      className="shrink-0 rounded p-1 text-zinc-300 hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
+                      title={`删除「${item.pipelineName}」下所有运行记录`}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
                   </div>
                 );
               }
