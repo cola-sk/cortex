@@ -907,7 +907,6 @@ app.post('/api/runs/:runId/continue', (req, res) => {
             emitToRunSubscribers(newRunId, 'task:start', { taskId: startedTaskId, taskName, agents, input });
             if (task) {
               task.status = 'running';
-              task.agents = agents;
               task.startedAt = new Date().toISOString();
               task.finishedAt = undefined;
               task.durationMs = undefined;
@@ -1307,7 +1306,6 @@ app.post('/api/runs/:runId/branch', (req, res) => {
             emitToRunSubscribers(newRunId, 'task:start', { taskId: startedTaskId, taskName, agents, input });
             if (task) {
               task.status = 'running';
-              task.agents = agents;
               task.startedAt = new Date().toISOString();
               task.finishedAt = undefined;
               task.durationMs = undefined;
@@ -1676,7 +1674,6 @@ app.post('/api/pipelines/:id/run', async (req, res) => {
         emitToRunSubscribers(runId, 'task:start', { taskId, taskName, agents, input });
         if (task) {
           task.status = 'running';
-          task.agents = agents;
           task.startedAt = new Date().toISOString();
           if (agents.length > 1) task.workerStatus = agents.map(() => 'running');
         }
