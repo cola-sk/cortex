@@ -2943,12 +2943,15 @@ export function RunsPage() {
       await api.interruptTask(selectedId, taskId);
       const detail = await api.getRun(selectedId);
       setSelectedRun(detail);
+      // Trigger a reload of all runs to immediately update cards and sidebar state
+      await load();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (isTerminationNoopMessage(message)) {
         try {
           const detail = await api.getRun(selectedId);
           setSelectedRun(detail);
+          await load();
         } catch {
           // Ignore refresh failure for idempotent terminate race.
         }
@@ -3286,14 +3289,17 @@ export function RunsPage() {
               : (selectedRun && selectedRun.id === activeTaskSelection.runId ? selectedRun : null)
           );
 
-          const task = (
-            activeTaskSelection.taskSnapshot
-            && activeTaskSelection.taskSnapshot.taskId === activeTaskSelection.taskId
-            && runForDialog
-            && runForDialog.id === activeTaskSelection.runId
-          )
-            ? activeTaskSelection.taskSnapshot
-            : runForDialog?.tasks.find((t) => t.taskId === activeTaskSelection.taskId);
+          // Prioritize the live task state from runForDialog (which updates in real-time)
+          // and fall back to the static taskSnapshot only if the live state isn't loaded yet.
+          const task = runForDialog?.tasks.find((t) => t.taskId === activeTaskSelection.taskId)
+            || (
+              activeTaskSelection.taskSnapshot
+              && activeTaskSelection.taskSnapshot.taskId === activeTaskSelection.taskId
+              && runForDialog
+              && runForDialog.id === activeTaskSelection.runId
+                ? activeTaskSelection.taskSnapshot
+                : null
+            );
 
           return task ? (
             <TaskDetailDialog
