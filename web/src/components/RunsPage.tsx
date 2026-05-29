@@ -2990,6 +2990,9 @@ export function RunsPage() {
         const task = run.tasks.find((t) => t.taskId === d.taskId);
         if (task) {
           task.status = 'running';
+          if (Array.isArray(d.agents)) {
+            task.agents = d.agents as string[];
+          }
           task.startedAt = new Date().toISOString();
           task.finishedAt = undefined;
           task.durationMs = undefined;
