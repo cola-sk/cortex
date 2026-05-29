@@ -1824,8 +1824,14 @@ function WorkflowDAGMap({
       });
 
       // 4. Generate logical dependency and lineage transition edges
+      // Build a quick lookup: nodeId -> task status for edge styling
+      const nodeStatusMap = new Map<string, RunTaskRecord['status']>();
+      allNodesList.forEach(n => nodeStatusMap.set(n.id, n.task.status));
+
       allNodesList.forEach((node) => {
         // A. Logical pipeline dependency edges
+        // Rule: solid indigo arrow when the dep source task SUCCEEDED (done)
+        //       dashed muted arrow when the dep source task failed/skipped (skipping signal)
         const deps = getDeps(node.taskId);
         deps.forEach((depId) => {
           let currentRunId: string | null = node.runId;
@@ -1841,17 +1847,53 @@ function WorkflowDAGMap({
             const activeIds = getActiveTaskIdsForRun(r);
             const isActive = activeIds === null || activeIds.has(depId);
             if (isActive) {
-              edges.push({
-                id: `edge_${currentRunId}_${depId}_to_${node.id}`,
-                source: `${currentRunId}_${depId}`,
-                target: node.id,
-                type: 'bezier',
-                style: { stroke: '#818cf8', strokeWidth: 2 },
-                markerEnd: {
-                  type: MarkerType.ArrowClosed,
-                  color: '#818cf8',
-                },
-              });
+              const sourceId = `${currentRunId}_${depId}`;
+              const sourceStatus = nodeStatusMap.get(sourceId);
+              const isDoneSource = sourceStatus === 'done';
+              const isFailedSource = sourceStatus === 'error' || sourceStatus === 'terminated';
+              const isSkippedSource = sourceStatus === 'skipped';
+
+              if (isDoneSource) {
+                // Solid indigo bezier: upstream task succeeded, passed output to this task
+                edges.push({
+                  id: `edge_${sourceId}_to_${node.id}`,
+                  source: sourceId,
+                  target: node.id,
+                  type: 'bezier',
+                  style: { stroke: '#818cf8', strokeWidth: 2 },
+                  markerEnd: { type: MarkerType.ArrowClosed, color: '#818cf8' },
+                });
+              } else if (isFailedSource) {
+                // Dashed red: upstream task failed — this explains the retry or downstream skip
+                edges.push({
+                  id: `edge_${sourceId}_to_${node.id}`,
+                  source: sourceId,
+                  target: node.id,
+                  type: 'bezier',
+                  style: { stroke: '#f87171', strokeWidth: 1.5, strokeDasharray: '4 4', opacity: 0.65 },
+                  markerEnd: { type: MarkerType.ArrowClosed, color: '#f87171' },
+                });
+              } else if (isSkippedSource) {
+                // Dashed zinc: upstream was skipped, this is also implicitly skipped
+                edges.push({
+                  id: `edge_${sourceId}_to_${node.id}`,
+                  source: sourceId,
+                  target: node.id,
+                  type: 'bezier',
+                  style: { stroke: '#a1a1aa', strokeWidth: 1.5, strokeDasharray: '4 4', opacity: 0.5 },
+                  markerEnd: { type: MarkerType.ArrowClosed, color: '#a1a1aa' },
+                });
+              } else {
+                // Fallback for running/pending states: neutral solid grey
+                edges.push({
+                  id: `edge_${sourceId}_to_${node.id}`,
+                  source: sourceId,
+                  target: node.id,
+                  type: 'bezier',
+                  style: { stroke: '#cbd5e1', strokeWidth: 1.5 },
+                  markerEnd: { type: MarkerType.ArrowClosed, color: '#cbd5e1' },
+                });
+              }
               break;
             }
 
@@ -1861,18 +1903,21 @@ function WorkflowDAGMap({
         });
 
         // B. Version lineage transition edges (marching ants animation)
+        // The FAILED task in the old run gets a dashed emerald arrow pointing TO the new retry task.
+        // This makes it crystal clear: "this failed → triggered a retry here"
         if (node.run.continuationTaskId === node.taskId && node.run.continuedFromRunId) {
+          const sourceId = `${node.run.continuedFromRunId}_${node.taskId}`;
           edges.push({
             id: `edge_lineage_${node.run.continuedFromRunId}_to_${node.id}`,
-            source: `${node.run.continuedFromRunId}_${node.taskId}`,
+            source: sourceId,
             target: node.id,
             type: 'smoothstep',
             animated: true,
-            style: { stroke: '#10b981', strokeWidth: 2, strokeDasharray: '5, 5' },
-            markerEnd: {
-              type: MarkerType.ArrowClosed,
-              color: '#10b981',
-            },
+            style: { stroke: '#f59e0b', strokeWidth: 2, strokeDasharray: '6 3' },
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#f59e0b' },
+            label: node.run.continuationType === 'branch' ? '🌱 branch' : '↻ retry',
+            labelStyle: { fontSize: 9, fontWeight: 700, fill: '#92400e', backgroundColor: '#fef3c7', padding: '2px 6px' },
+            labelBgStyle: { fill: '#fef3c7', borderRadius: 4 },
           });
         }
       });
