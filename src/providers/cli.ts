@@ -114,7 +114,7 @@ function isAttemptingUnauthorizedAccess(toolName: string, input: any, workspaceP
 /** Strip ANSI escape codes from terminal output */
 function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\r/g, '');
 }
 
 /**
@@ -364,7 +364,18 @@ export class CliProvider implements LLMProvider {
         finalArgs.unshift('--skip-trust');
       }
 
-      const child = spawn(this.command, finalArgs, {
+      let spawnCommand = this.command;
+      let spawnArgs = finalArgs;
+
+      // On macOS, run the command inside a pseudo-terminal (PTY) using 'script -qF'.
+      // This tricks the child CLI process into thinking it is in an interactive TTY,
+      // disabling standard block-buffering and forcing instantaneous line-by-line flushes.
+      if (process.platform === 'darwin') {
+        spawnCommand = 'script';
+        spawnArgs = ['-qF', '/dev/null', this.command, ...finalArgs];
+      }
+
+      const child = spawn(spawnCommand, spawnArgs, {
         cwd: normalizeCwd(options?.cwd),
         env: {
           ...process.env,
