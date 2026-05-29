@@ -1414,26 +1414,89 @@ interface WorkflowDAGMapProps {
   onSelectTask: (taskId: string) => void;
   onInterruptTask?: (taskId: string) => void;
   onContinueStarted?: (newRunId: string) => void;
+  runs?: RunSummary[];
+  onSelectRun?: (runId: string) => void;
 }
 
-function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask, onContinueStarted }: WorkflowDAGMapProps) {
+function WorkflowDAGMap({
+  run,
+  pipelines,
+  agents,
+  onSelectTask,
+  onInterruptTask,
+  onContinueStarted,
+  runs,
+  onSelectRun,
+}: WorkflowDAGMapProps) {
   const [branchTask, setBranchTask] = useState<RunTaskRecord | null>(null);
   const [reRunTask, setReRunTask] = useState<RunTaskRecord | null>(null);
+  const [modalRun, setModalRun] = useState<RunRecord | null>(null);
+  const [mapMode, setMapMode] = useState<'lineage' | 'current'>('lineage');
+
+  const [lineageRuns, setLineageRuns] = useState<Record<string, RunRecord>>({});
+  const [loadingLineage, setLoadingLineage] = useState(false);
+
   const pipeline = pipelines.find((p) => p.id === run.pipelineId);
   const getDeps = useCallback((taskId: string) => {
     return pipeline?.tasks.find((t) => t.id === taskId)?.dependsOn || [];
   }, [pipeline]);
 
-  // Identify which tasks are active versus inherited/reused.
-  // If run.continuationTaskId is not set, all tasks are active.
-  // If run.continuationTaskId is set, only that task and all its downstream tasks are active.
-  const activeTaskIds = (() => {
+  // Load all runs in the lineage chain to extract full task details
+  useEffect(() => {
+    if (!runs) return;
+    const fetchLineage = async () => {
+      setLoadingLineage(true);
+      const lineageSummaries = getLineageChain(run, runs);
+      const newMap: Record<string, RunRecord> = { [run.id]: run };
+
+      await Promise.all(
+        lineageSummaries.map(async (summary) => {
+          if (summary.id !== run.id) {
+            try {
+              const fullRecord = await api.getRun(summary.id);
+              newMap[summary.id] = fullRecord;
+            } catch (err) {
+              console.error(`Failed to fetch run ${summary.id}:`, err);
+            }
+          }
+        })
+      );
+      setLineageRuns(newMap);
+      setLoadingLineage(false);
+    };
+
+    fetchLineage();
+  }, [run.id, runs]);
+
+  const lineageSummaries = runs ? getLineageChain(run, runs) : [];
+  const showLineageTopology = lineageSummaries.length > 1;
+
+  // Helper to identify which tasks are active versus inherited/reused for any run
+  const getActiveTaskIdsForRun = (targetRun: RunRecord): Set<string> | null => {
+    if (!targetRun.continuationTaskId) return null;
+    const activeSet = new Set<string>([targetRun.continuationTaskId]);
+    const queue = [targetRun.continuationTaskId];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const directChildren = pipeline?.tasks.filter((t) => t.dependsOn.includes(current)) || [];
+      for (const child of directChildren) {
+        if (!activeSet.has(child.id)) {
+          activeSet.add(child.id);
+          queue.push(child.id);
+        }
+      }
+    }
+    return activeSet;
+  };
+
+  // Original single-run level groups
+  const currentLevelGroups = calculateLevels(run.tasks, getDeps);
+  const currentActiveTaskIds = (() => {
     if (!run.continuationTaskId) return null;
     const activeSet = new Set<string>([run.continuationTaskId]);
     const queue = [run.continuationTaskId];
     while (queue.length > 0) {
       const current = queue.shift()!;
-      // Find downstream tasks (tasks that have 'current' in dependsOn)
       const directChildren = pipeline?.tasks.filter((t) => t.dependsOn.includes(current)) || [];
       for (const child of directChildren) {
         if (!activeSet.has(child.id)) {
@@ -1445,213 +1508,324 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
     return activeSet;
   })();
 
-  const levelGroups = calculateLevels(run.tasks, getDeps);
+  const renderTaskCard = (task: RunTaskRecord, currentRecord: RunRecord, activeTaskIds: Set<string> | null, columnRunId: string) => {
+    const isSkippedDueToFailure = task.error === 'Skipped due to previous task failure';
+    const isAwaiting = task.status === 'awaiting_review' || task.status === 'interrupted';
+    const isRunning = task.status === 'running';
+    const isDone = task.status === 'done';
+    const isError = task.status === 'error' && !isSkippedDueToFailure;
+    const isTerminated = task.status === 'terminated';
+    const isSkipped = task.status === 'skipped' || isSkippedDueToFailure;
+    const isPending = task.status === 'pending';
+
+    const isInherited = activeTaskIds !== null && !activeTaskIds.has(task.taskId);
+
+    let bgClass = 'bg-white border-zinc-200 text-zinc-800 hover:border-zinc-300';
+    let statusDotClass = 'bg-zinc-400';
+    let pulseClass = '';
+
+    if (isDone) {
+      bgClass = 'bg-emerald-50/70 border-emerald-200 text-emerald-950 shadow-emerald-50/50 hover:bg-emerald-50 hover:border-emerald-300';
+      statusDotClass = 'bg-emerald-500';
+    } else if (isRunning) {
+      bgClass = 'bg-blue-50/70 border-blue-400 text-blue-950 shadow-blue-50/50 ring-2 ring-blue-100 animate-pulse hover:bg-blue-50';
+      statusDotClass = 'bg-blue-500 animate-ping';
+      pulseClass = 'animate-pulse';
+    } else if (isAwaiting) {
+      bgClass = 'bg-amber-50/80 border-amber-400 text-amber-950 shadow-amber-50/50 ring-2 ring-amber-100 hover:bg-amber-50';
+      statusDotClass = 'bg-amber-500 animate-pulse';
+    } else if (isError) {
+      bgClass = 'bg-red-50/80 border-red-300 text-red-950 shadow-red-50/50 ring-2 ring-red-100 hover:bg-red-50 hover:border-red-400';
+      statusDotClass = 'bg-red-500';
+    } else if (isTerminated) {
+      bgClass = 'bg-zinc-100/80 border-zinc-300 text-zinc-800 shadow-zinc-100/70 ring-1 ring-zinc-200 hover:bg-zinc-100';
+      statusDotClass = 'bg-zinc-500';
+    } else if (isSkipped) {
+      bgClass = 'bg-zinc-50/80 border-zinc-200 text-zinc-500 hover:bg-zinc-50';
+      statusDotClass = 'bg-zinc-300';
+    } else if (isPending) {
+      bgClass = 'bg-zinc-50/50 border-zinc-200/60 text-zinc-400';
+      statusDotClass = 'bg-zinc-300';
+    }
+
+    return (
+      <div
+        key={task.taskId}
+        onClick={() => {
+          if (onSelectRun) onSelectRun(columnRunId);
+          onSelectTask(task.taskId);
+        }}
+        className={`rounded-xl border p-3.5 shadow-sm hover:shadow-md cursor-pointer transition-all hover:-translate-y-0.5 backdrop-blur-sm relative group ${
+          isInherited
+            ? 'opacity-55 border-dashed border-zinc-300 bg-zinc-50 saturate-50 hover:opacity-85 hover:border-zinc-400'
+            : bgClass
+        }`}
+      >
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <span className={`w-2 h-2 rounded-full shrink-0 ${isInherited ? 'bg-zinc-300' : statusDotClass}`} />
+          <span className={`text-xs font-bold leading-tight flex-1 min-w-0 truncate ${isInherited ? 'text-zinc-400 font-medium' : pulseClass}`} title={task.taskName}>
+            {task.taskName}
+          </span>
+          {isInherited && (
+            <span className="shrink-0 inline-flex items-center gap-0.5 rounded bg-zinc-100 border border-zinc-200 px-1 py-0.5 text-[8px] font-bold text-zinc-400 select-none">
+              📥 已复用
+            </span>
+          )}
+          {!isInherited && task.status !== 'pending' && (
+            <div className="ml-auto flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+              {isRunning && onInterruptTask && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (window.confirm("确定要终止该任务的执行吗？")) {
+                      onInterruptTask(task.taskId);
+                    }
+                  }}
+                  className="flex items-center justify-center gap-0.5 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 px-1 py-0.5 text-[8px] font-bold text-red-600 transition-colors shadow-sm cursor-pointer"
+                  title="终止任务"
+                >
+                  <span>终止</span>
+                </button>
+              )}
+              {isDone && onContinueStarted && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setModalRun(currentRecord); setBranchTask(task); }}
+                  className="flex items-center justify-center rounded bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 hover:border-emerald-300 p-0.5 text-emerald-600 transition-colors shadow-sm cursor-pointer"
+                  title="从此任务创建分支"
+                >
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 2 L4 8" />
+                    <path d="M4 8 L4 14" />
+                    <path d="M4 5 Q4 5 10 5 L10 14" />
+                    <path d="M8 12 L10 14 L12 12" />
+                  </svg>
+                </button>
+              )}
+              {(isError || isTerminated || task.status === 'interrupted') && onContinueStarted && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setModalRun(currentRecord); setReRunTask(task); }}
+                  className="flex items-center justify-center rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 p-0.5 text-red-600 transition-colors shadow-sm cursor-pointer"
+                  title="重跑当前失败任务"
+                >
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M1.5 8a6.5 6.5 0 1 0 1.5-4.2L1.5 6" />
+                    <path d="M1.5 1.5v4.5h4.5" />
+                  </svg>
+                </button>
+              )}
+              <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
+                isDone ? 'bg-emerald-100/60 text-emerald-700' :
+                isRunning ? 'bg-blue-100/60 text-blue-700' :
+                isAwaiting ? 'bg-amber-100/60 text-amber-700' :
+                isTerminated ? 'bg-zinc-200/70 text-zinc-700' :
+                isSkipped ? 'bg-zinc-100 text-zinc-500' :
+                isError ? 'bg-red-100/60 text-red-700' :
+                'bg-zinc-100 text-zinc-600'
+              }`}>
+                {isSkippedDueToFailure ? 'skipped' : statusLabel(task.status)}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5 text-[9px] text-zinc-400">
+          <span>🤖 {task.agents.map(aId => {
+            const ag = agents.find(a => a.id === aId);
+            return ag?.name || aId;
+          }).join(', ')}</span>
+          {task.durationMs != null && (
+            <>
+              <span>·</span>
+              <span>⏱ {formatDuration(task.durationMs)}</span>
+            </>
+          )}
+        </div>
+
+        {/* Rounds sequence */}
+        {task.rounds && task.rounds.length > 0 && (
+          <div className="mt-2 border-t border-zinc-100/60 pt-1.5 flex flex-wrap gap-1 items-center">
+            <span className="text-[8px] uppercase tracking-wider text-zinc-400 font-bold mr-0.5">Rounds:</span>
+            {task.rounds.map((r) => {
+              const isRoundInherited = currentRecord.continuationRound !== undefined && r.round < currentRecord.continuationRound;
+              return (
+                <div
+                  key={r.round}
+                  className={`group relative rounded px-1.5 py-0.2 text-[9px] font-semibold border flex items-center gap-0.5 transition-all hover:scale-105 select-none ${
+                    isRoundInherited
+                      ? 'opacity-40 border-dashed border-zinc-300 bg-zinc-50/50 text-zinc-400 hover:opacity-100 hover:border-zinc-400'
+                      : r.review?.action === 'revise'
+                        ? 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 hover:border-amber-300'
+                        : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-300'
+                  }`}
+                >
+                  <span>R{r.round}</span>
+                  {r.review?.comment && <span className="text-[7px]">💬</span>}
+
+                  {r.review?.comment && (
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-[99] w-48 rounded-xl bg-zinc-950 text-white p-2.5 text-[9px] leading-relaxed shadow-xl border border-zinc-800 backdrop-blur-sm pointer-events-none transition-opacity">
+                      <div className="font-bold border-b border-white/10 pb-1 mb-1 flex justify-between items-center text-zinc-300">
+                        <span>{isRoundInherited ? '📥 已复用' : r.review.action === 'revise' ? '↺ Revision' : '✓ Approved'}</span>
+                      </div>
+                      <p className="italic text-zinc-200">"{r.review.comment}"</p>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {(isRunning || isAwaiting) && (
+              <span className="rounded bg-indigo-50 border border-indigo-200 text-indigo-700 px-1 py-0.2 text-[9px] font-semibold animate-pulse">
+                R{task.currentRound ?? (task.rounds.length + 1)}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <>
-    <div className="p-6 bg-zinc-50/50 min-h-[400px] flex flex-col items-center">
-      <div className="w-full max-w-2xl space-y-4">
-        {levelGroups.map((group, gIdx) => (
-          <div key={group.level} className="flex flex-col items-center">
-            {/* Horizontal Row of Tasks in this dependency level */}
-            <div className="flex flex-wrap justify-center gap-4 w-full">
-              {group.tasks.map((task) => {
-                const isSkippedDueToFailure = task.error === 'Skipped due to previous task failure';
-                const isAwaiting = task.status === 'awaiting_review' || task.status === 'interrupted';
-                const isRunning = task.status === 'running';
-                const isDone = task.status === 'done';
-                const isError = task.status === 'error' && !isSkippedDueToFailure;
-                const isTerminated = task.status === 'terminated';
-                const isSkipped = task.status === 'skipped' || isSkippedDueToFailure;
-                const isPending = task.status === 'pending';
+      {/* Topology Header Mode Controller */}
+      {showLineageTopology && (
+        <div className="px-5 py-2.5 bg-zinc-50 border-b border-zinc-200/60 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-semibold text-zinc-500">拓扑图模式:</span>
+            <button
+              onClick={() => setMapMode('lineage')}
+              className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all ${
+                mapMode === 'lineage'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-100'
+              }`}
+            >
+              🔄 完整生命周期链路图 (Lineage)
+            </button>
+            <button
+              onClick={() => setMapMode('current')}
+              className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all ${
+                mapMode === 'current'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-100'
+              }`}
+            >
+              📌 当前版本依赖 DAG (Current)
+            </button>
+          </div>
+          {loadingLineage && (
+            <div className="flex items-center gap-1.5 text-zinc-400 text-[10px]">
+              <Spinner />
+              <span>载入关系链中...</span>
+            </div>
+          )}
+        </div>
+      )}
 
-                const isInherited = activeTaskIds !== null && !activeTaskIds.has(task.taskId);
+      {/* Main Panel View */}
+      {showLineageTopology && mapMode === 'lineage' ? (
+        <div className="p-6 bg-zinc-50/50 min-h-[460px] overflow-x-auto select-none">
+          <div className="flex gap-6 items-stretch min-w-max pb-4">
+            {lineageSummaries.map((summary, idx) => {
+              const isCurrent = summary.id === run.id;
+              const fullRun = lineageRuns[summary.id] || (isCurrent ? run : null);
+              
+              const pred = idx > 0 ? lineageSummaries[idx - 1] : null;
+              const triggerInfo = pred ? (
+                <div className="text-[10px] text-zinc-400 font-semibold truncate" title={`${summary.continuationType === 'branch' ? '🌱 分支' : '↻ 重跑'}自 R${pred.continuationRound || 1} 的【${summary.continuationTaskName}】`}>
+                  {summary.continuationType === 'branch' ? '🌱 分支' : '↻ 重跑'}自 R{pred.continuationRound || 1} 【{summary.continuationTaskName || '任务'}】
+                </div>
+              ) : (
+                <div className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider">🎬 原始启动</div>
+              );
 
-                let bgClass = 'bg-white/80 border-zinc-200 text-zinc-800';
-                let statusDotClass = 'bg-zinc-400';
-                let pulseClass = '';
-
-                if (isDone) {
-                  bgClass = 'bg-emerald-50/70 border-emerald-200 text-emerald-950 shadow-emerald-50/50';
-                  statusDotClass = 'bg-emerald-500';
-                } else if (isRunning) {
-                  bgClass = 'bg-blue-50/70 border-blue-400 text-blue-950 shadow-blue-50/50 ring-2 ring-blue-100 animate-pulse';
-                  statusDotClass = 'bg-blue-500 animate-ping';
-                  pulseClass = 'animate-pulse';
-                } else if (isAwaiting) {
-                  bgClass = 'bg-amber-50/80 border-amber-400 text-amber-950 shadow-amber-50/50 ring-2 ring-amber-100';
-                  statusDotClass = 'bg-amber-500 animate-pulse';
-                } else if (isError) {
-                  bgClass = 'bg-red-50/80 border-red-300 text-red-950 shadow-red-50/50 ring-2 ring-red-100';
-                  statusDotClass = 'bg-red-500';
-                } else if (isTerminated) {
-                  bgClass = 'bg-zinc-100/80 border-zinc-300 text-zinc-800 shadow-zinc-100/70 ring-1 ring-zinc-200';
-                  statusDotClass = 'bg-zinc-500';
-                } else if (isSkipped) {
-                  bgClass = 'bg-zinc-50/80 border-zinc-200 text-zinc-500';
-                  statusDotClass = 'bg-zinc-300';
-                } else if (isPending) {
-                  bgClass = 'bg-zinc-50/50 border-zinc-200/60 text-zinc-400';
-                  statusDotClass = 'bg-zinc-300';
-                }
-
-                return (
-                  <div
-                    key={task.taskId}
-                    onClick={() => onSelectTask(task.taskId)}
-                    className={`flex-1 min-w-[240px] max-w-[320px] rounded-xl border p-4 shadow-sm hover:shadow-md cursor-pointer transition-all hover:-translate-y-0.5 backdrop-blur-sm ${
-                      isInherited
-                        ? 'opacity-40 border-dashed border-zinc-200 bg-zinc-50/30 saturate-50 hover:opacity-75'
-                        : bgClass
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isInherited ? 'bg-zinc-300' : statusDotClass}`} />
-                      <span className={`text-xs font-bold leading-tight flex-1 min-w-0 truncate ${isInherited ? 'text-zinc-400 font-medium' : pulseClass}`} title={task.taskName}>
-                        {task.taskName}
+              return (
+                <div
+                  key={summary.id}
+                  className={`w-[270px] rounded-2xl border flex flex-col p-4 transition-all shadow-sm ${
+                    isCurrent
+                      ? 'bg-white border-indigo-200 ring-2 ring-indigo-50 shadow-md scale-[1.01]'
+                      : 'bg-zinc-100/50 border-zinc-200/80 opacity-90'
+                  }`}
+                >
+                  {/* Column Header */}
+                  <div className="mb-4 pb-3 border-b border-zinc-200/60 shrink-0">
+                    <div className="flex items-center justify-between gap-1.5 mb-1">
+                      <span className="text-[11px] font-mono font-black text-indigo-700">
+                        R{summary.continuationRound || 1} {isCurrent ? ' (当前)' : ''}
                       </span>
-                      {isInherited && (
-                        <span className="shrink-0 inline-flex items-center gap-0.5 rounded bg-zinc-100 border border-zinc-200 px-1 py-0.5 text-[9px] font-bold text-zinc-400 select-none">
-                          📥 已复用
-                        </span>
-                      )}
-                      {!isInherited && task.status !== 'pending' && (
-                        <div className="ml-auto flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-                          {isRunning && onInterruptTask && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (window.confirm("确定要终止该任务的执行吗？")) {
-                                  onInterruptTask(task.taskId);
-                                }
-                              }}
-                              className="flex items-center justify-center gap-1 rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 px-1.5 py-0.5 text-[9px] font-bold text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
-                                title="终止任务"
-                            >
-                              <span className="w-1.5 h-1.5 bg-red-500 rounded-[1px] animate-pulse" />
-                              <span>终止</span>
-                            </button>
-                          )}
-                          {isDone && onContinueStarted && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setBranchTask(task); }}
-                              className="flex items-center justify-center rounded bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 hover:border-emerald-300 p-0.5 text-emerald-600 transition-colors shadow-sm cursor-pointer active:scale-95"
-                              title="从此任务创建分支"
-                            >
-                              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M4 2 L4 8" />
-                                <path d="M4 8 L4 14" />
-                                <path d="M4 5 Q4 5 10 5 L10 14" />
-                                <path d="M8 12 L10 14 L12 12" />
-                                <path d="M2 12 L4 14 L6 12" />
-                              </svg>
-                            </button>
-                          )}
-                          {(isError || isTerminated || task.status === 'interrupted') && onContinueStarted && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); setReRunTask(task); }}
-                              className="flex items-center justify-center rounded bg-red-50 hover:bg-red-100 border border-red-200 hover:border-red-300 p-0.5 text-red-600 transition-colors shadow-sm cursor-pointer active:scale-95"
-                              title="重跑当前失败任务"
-                            >
-                              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M1.5 8a6.5 6.5 0 1 0 1.5-4.2L1.5 6" />
-                                <path d="M1.5 1.5v4.5h4.5" />
-                              </svg>
-                            </button>
-                          )}
-                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
-                            isDone ? 'bg-emerald-100/60 text-emerald-700' :
-                            isRunning ? 'bg-blue-100/60 text-blue-700' :
-                            isAwaiting ? 'bg-amber-100/60 text-amber-700' :
-                            isTerminated ? 'bg-zinc-200/70 text-zinc-700' :
-                            isSkipped ? 'bg-zinc-100 text-zinc-500' :
-                            isError ? 'bg-red-100/60 text-red-700' :
-                            'bg-zinc-100 text-zinc-600'
-                          }`}>
-                            {isSkippedDueToFailure ? 'skipped' : statusLabel(task.status)}
-                          </span>
-                        </div>
-                      )}
+                      <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-bold ${statusColors(summary.status)}`}>
+                        {statusLabel(summary.status)}
+                      </span>
                     </div>
-
-                    <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
-                      <span className="font-mono">🤖 {task.agents.map(aId => {
-                        const ag = agents.find(a => a.id === aId);
-                        return ag?.name || aId;
-                      }).join(', ')}</span>
-                      {task.durationMs != null && (
-                        <>
-                          <span>·</span>
-                          <span>⏱ {formatDuration(task.durationMs)}</span>
-                        </>
-                      )}
+                    {triggerInfo}
+                    <div className="text-[11px] font-bold text-zinc-700 truncate mt-1.5" title={summary.goal}>
+                      {summary.goal}
                     </div>
+                  </div>
 
-                    {/* Rounds sequence visual with hover tooltips */}
-                    {task.rounds && task.rounds.length > 0 && (
-                      <div className="mt-3 border-t border-zinc-100/60 pt-2 flex flex-wrap gap-1.5 items-center">
-                        <span className="text-[9px] uppercase tracking-wider text-zinc-400/80 font-bold mr-1">Rounds:</span>
-                        {task.rounds.map((r) => {
-                          const isRoundInherited = run.continuationRound !== undefined && r.round < run.continuationRound;
-                          return (
-                            <div
-                              key={r.round}
-                              className={`group relative rounded px-1.5 py-0.5 text-[10px] font-semibold border flex items-center gap-0.5 transition-all hover:scale-105 select-none ${
-                                isRoundInherited
-                                  ? 'opacity-40 border-dashed border-zinc-300 bg-zinc-50/50 text-zinc-400 hover:opacity-100 hover:border-zinc-400'
-                                  : r.review?.action === 'revise'
-                                    ? 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 hover:border-amber-300'
-                                    : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-300'
-                              }`}
-                            >
-                              <span>R{r.round}</span>
-                              {r.review?.comment && <span className="text-[8px]">💬</span>}
-
-                              {/* Floating review summary */}
-                              {r.review?.comment && (
-                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-[99] w-52 rounded-xl bg-zinc-950 text-white p-3 text-[10px] leading-relaxed shadow-xl border border-zinc-800 backdrop-blur-sm pointer-events-none transition-opacity">
-                                  <div className="font-bold border-b border-white/10 pb-1 mb-1 flex justify-between items-center text-zinc-300">
-                                    <span>{isRoundInherited ? '📥 已复用轮次' : r.review.action === 'revise' ? '↺ Revision' : '✓ Approved'}</span>
-                                    <span className="text-zinc-500 font-normal font-mono">{formatTime(r.review.reviewedAt)}</span>
-                                  </div>
-                                  <p className="italic text-zinc-200 font-medium">"{r.review.comment}"</p>
+                  {/* Tasks in the Run Column */}
+                  <div className="flex-1 shrink-0">
+                    {fullRun ? (
+                      (() => {
+                        const activeTaskIds = getActiveTaskIdsForRun(fullRun);
+                        const levelGroups = calculateLevels(fullRun.tasks, getDeps);
+                        return (
+                          <div className="space-y-4">
+                            {levelGroups.map((group, gIdx) => (
+                              <div key={group.level} className="flex flex-col items-center">
+                                <div className="flex flex-col gap-3 w-full">
+                                  {group.tasks.map((task) => renderTaskCard(task, fullRun, activeTaskIds, summary.id))}
                                 </div>
-                              )}
-                            </div>
-                          );
-                        })}
-
-                        {/* Current round if in progress or waiting */}
-                        {(isRunning || isAwaiting) && (
-                          <span className="rounded bg-indigo-50 border border-indigo-200 text-indigo-700 px-1.5 py-0.5 text-[10px] font-semibold animate-pulse">
-                            R{task.currentRound ?? (task.rounds.length + 1)}
-                          </span>
-                        )}
+                                {gIdx < levelGroups.length - 1 && (
+                                  <div className="my-2 flex justify-center text-zinc-300">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                                      <path d="M12 4v16M12 20l-4-4m4 4l4-4" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-20 text-zinc-300/80">
+                        <Spinner />
+                        <span className="text-[10px] mt-2">正在载入版本...</span>
                       </div>
                     )}
                   </div>
-                );
-              })}
-            </div>
-
-            {/* SVG arrows between rows */}
-            {gIdx < levelGroups.length - 1 && (
-              <div className="my-3 flex justify-center text-zinc-300/80">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" className="animate-bounce">
-                  <path d="M12 4v16M12 20l-4-4m4 4l4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </div>
-            )}
+                </div>
+              );
+            })}
           </div>
-        ))}
-      </div>
-    </div>
+        </div>
+      ) : (
+        /* Original single-run dependency map */
+        <div className="p-6 bg-zinc-50/50 min-h-[400px] flex flex-col items-center">
+          <div className="w-full max-w-2xl space-y-4">
+            {currentLevelGroups.map((group, gIdx) => (
+              <div key={group.level} className="flex flex-col items-center">
+                <div className="flex flex-wrap justify-center gap-4 w-full">
+                  {group.tasks.map((task) => renderTaskCard(task, run, currentActiveTaskIds, run.id))}
+                </div>
+                {gIdx < currentLevelGroups.length - 1 && (
+                  <div className="my-3 flex justify-center text-zinc-300/80">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" className="animate-bounce">
+                      <path d="M12 4v16M12 20l-4-4m4 4l4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Branch modal */}
       {branchTask && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-          onClick={() => setBranchTask(null)}
+          onClick={() => { setBranchTask(null); setModalRun(null); }}
         >
           <div
             className="w-full max-w-lg mx-4 shadow-2xl rounded-2xl overflow-hidden bg-white"
@@ -1665,7 +1839,7 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
                 </span>
               </div>
               <button
-                onClick={() => setBranchTask(null)}
+                onClick={() => { setBranchTask(null); setModalRun(null); }}
                 className="text-emerald-500 hover:text-emerald-700 transition-colors p-1.5 rounded hover:bg-emerald-100/50 cursor-pointer"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -1674,12 +1848,13 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
               </button>
             </div>
             <RunDetailBranchPanel
-              run={run}
+              run={modalRun || run}
               agents={agents}
               task={branchTask!}
               hideHeader={true}
               onStarted={(newRunId) => {
                 setBranchTask(null);
+                setModalRun(null);
                 onContinueStarted?.(newRunId);
               }}
             />
@@ -1691,7 +1866,7 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
       {reRunTask && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-          onClick={() => setReRunTask(null)}
+          onClick={() => { setReRunTask(null); setModalRun(null); }}
         >
           <div
             className="w-full max-w-lg mx-4 shadow-2xl rounded-2xl overflow-hidden bg-white"
@@ -1705,7 +1880,7 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
                 </span>
               </div>
               <button
-                onClick={() => setReRunTask(null)}
+                onClick={() => { setReRunTask(null); setModalRun(null); }}
                 className="text-indigo-500 hover:text-indigo-700 transition-colors p-1.5 rounded hover:bg-indigo-100/50 cursor-pointer"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -1714,12 +1889,13 @@ function WorkflowDAGMap({ run, pipelines, agents, onSelectTask, onInterruptTask,
               </button>
             </div>
             <RunDetailContinuePanel
-              run={run}
+              run={modalRun || run}
               agents={agents}
               task={reRunTask!}
               hideHeader={true}
               onStarted={(newRunId) => {
                 setReRunTask(null);
+                setModalRun(null);
                 onContinueStarted?.(newRunId);
               }}
             />
@@ -2018,6 +2194,8 @@ function RunDetail({
           onSelectTask={onSelectTask}
           onInterruptTask={onInterruptTask}
           onContinueStarted={onContinueStarted}
+          runs={runs}
+          onSelectRun={onSelectRun}
         />
       )}
 
