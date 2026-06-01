@@ -328,7 +328,7 @@ export function WorkflowSummary({
                     <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">
                       运行模型 (Model)
                     </span>
-                    <div className="flex items-center gap-1.5 bg-zinc-50 rounded px-2 py-1 border border-zinc-150">
+                    <div className="flex items-center gap-1.5 bg-zinc-50 rounded px-2 py-1">
                       <span className="text-[10px]">🤖</span>
                       <span className="font-mono text-[10.5px] text-emerald-700 break-all select-all font-semibold">
                         {agent.model}
