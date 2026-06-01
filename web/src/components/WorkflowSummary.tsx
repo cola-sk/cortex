@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react';
+import { useState, useRef, type ReactNode } from 'react';
+import type { Agent, Provider } from '../types';
 
 export interface WorkflowSummaryNode {
   id: string;
@@ -9,6 +10,7 @@ export interface WorkflowSummaryNode {
 
 interface WorkflowSummaryProps {
   nodes: WorkflowSummaryNode[];
+  agents?: Agent[];
   currentTaskId?: string;
   title?: string;
   emptyText?: string;
@@ -20,30 +22,105 @@ function defaultResolveAgentLabel(agentId: string): string {
   return agentId;
 }
 
-function formatAgentList(
-  agents: string[],
-  resolveAgentLabel: (agentId: string) => string,
-): string {
-  if (agents.length === 0) return '未配置';
-  return agents.map(resolveAgentLabel).join(' / ');
+function parseAgentText(agentText: string) {
+  // If it's a nested via string: "my-agent (via parent-agent (💬 claude api: model-name))"
+  const viaMatch = agentText.match(/^(.*?)\s*\(via\s+(.*)\)$/);
+  let name = agentText;
+  let baseAgentName: string | undefined;
+  let providerType: string | undefined;
+  let model: string | undefined;
+  let innerText = agentText;
+
+  if (viaMatch) {
+    name = viaMatch[1].trim();
+    baseAgentName = viaMatch[2].trim();
+    innerText = viaMatch[2]; // Use the inner part for extracting model details
+  }
+
+  const regex = /(.*?)\s*\((💬|💻)\s*(.*?)\s*:\s*([^)]+)\)$/;
+  const match = innerText.match(regex);
+  if (match) {
+    if (viaMatch) {
+      // In via cases, baseAgentName is the inner agent name
+      baseAgentName = match[1].trim();
+    } else {
+      name = match[1].trim();
+    }
+    providerType = match[3].trim();
+    model = match[4].trim();
+  }
+
+  return {
+    name,
+    baseAgentName,
+    providerType,
+    model,
+  };
 }
 
-function DepBadge({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex items-center rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600">
-      {children}
-    </span>
-  );
+function getAgentAndModelDetails(agentId: string, agents?: Agent[]) {
+  if (!agents) return { name: agentId, model: undefined, providerType: undefined, baseAgentName: undefined };
+  
+  const agent = agents.find((a) => a.id === agentId);
+  if (!agent) return { name: agentId, model: undefined, providerType: undefined, baseAgentName: undefined };
+  
+  const resolveProvider = (a: Agent): { provider: Provider | undefined; baseAgentName?: string } => {
+    if (a.provider) return { provider: a.provider };
+    if (a.baseAgent) {
+      const base = agents.find((ba) => ba.id === a.baseAgent);
+      if (base) {
+        const res = resolveProvider(base);
+        return { provider: res.provider, baseAgentName: base.name || base.id };
+      }
+    }
+    return { provider: undefined };
+  };
+
+  const { provider, baseAgentName } = resolveProvider(agent);
+  
+  let model: string | undefined;
+  let providerType: string | undefined;
+  
+  if (provider) {
+    if (provider.type === 'cli') {
+      providerType = 'CLI';
+      model = provider.command;
+    } else if (provider.type === 'claude') {
+      providerType = 'Claude API';
+      model = provider.model || 'default';
+    } else if (provider.type === 'openai-compat') {
+      providerType = 'OpenAI API';
+      model = provider.model;
+    }
+  }
+
+  return {
+    name: agent.name || agent.id,
+    model,
+    providerType,
+    baseAgentName,
+  };
+}
+
+interface HoveredNodeState {
+  node: WorkflowSummaryNode;
+  rect: DOMRect;
+  index: number;
+  nodeCenter: number;
 }
 
 export function WorkflowSummary({
   nodes,
+  agents,
   currentTaskId,
   title = '工作流简介',
   emptyText = '当前任务没有可展示的工作流信息。',
   resolveAgentLabel = defaultResolveAgentLabel,
   className,
 }: WorkflowSummaryProps) {
+  const [hoveredNode, setHoveredNode] = useState<HoveredNodeState | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
   if (nodes.length === 0) {
     return (
       <div className={`rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-500 ${className ?? ''}`}>
@@ -54,61 +131,211 @@ export function WorkflowSummary({
 
   const nodeNameMap = new Map(nodes.map((node) => [node.id, node.name || node.id]));
 
+  const handleMouseEnter = (e: React.MouseEvent<HTMLDivElement>, node: WorkflowSummaryNode, index: number) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    if (containerRect) {
+      const nodeCenter = rect.left - containerRect.left + rect.width / 2;
+      setHoveredNode({
+        node,
+        rect,
+        index,
+        nodeCenter,
+      });
+    }
+  };
+
+  const handleMouseLeave = () => {
+    setHoveredNode(null);
+  };
+
+  // Calculate rendering metrics for the tooltip
+  let tooltipLeft = 0;
+  let arrowLeft = 0;
+  let agentsData: Array<{ name: string; model?: string; providerType?: string; baseAgentName?: string }> = [];
+  let deps: string[] = [];
+  let isCurrent = false;
+
+  if (hoveredNode) {
+    const { node, index, nodeCenter } = hoveredNode;
+    isCurrent = node.id === currentTaskId;
+    deps = (node.dependsOn ?? []).map((depId) => nodeNameMap.get(depId) ?? depId);
+
+    // Parse agent and model data
+    agentsData = node.agents.length > 0 ? node.agents.map((agentId) => {
+      const details = getAgentAndModelDetails(agentId, agents);
+      if (details.model || details.providerType) {
+        return details;
+      }
+      
+      const label = resolveAgentLabel(agentId);
+      const parsed = parseAgentText(label);
+      return {
+        name: parsed.name,
+        model: parsed.model,
+        providerType: parsed.providerType ? 
+          (parsed.providerType.includes('claude') ? 'Claude API' : parsed.providerType.includes('openai') ? 'OpenAI API' : 'CLI') 
+          : undefined,
+        baseAgentName: parsed.baseAgentName,
+      };
+    }) : [{
+      name: '未配置智能体',
+      model: undefined,
+      providerType: undefined,
+      baseAgentName: undefined,
+    }];
+
+    // Bounds constraint for the tooltip (w-80 is 320px)
+    const tooltipWidth = 320;
+    const containerWidth = containerRef.current?.getBoundingClientRect().width ?? 0;
+    
+    tooltipLeft = nodeCenter;
+    if (containerWidth > tooltipWidth) {
+      tooltipLeft = Math.max(tooltipWidth / 2 + 8, Math.min(containerWidth - tooltipWidth / 2 - 8, tooltipLeft));
+    }
+    
+    // Position the arrow relative to the tooltip box
+    arrowLeft = Math.max(16, Math.min(296, nodeCenter - tooltipLeft + 160));
+  }
+
   return (
-    <div className={`rounded-lg border border-indigo-200 bg-indigo-50/60 p-3 ${className ?? ''}`}>
-      <div className="mb-2 flex items-center gap-2">
-        <span className="text-xs text-indigo-500">🧭</span>
-        <span className="text-xs font-semibold text-indigo-800">{title}</span>
-        <span className="ml-auto text-[10px] text-indigo-500">{nodes.length} 节点</span>
+    <div 
+      ref={containerRef}
+      className={`relative rounded-lg border border-indigo-200 bg-indigo-50/60 px-3 py-2.5 ${className ?? ''}`}
+    >
+      <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap no-scrollbar">
+        <div className="flex items-center gap-1.5 shrink-0 pr-3 border-r border-indigo-200/80">
+          <span className="text-[13px] text-indigo-500">🧭</span>
+          <span className="text-xs font-semibold text-indigo-800">{title}</span>
+        </div>
+        
+        <div className="flex items-center gap-1.5 shrink-0 pl-1">
+          {nodes.map((node, index) => {
+            const isNodeCurrent = node.id === currentTaskId;
+            
+            return (
+              <div key={node.id} className="flex items-center gap-1.5 shrink-0">
+                {index > 0 && <span className="text-indigo-300/80 text-[10px] font-bold">→</span>}
+                <div
+                  onMouseEnter={(e) => handleMouseEnter(e, node, index)}
+                  onMouseLeave={handleMouseLeave}
+                  className={`flex items-center gap-1.5 rounded-full pl-1 pr-2.5 py-1 text-[11px] border cursor-pointer select-none transition-all duration-700 ${
+                    isNodeCurrent
+                      ? 'border-indigo-400 bg-indigo-500 text-white font-medium shadow-sm ring-2 ring-indigo-500/20'
+                      : 'border-indigo-200/80 bg-white/90 text-zinc-600 hover:bg-white hover:border-indigo-400 hover:shadow-sm'
+                  }`}
+                >
+                  <span className={`flex items-center justify-center rounded-full w-4 h-4 text-[10px] font-semibold ${
+                    isNodeCurrent ? 'bg-white/20 text-white' : 'bg-zinc-100 text-zinc-500'
+                  }`}>
+                    {index + 1}
+                  </span>
+                  <span>{node.name || node.id}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
-        {nodes.map((node, index) => {
-          const isCurrent = node.id === currentTaskId;
-          const deps = (node.dependsOn ?? []).map((depId) => nodeNameMap.get(depId) ?? depId);
+      {/* High fidelity custom tooltip rendered inside the non-overflow relative container */}
+      {hoveredNode && (
+        <div
+          className="absolute z-50 pointer-events-none rounded-xl border border-zinc-800 bg-zinc-950/95 backdrop-blur-md shadow-2xl p-4 text-xs text-zinc-300 w-80 flex flex-col gap-3 transition-all duration-100 ease-out animate-in fade-in-0 zoom-in-95"
+          style={{
+            top: 'calc(100% + 10px)',
+            left: tooltipLeft,
+            transform: 'translateX(-50%)',
+          }}
+        >
+          {/* Arrow */}
+          <div 
+            className="absolute top-[-5px] w-2.5 h-2.5 bg-zinc-950/95 border-t border-l border-zinc-800 rotate-45"
+            style={{ left: arrowLeft, transform: 'translateX(-50%) rotate(45deg)' }}
+          />
 
-          return (
-            <div
-              key={node.id}
-              className={`rounded-md border px-2.5 py-2 text-xs ${
-                isCurrent
-                  ? 'border-indigo-300 bg-white shadow-sm'
-                  : 'border-indigo-100/70 bg-white/80'
-              }`}
-            >
-              <div className="flex items-start gap-2">
-                <span className={`mt-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                  isCurrent ? 'bg-indigo-100 text-indigo-700' : 'bg-zinc-100 text-zinc-600'
-                }`}>
-                  {index + 1}
+          {/* Header */}
+          <div className="flex items-start justify-between gap-4 border-b border-zinc-800/80 pb-2.5">
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 bg-indigo-500/25 text-indigo-300 rounded uppercase tracking-wider">
+                  Step {hoveredNode.index + 1}
                 </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate font-semibold text-zinc-800">{node.name || node.id}</span>
-                    <span className="truncate text-[10px] text-zinc-400">({node.id})</span>
-                    {isCurrent && (
-                      <span className="ml-auto rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
-                        当前
+                {isCurrent && (
+                  <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 bg-emerald-500/25 text-emerald-300 rounded uppercase tracking-wider animate-pulse">
+                    Current Task
+                  </span>
+                )}
+              </div>
+              <span className="font-semibold text-zinc-100 text-[13px] mt-0.5 break-words">
+                {hoveredNode.node.name || hoveredNode.node.id}
+              </span>
+            </div>
+            <span className="text-[10px] font-mono text-zinc-500 bg-zinc-900 border border-zinc-800/60 px-1.5 py-0.5 rounded shrink-0">
+              {hoveredNode.node.id}
+            </span>
+          </div>
+
+          {/* Agents Info */}
+          <div className="flex flex-col gap-2.5">
+            {agentsData.map((agent, i) => (
+              <div key={i} className="bg-zinc-900/40 rounded-lg p-2.5 border border-zinc-800/40 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider">
+                    执行智能体 (Agent)
+                  </span>
+                  {agent.providerType && (
+                    <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 bg-zinc-800/60 text-zinc-400 rounded border border-zinc-700/30">
+                      {agent.providerType}
+                    </span>
+                  )}
+                </div>
+                
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-xs text-indigo-300 font-semibold">{agent.name}</span>
+                    {agent.baseAgentName && (
+                      <span className="text-[9px] text-zinc-500 font-medium bg-zinc-800/30 px-1.5 py-0.5 rounded border border-zinc-800/20">
+                        via {agent.baseAgentName}
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 text-[11px] leading-relaxed text-zinc-600">
-                    Agent: {formatAgentList(node.agents, resolveAgentLabel)}
-                  </div>
-                  {deps.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                      <span className="text-[10px] text-zinc-500">前置:</span>
-                      {deps.map((dep) => (
-                        <DepBadge key={`${node.id}-${dep}`}>{dep}</DepBadge>
-                      ))}
-                    </div>
-                  )}
                 </div>
+
+                {agent.model && (
+                  <div className="flex flex-col gap-1 border-t border-zinc-800/30 pt-2">
+                    <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider">
+                      运行模型 (Model)
+                    </span>
+                    <div className="flex items-center gap-1.5 bg-zinc-950/60 rounded px-2 py-1 border border-zinc-800/50">
+                      <span className="text-[10px]">🤖</span>
+                      <span className="font-mono text-[10.5px] text-emerald-400 break-all select-all font-semibold">
+                        {agent.model}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Dependencies */}
+          {deps.length > 0 && (
+            <div className="border-t border-zinc-800/60 pt-2.5 flex flex-col gap-1.5">
+              <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider">
+                前置依赖任务 (Depends On)
+              </span>
+              <div className="flex flex-wrap gap-1">
+                {deps.map((depName) => (
+                  <span key={depName} className="text-[9.5px] font-medium px-2 py-0.5 bg-zinc-900 border border-zinc-800 text-zinc-400 rounded">
+                    {depName}
+                  </span>
+                ))}
               </div>
             </div>
-          );
-        })}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

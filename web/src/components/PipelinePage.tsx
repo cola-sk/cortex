@@ -1282,8 +1282,7 @@ function RunView({
     }))
   ), [pipeline.tasks]);
   const resolveAgentLabel = useCallback((agentId: string) => {
-    const agent = agents.find((item) => item.id === agentId);
-    return agent ? (agent.name || agent.id) : agentId;
+    return formatAgentInfo(agentId, agents);
   }, [agents]);
 
   const addEntry = (entry: LogEntry) => {
@@ -1770,6 +1769,7 @@ function RunView({
             </p>
             <WorkflowSummary
               nodes={workflowNodes}
+              agents={agents}
               resolveAgentLabel={resolveAgentLabel}
               className="mb-4"
             />
@@ -1828,6 +1828,7 @@ function RunView({
                 <LogRow
                   key={entry.id}
                   entry={entry}
+                  agents={agents}
                   onOpenDetail={() => {
                     if (activeRunId && entry.taskId) {
                       openRunTaskDetail(activeRunId, entry.taskId);
@@ -2312,8 +2313,9 @@ function ReviewPanel({ runId, taskId, taskName, output, round, pipeline, mode, o
 // LogRow
 // ─────────────────────────────────────────────────────────────────────────────
 
-function LogRow({ entry, onOpenDetail, onInterrupt }: {
+function LogRow({ entry, agents, onOpenDetail, onInterrupt }: {
   entry: LogEntry;
+  agents: Agent[];
   onOpenDetail: () => void;
   onInterrupt?: () => void;
 }) {
@@ -2378,7 +2380,7 @@ function LogRow({ entry, onOpenDetail, onInterrupt }: {
       </div>
       {expanded && (
         <div className="border-t border-zinc-100 px-4 py-3 bg-white">
-          <TaskDetailContent entry={entry} />
+          <TaskDetailContent entry={entry} agents={agents} />
         </div>
       )}
     </div>
