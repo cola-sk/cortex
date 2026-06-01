@@ -33,10 +33,10 @@ export const api = {
   // ---- Agents ----
   getAgents: () => request<Agent[]>('/api/agents'),
 
-  fetchModels: (baseURL: string, apiKey?: string, providerType?: string, command?: string) =>
+  fetchModels: (baseURL: string, apiKey?: string, providerType?: string) =>
     request<{ models: string[] }>('/api/models/fetch', {
       method: 'POST',
-      body: JSON.stringify({ baseURL, apiKey, providerType, command }),
+      body: JSON.stringify({ baseURL, apiKey, providerType }),
     }),
 
   createAgent: (agent: Agent) =>

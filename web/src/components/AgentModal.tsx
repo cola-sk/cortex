@@ -133,7 +133,7 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
   const [showModelSelect, setShowModelSelect] = useState(false);
 
   const handleFetchModels = async () => {
-    if (modelForm.providerType !== 'cli' && !modelForm.baseURL.trim()) {
+    if (!modelForm.baseURL.trim()) {
       setError('Please fill in Base URL first');
       return;
     }
@@ -143,8 +143,7 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
       const result = await api.fetchModels(
         modelForm.baseURL,
         modelForm.apiKey,
-        modelForm.providerType,
-        modelForm.providerType === 'cli' ? modelForm.command : undefined
+        modelForm.providerType
       );
       if (result.models && result.models.length > 0) {
         setFetchedModels(result.models);
