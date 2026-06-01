@@ -443,6 +443,9 @@ function PipelineCard({
               ⬡ {pipeline.decisions.length} decision{pipeline.decisions.length !== 1 ? 's' : ''}
             </span>
           )}
+          <span className="inline-flex items-center gap-1 rounded-md bg-zinc-50 border border-zinc-100 px-2 py-0.5 text-xs text-zinc-500 max-w-full truncate" title={pipeline.workspace?.trim() ? `Workspace: ${pipeline.workspace}` : 'No workspace configured'}>
+            📂 <span className="font-mono truncate">{pipeline.workspace?.trim() ? pipeline.workspace : '-'}</span>
+          </span>
         </div>
       </div>
       <div className="flex items-center gap-2 border-t border-zinc-100 px-4 py-3">
