@@ -146,7 +146,7 @@ export default function App() {
 
       {/* Pipeline page */}
       {page === 'pipelines' && (
-        <PipelinePage agents={agents.filter((a) => !!a.role)} />
+        <PipelinePage agents={agents} />
       )}
 
       {/* Runs page */}
