@@ -152,7 +152,7 @@ export function WorkflowSummary({
   // Calculate rendering metrics for the tooltip
   let tooltipLeft = 0;
   let arrowLeft = 0;
-  let agentsData: Array<{ name: string; model?: string; providerType?: string; baseAgentName?: string }> = [];
+  let agentsData: Array<{ name: string; model?: string; providerType?: string }> = [];
   let deps: string[] = [];
   let isCurrent = false;
 
@@ -164,25 +164,33 @@ export function WorkflowSummary({
     // Parse agent and model data
     agentsData = node.agents.length > 0 ? node.agents.map((agentId) => {
       const details = getAgentAndModelDetails(agentId, agents);
+      
+      // Use friendly base agent name if available, otherwise raw model
+      let finalModel = details.baseAgentName || details.model;
+
       if (details.model || details.providerType) {
-        return details;
+        return {
+          name: details.name,
+          model: finalModel,
+          providerType: details.providerType,
+        };
       }
       
       const label = resolveAgentLabel(agentId);
       const parsed = parseAgentText(label);
+      let parsedFinalModel = parsed.baseAgentName || parsed.model;
+
       return {
         name: parsed.name,
-        model: parsed.model,
+        model: parsedFinalModel,
         providerType: parsed.providerType ? 
           (parsed.providerType.includes('claude') ? 'Claude API' : parsed.providerType.includes('openai') ? 'OpenAI API' : 'CLI') 
           : undefined,
-        baseAgentName: parsed.baseAgentName,
       };
     }) : [{
       name: '未配置智能体',
       model: undefined,
       providerType: undefined,
-      baseAgentName: undefined,
     }];
 
     // Bounds constraint for the tooltip (w-80 is 320px)
@@ -216,12 +224,12 @@ export function WorkflowSummary({
             // Resolve model display for the first agent to show directly on the node
             const firstAgentId = node.agents[0];
             const agentDetails = firstAgentId ? getAgentAndModelDetails(firstAgentId, agents) : null;
-            let modelDisplay = agentDetails?.model;
+            let modelDisplay = agentDetails ? (agentDetails.baseAgentName || agentDetails.model) : undefined;
 
             if (!modelDisplay && firstAgentId) {
               const label = resolveAgentLabel(firstAgentId);
               const parsed = parseAgentText(label);
-              modelDisplay = parsed.model;
+              modelDisplay = parsed.baseAgentName || parsed.model;
             }
             
             return (
@@ -313,11 +321,6 @@ export function WorkflowSummary({
                 
                 <div className="flex flex-col gap-1.5">
                   <span className="text-xs text-indigo-700 font-semibold">{agent.name}</span>
-                  {agent.baseAgentName && (
-                    <span className="text-[9.5px] text-zinc-400 font-medium bg-zinc-100/50 px-2 py-0.5 rounded border border-zinc-100/80 self-start">
-                      via {agent.baseAgentName}
-                    </span>
-                  )}
                 </div>
 
                 {agent.model && (
