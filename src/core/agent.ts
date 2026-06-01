@@ -59,6 +59,7 @@ export class Agent {
         return new CliProvider({
           command: provider.command,
           args: provider.args,
+          model: provider.model,
         });
     }
   }

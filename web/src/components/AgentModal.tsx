@@ -13,10 +13,10 @@ interface Props {
 
 type AgentKind = 'model' | 'role';
 
-interface ModelForm { id: string; name: string; description: string; providerType: ProviderType; model: string; baseURL: string; apiKey: string; }
+interface ModelForm { id: string; name: string; description: string; providerType: ProviderType; model: string; baseURL: string; apiKey: string; command: string; }
 interface RoleForm  { id: string; name: string; role: AgentRole | ''; description: string; system: string; baseAgent: string; }
 
-const DEFAULT_MODEL_FORM: ModelForm = { id: '', name: '', description: '', providerType: 'claude', model: '', baseURL: '', apiKey: '' };
+const DEFAULT_MODEL_FORM: ModelForm = { id: '', name: '', description: '', providerType: 'claude', model: '', baseURL: '', apiKey: '', command: '' };
 const DEFAULT_ROLE_FORM:  RoleForm  = { id: '', name: '', role: '', description: '', system: '', baseAgent: '' };
 
 const ROLE_TEMPLATES: Record<string, string> = {
@@ -29,7 +29,7 @@ Respond with a single valid JSON object (no markdown fences):
     {
       "id": "task_1",
       "name": "<short name>",
-      "agent": "<agent key> OR [\\"agent_a\\",\\"agent_b\\"] for parallel workers",
+      "agent": "<agent key> OR [\"agent_a\\",\\"agent_b\\"] for parallel workers",
       "input": "<self-contained instruction>",
       "dependsOn": []
     }
@@ -78,20 +78,25 @@ function agentToKind(agent: Agent): AgentKind { return agent.role ? 'role' : 'mo
 function agentToModelForm(a: Agent): ModelForm {
   const p = a.provider;
   return { id: a.id, name: a.name ?? '', description: a.description ?? '', providerType: p?.type ?? 'claude',
-    model: p?.type === 'cli' ? p.command : (p as {model?:string})?.model ?? '',
+    model: (p as {model?:string})?.model ?? '',
     baseURL: p?.type !== 'cli' ? (p as {baseURL?:string})?.baseURL ?? '' : '',
-    apiKey:  p?.type !== 'cli' ? (p as {apiKey?:string})?.apiKey  ?? '' : '' };
+    apiKey:  p?.type !== 'cli' ? (p as {apiKey?:string})?.apiKey  ?? '' : '',
+    command: p?.type === 'cli' ? p.command : '' };
 }
 
 function agentToRoleForm(a: Agent): RoleForm {
   return { id: a.id, name: a.name ?? '', role: a.role ?? '', description: a.description ?? '', system: a.system, baseAgent: a.baseAgent ?? '' };
 }
 
-function modelFormToAgent(f: ModelForm): Agent {
+function modelFormToAgent(f: ModelForm, agentsList: Agent[]): Agent {
   const id = f.id.trim();
   const base = { id, name: f.name.trim() || id, description: f.description.trim() || undefined, system: '' };
   if (f.providerType === 'claude')       return { ...base, provider: { type: 'claude',       ...(f.model   ? { model:   f.model.trim()   } : {}), ...(f.baseURL ? { baseURL: f.baseURL.trim() } : {}), ...(f.apiKey  ? { apiKey:  f.apiKey.trim()  } : {}) } };
-  if (f.providerType === 'cli')          return { ...base, provider: { type: 'cli', command: f.model.trim() || 'claude', args: [] } };
+  if (f.providerType === 'cli') {
+    const existingAgent = agentsList.find((a) => a.id === id);
+    const existingArgs = (existingAgent?.provider?.type === 'cli') ? existingAgent.provider.args : [];
+    return { ...base, provider: { type: 'cli', command: f.command.trim() || 'claude', args: existingArgs, ...(f.model ? { model: f.model.trim() } : {}) } };
+  }
   return { ...base, provider: { type: 'openai-compat', baseURL: f.baseURL.trim(), model: f.model.trim(), ...(f.apiKey ? { apiKey: f.apiKey.trim() } : {}) } };
 }
 
@@ -128,14 +133,19 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
   const [showModelSelect, setShowModelSelect] = useState(false);
 
   const handleFetchModels = async () => {
-    if (!modelForm.baseURL.trim()) {
+    if (modelForm.providerType !== 'cli' && !modelForm.baseURL.trim()) {
       setError('Please fill in Base URL first');
       return;
     }
     setFetchingModels(true);
     setError(null);
     try {
-      const result = await api.fetchModels(modelForm.baseURL, modelForm.apiKey, modelForm.providerType);
+      const result = await api.fetchModels(
+        modelForm.baseURL,
+        modelForm.apiKey,
+        modelForm.providerType,
+        modelForm.providerType === 'cli' ? modelForm.command : undefined
+      );
       if (result.models && result.models.length > 0) {
         setFetchedModels(result.models);
         setShowModelSelect(true);
@@ -188,6 +198,9 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
         if (!modelForm.baseURL.trim()) { setError(t('agent.errBaseURLRequired')); return; }
         if (!modelForm.model.trim())   { setError(t('agent.errModelRequired'));   return; }
       }
+      if (modelForm.providerType === 'cli') {
+        if (!modelForm.command.trim()) { setError('CLI Command is required'); return; }
+      }
     } else {
       if (!roleForm.id.trim())     { setError('ID is required'); return; }
       if (!roleForm.role)           { setError(t('agent.errRoleRequired')); return; }
@@ -195,7 +208,7 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
       if (!roleForm.baseAgent.trim()) { setError(t('agent.errBaseAgentRequired')); return; }
     }
     setSaving(true);
-    try { await onSave(kind === 'model' ? modelFormToAgent(modelForm) : roleFormToAgent(roleForm)); }
+    try { await onSave(kind === 'model' ? modelFormToAgent(modelForm, agents) : roleFormToAgent(roleForm)); }
     catch (err) { setError((err as Error).message); setSaving(false); }
   };
 
@@ -238,72 +251,93 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
                   <select value={modelForm.providerType} onChange={setM('providerType') as React.ChangeEventHandler<HTMLSelectElement>} className={selectCls}>
                     <option value="claude">{t('agent.providerClaude')}</option>
                     <option value="openai-compat">{t('agent.providerOpenAI')}</option>
-                    <option value="cli" disabled>{t('agent.providerCli')}</option>
+                    <option value="cli">{t('agent.providerCli')}</option>
                   </select>
                 </Field>
-                 <Field label={t('agent.fieldBaseURL')} hint={modelForm.providerType === 'claude' ? t('agent.baseURLHintClaude') : t('agent.baseURLHintOpenAI')} required={modelForm.providerType === 'openai-compat'}>
-                  <Input placeholder={modelForm.providerType === 'claude' ? t('agent.baseURLPlaceholderClaude') : t('agent.baseURLPlaceholderOpenAI')} value={modelForm.baseURL} onChange={setM('baseURL')} type="url" required={modelForm.providerType === 'openai-compat'} />
-                </Field>
-                <Field label={t('agent.fieldApiKey')} hint={t('agent.apiKeyHint')}>
-                  <Input placeholder={isEdit ? t('agent.apiKeyPlaceholderEdit') : t('agent.apiKeyPlaceholderNew')} value={modelForm.apiKey} onChange={setM('apiKey')} type="password" autoComplete="off" />
-                </Field>
-                <Field label={t('agent.fieldModel')} hint={modelForm.providerType === 'claude' ? t('agent.modelHintClaude') : t('agent.modelHintRequired')} required={modelForm.providerType === 'openai-compat'}>
-                  <div className="flex gap-2">
-                    {showModelSelect && fetchedModels.length > 0 ? (
-                      <select
-                        value={modelForm.model}
-                        onChange={setM('model') as React.ChangeEventHandler<HTMLSelectElement>}
-                        className={`${selectCls} flex-1`}
-                        required={modelForm.providerType === 'openai-compat'}
-                      >
-                        {(() => {
-                          const options = [...fetchedModels];
-                          if (modelForm.model && !options.includes(modelForm.model)) {
-                            options.unshift(modelForm.model);
-                          }
-                          return options.map((m) => (
-                            <option key={m} value={m}>{m}</option>
-                          ));
-                        })()}
-                      </select>
-                    ) : (
+
+                {modelForm.providerType === 'cli' ? (
+                  <Field label="CLI Command / 运行指令" required>
+                    <Input placeholder="e.g. claude, gemini, copilot" value={modelForm.command} onChange={setM('command')} disabled={isEdit} required />
+                  </Field>
+                ) : (
+                  <>
+                    <Field label={t('agent.fieldBaseURL')} hint={modelForm.providerType === 'claude' ? t('agent.baseURLHintClaude') : t('agent.baseURLHintOpenAI')} required={modelForm.providerType === 'openai-compat'}>
+                      <Input placeholder={modelForm.providerType === 'claude' ? t('agent.baseURLPlaceholderClaude') : t('agent.baseURLPlaceholderOpenAI')} value={modelForm.baseURL} onChange={setM('baseURL')} type="url" required={modelForm.providerType === 'openai-compat'} />
+                    </Field>
+                    <Field label={t('agent.fieldApiKey')} hint={t('agent.apiKeyHint')}>
+                      <Input placeholder={isEdit ? t('agent.apiKeyPlaceholderEdit') : t('agent.apiKeyPlaceholderNew')} value={modelForm.apiKey} onChange={setM('apiKey')} type="password" autoComplete="off" />
+                    </Field>
+                  </>
+                )}
+
+                <Field label={t('agent.fieldModel')} hint={modelForm.providerType === 'cli' ? '可选 — 输入并指定该命令行工具的 AI 模型名称' : (modelForm.providerType === 'claude' ? t('agent.modelHintClaude') : t('agent.modelHintRequired'))} required={modelForm.providerType === 'openai-compat'}>
+                  <div className="flex gap-2 w-full">
+                    {modelForm.providerType === 'cli' ? (
                       <Input
-                        placeholder={modelForm.providerType === 'claude' ? t('agent.modelPlaceholderClaude') : t('agent.modelPlaceholderOpenAI')}
+                        placeholder="输入模型版本（如 claude-3-5-sonnet-latest）"
                         value={modelForm.model}
                         onChange={setM('model')}
                         mono
-                        required={modelForm.providerType === 'openai-compat'}
                       />
-                    )}
-
-                    {showModelSelect && fetchedModels.length > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => setShowModelSelect(false)}
-                        className="px-3 py-2 rounded-lg border border-zinc-200 bg-white text-xs font-semibold text-zinc-600 hover:bg-zinc-50 transition-colors shrink-0"
-                        title="切换为手动输入"
-                      >
-                        ✍️ Manual
-                      </button>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={handleFetchModels}
-                        disabled={fetchingModels || !modelForm.baseURL.trim()}
-                        className="px-3 py-2 rounded-lg bg-indigo-50 border border-indigo-200 text-xs font-semibold text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0 flex items-center gap-1.5"
-                      >
-                        {fetchingModels ? (
-                          <>
-                            <svg className="animate-spin text-indigo-600" width="12" height="12" viewBox="0 0 20 20" fill="none">
-                              <circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="3" strokeOpacity="0.2" />
-                              <path d="M18 10a8 8 0 0 0-8-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                            </svg>
-                            Fetching...
-                          </>
+                      <>
+                        {showModelSelect && fetchedModels.length > 0 ? (
+                          <select
+                            value={modelForm.model}
+                            onChange={setM('model') as React.ChangeEventHandler<HTMLSelectElement>}
+                            className={`${selectCls} flex-1`}
+                            required={modelForm.providerType === 'openai-compat'}
+                          >
+                            {(() => {
+                              const options = [...fetchedModels];
+                              if (modelForm.model && !options.includes(modelForm.model)) {
+                                options.unshift(modelForm.model);
+                              }
+                              return options.map((m) => (
+                                <option key={m} value={m}>{m}</option>
+                              ));
+                            })()}
+                          </select>
                         ) : (
-                          '⚡ Fetch'
+                          <Input
+                            placeholder={modelForm.providerType === 'claude' ? t('agent.modelPlaceholderClaude') : t('agent.modelPlaceholderOpenAI')}
+                            value={modelForm.model}
+                            onChange={setM('model')}
+                            mono
+                            required={modelForm.providerType === 'openai-compat'}
+                          />
                         )}
-                      </button>
+
+                        {showModelSelect && fetchedModels.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => setShowModelSelect(false)}
+                            className="px-3 py-2 rounded-lg border border-zinc-200 bg-white text-xs font-semibold text-zinc-600 hover:bg-zinc-50 transition-colors shrink-0"
+                            title="切换为手动输入"
+                          >
+                            ✍️ Manual
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={handleFetchModels}
+                            disabled={fetchingModels || !modelForm.baseURL.trim()}
+                            className="px-3 py-2 rounded-lg bg-indigo-50 border border-indigo-200 text-xs font-semibold text-indigo-600 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0 flex items-center gap-1.5"
+                          >
+                            {fetchingModels ? (
+                              <>
+                                <svg className="animate-spin text-indigo-600" width="12" height="12" viewBox="0 0 20 20" fill="none">
+                                  <circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="3" strokeOpacity="0.2" />
+                                  <path d="M18 10a8 8 0 0 0-8-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                                </svg>
+                                Fetching...
+                              </>
+                            ) : (
+                              '⚡ Fetch'
+                            )}
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 </Field>

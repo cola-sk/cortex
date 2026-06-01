@@ -7,6 +7,7 @@ export interface CliProviderOptions {
   command: string;
   /** Arg templates. Use {{SYSTEM}} for system prompt, {{PROMPT}} for user input. */
   args: string[];
+  model?: string;
 }
 
 /**
@@ -131,11 +132,13 @@ export class CliProvider implements LLMProvider {
   readonly name: string;
   private command: string;
   private argTemplates: string[];
+  private model?: string;
   private _lastToolEvents: ToolEvent[] = [];
 
   constructor(opts: CliProviderOptions) {
     this.command = opts.command;
     this.argTemplates = opts.args;
+    this.model = opts.model;
     this.name = `cli:${opts.command}`;
   }
 
@@ -326,7 +329,9 @@ export class CliProvider implements LLMProvider {
         : `${systemContent}\n\n${userContent}`;
 
     const resolvedArgs = this.argTemplates.map((a) =>
-      a.replace('{{SYSTEM}}', systemContent).replace('{{PROMPT}}', effectivePrompt),
+      a.replace('{{SYSTEM}}', systemContent)
+       .replace('{{PROMPT}}', effectivePrompt)
+       .replace('{{MODEL}}', this.model ?? ''),
     );
 
     // When no {{PROMPT}} placeholder exists, build appropriate flags for the CLI.
@@ -340,14 +345,29 @@ export class CliProvider implements LLMProvider {
           resolvedArgs.push('--system-prompt', systemContent);
         }
         resolvedArgs.push('-p', userContent, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions');
+        if (this.model) {
+          resolvedArgs.push('--model', this.model);
+        }
       } else if (cmd === 'gemini') {
         resolvedArgs.push('--skip-trust', '-p', effectivePrompt, '--output-format', 'stream-json', '--yolo');
+        if (this.model) {
+          resolvedArgs.push('--model', this.model);
+        }
+      } else if (cmd === 'copilot') {
+        resolvedArgs.push('-p', userContent, '--yolo');
+        if (this.model) {
+          resolvedArgs.push('--model', this.model);
+        }
       } else if (cmd === 'codex') {
         // Codex CLI: use -C to specify working root, then exec subcommand with positional prompt
         if (options?.cwd) {
           resolvedArgs.push('-C', options.cwd);
         }
-        resolvedArgs.push('exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', effectivePrompt);
+        resolvedArgs.push('exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox');
+        if (this.model) {
+          resolvedArgs.push('--model', this.model);
+        }
+        resolvedArgs.push(effectivePrompt);
       } else {
         // Generic: append prompt as positional arg
         resolvedArgs.push(effectivePrompt);
@@ -364,6 +384,23 @@ export class CliProvider implements LLMProvider {
         finalArgs.unshift('--skip-trust');
       }
 
+      let streamIdx = 0;
+      const logCommand = `${this.command} ${finalArgs.map(arg => {
+        if (arg.length > 200) {
+          return `'${arg.slice(0, 200)}... [truncated ${arg.length - 200} chars]'`;
+        }
+        return arg.includes(' ') ? `'${arg}'` : arg;
+      }).join(' ')}`;
+      console.log(`[CliProvider] Spawning CLI: ${logCommand}`);
+
+      if (options?.onStreamEvent) {
+        options.onStreamEvent({
+          index: streamIdx++,
+          type: 'text',
+          content: `\n> 💻 **CLI Command:** \`${logCommand}\`\n\n`,
+        });
+      }
+
       const child = spawn(this.command, finalArgs, {
         cwd: normalizeCwd(options?.cwd),
         env: {
@@ -375,6 +412,13 @@ export class CliProvider implements LLMProvider {
           COLUMNS: '10000',
           LINES: '10000',
           NODE_TLS_REJECT_UNAUTHORIZED: '0',
+          ...(this.model ? {
+            ANTHROPIC_MODEL: this.model,
+            ANTHROPIC_DEFAULT_SONNET_MODEL: this.model,
+            GEMINI_MODEL: this.model,
+            COPILOT_MODEL: this.model,
+            MODEL: this.model,
+          } : {}),
         },
         timeout: 15 * 60 * 1000,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -386,7 +430,6 @@ export class CliProvider implements LLMProvider {
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
       let bufferStr = '';
-      let streamIdx = 0;
 
       child.stdout?.on('data', (chunk: Buffer) => {
         stdout.push(chunk);

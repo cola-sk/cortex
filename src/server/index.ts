@@ -290,7 +290,85 @@ app.get('/api/workspace/validate', (req, res) => {
 // POST /api/models/fetch — fetch available models from base URL (OpenAI/Anthropic compatible)
 app.post('/api/models/fetch', async (req, res) => {
   try {
-    const { baseURL, apiKey, providerType } = req.body as { baseURL?: string; apiKey?: string; providerType?: string };
+    const { baseURL, apiKey, providerType, command } = req.body as { baseURL?: string; apiKey?: string; providerType?: string; command?: string };
+
+    if (providerType === 'cli') {
+      const cmd = (command || '').trim().toLowerCase();
+      let models: string[] = [];
+      if (cmd.includes('claude')) {
+        // Truly retrieve models list by reading local ~/.claude/settings.json configuration
+        try {
+          const homeDir = process.env.HOME || '';
+          const settingsPath = path.join(homeDir, '.claude', 'settings.json');
+          if (fs.existsSync(settingsPath)) {
+            const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+            const env = settings.env || {};
+            const rawBaseURL = env.ANTHROPIC_BASE_URL || env.BASE_URL;
+            const token = env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY || env.API_KEY;
+
+            if (rawBaseURL) {
+              let modelsUrl = rawBaseURL.trim();
+              if (!modelsUrl.endsWith('/')) modelsUrl += '/';
+              if (!modelsUrl.includes('/v1/')) {
+                modelsUrl += 'v1/models';
+              } else {
+                modelsUrl += 'models';
+              }
+
+              const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+              if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+              }
+              const response = await fetch(modelsUrl, { headers });
+              if (response.ok) {
+                const data = await response.json() as { data?: Array<{ id: string }> };
+                if (data && Array.isArray(data.data)) {
+                  models = data.data.map((m) => m.id);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Error fetching CLI models from .claude/settings.json:', err);
+        }
+
+        if (models.length === 0) {
+          models = [
+            'claude-3-5-sonnet-latest',
+            'claude-3-5-sonnet-20241022',
+            'claude-3-5-haiku-20241022',
+            'claude-3-opus-20240229',
+          ];
+        }
+      } else if (cmd.includes('copilot')) {
+        models = [
+          'gpt-4o',
+          'claude-3-5-sonnet',
+          'gemini-1.5-pro',
+          'o1-preview',
+          'o1-mini',
+        ];
+      } else if (cmd.includes('gemini')) {
+        models = [
+          'gemini-2.5-pro',
+          'gemini-2.5-flash',
+          'gemini-1.5-pro',
+          'gemini-1.5-flash',
+        ];
+      } else if (cmd.includes('codex')) {
+        models = [
+          'gpt-4o',
+          'gpt-4o-mini',
+          'o1-preview',
+          'o1-mini',
+        ];
+      } else {
+        models = ['default'];
+      }
+      res.json({ models });
+      return;
+    }
+
     if (!baseURL || typeof baseURL !== 'string' || !baseURL.trim()) {
       res.status(400).json({ error: 'baseURL is required' });
       return;

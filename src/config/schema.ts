@@ -24,6 +24,7 @@ const CliProviderConfigSchema = z.object({
   type: z.literal('cli'),
   command: z.string(),
   args: z.array(z.string()).default([]),
+  model: z.string().optional(),
 });
 
 export const ProviderConfigSchema = z.discriminatedUnion('type', [
