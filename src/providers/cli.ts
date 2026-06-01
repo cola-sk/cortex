@@ -341,23 +341,23 @@ export class CliProvider implements LLMProvider {
       const cmd = this.command.toLowerCase();
       if (cmd === 'claude') {
         // Claude CLI: use -p for prompt, --system-prompt for system, --output-format stream-json --verbose for structured streaming
+        if (this.model) {
+          resolvedArgs.push('--model', this.model);
+        }
         if (systemContent) {
           resolvedArgs.push('--system-prompt', systemContent);
         }
         resolvedArgs.push('-p', userContent, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions');
-        if (this.model) {
-          resolvedArgs.push('--model', this.model);
-        }
       } else if (cmd === 'gemini') {
+        if (this.model) {
+          resolvedArgs.push('--model', this.model);
+        }
         resolvedArgs.push('--skip-trust', '-p', effectivePrompt, '--output-format', 'stream-json', '--yolo');
-        if (this.model) {
-          resolvedArgs.push('--model', this.model);
-        }
       } else if (cmd === 'copilot') {
-        resolvedArgs.push('-p', userContent, '--yolo');
         if (this.model) {
           resolvedArgs.push('--model', this.model);
         }
+        resolvedArgs.push('-p', userContent, '--yolo');
       } else if (cmd === 'codex') {
         // Codex CLI: use -C to specify working root, then exec subcommand with positional prompt
         if (options?.cwd) {

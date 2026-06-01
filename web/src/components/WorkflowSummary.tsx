@@ -84,7 +84,7 @@ function getAgentAndModelDetails(agentId: string, agents?: Agent[]) {
   if (provider) {
     if (provider.type === 'cli') {
       providerType = 'CLI';
-      model = provider.command;
+      model = provider.model || provider.command;
     } else if (provider.type === 'claude') {
       providerType = 'Claude API';
       model = provider.model || 'default';
