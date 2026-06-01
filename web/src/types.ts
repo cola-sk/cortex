@@ -118,6 +118,7 @@ export interface ReviewRecord {
 
 export interface RoundRecord {
   round: number;
+  agents?: string[];
   output: string;
   toolEvents?: ToolEvent[][];
   finishedAt: string;

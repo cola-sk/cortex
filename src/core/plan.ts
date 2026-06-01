@@ -89,6 +89,7 @@ export interface ReviewAction {
 
 export interface TaskRound {
   round: number;
+  agents?: string[];
   input: string;
   output: string;
   toolEvents?: import('./events.js').ToolEvent[][];

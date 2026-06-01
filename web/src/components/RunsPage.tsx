@@ -579,8 +579,23 @@ function TaskRoundHistory({ task, agents, continuationRound }: { task: RunTaskRe
         {sorted.map((round) => {
           const isRevise = round.review?.action === 'revise';
           const isRoundInherited = continuationRound !== undefined && round.round < continuationRound;
-          const roundAgentInfo = task.agents && task.agents.length > 0
-            ? task.agents.map(aId => {
+          // Prioritize the actual agents that ran this round (if stored in round.agents).
+          // If not stored, check if the previous round's review specified an agent override (review.agentId).
+          // Otherwise, fall back to the task's current agents.
+          const actualRoundAgents = round.agents && round.agents.length > 0
+            ? round.agents
+            : (() => {
+                if (round.round > 1) {
+                  const prevRound = sorted.find((r) => r.round === round.round - 1);
+                  if (prevRound?.review?.agentId) {
+                    return [prevRound.review.agentId];
+                  }
+                }
+                return task.agents;
+              })();
+
+          const roundAgentInfo = actualRoundAgents && actualRoundAgents.length > 0
+            ? actualRoundAgents.map(aId => {
                 const baseId = getBaseAgentId(aId, agents);
                 return formatAgentInfo(baseId, agents);
               }).join(', ')
@@ -3144,6 +3159,7 @@ export function RunsPage() {
             ...task.rounds,
             {
               round,
+              agents: task.agents,
               output: task.output ?? '',
               toolEvents: task.toolEvents,
               finishedAt: new Date().toISOString(),

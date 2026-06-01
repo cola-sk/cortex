@@ -37,6 +37,7 @@ type PauseMode = 'review' | 'interrupt';
 
 interface RoundRecord {
   round: number;
+  agents?: string[];
   output: string;
   toolEvents?: ToolEvent[][];
   finishedAt: string;
@@ -85,6 +86,7 @@ function toTaskRoundRecords(rounds?: RoundRecord[]): TaskRound[] {
   if (!rounds || rounds.length === 0) return [];
   return rounds.map((round) => ({
     round: round.round,
+    agents: round.agents,
     input: '',
     output: round.output,
     toolEvents: round.toolEvents,
@@ -808,6 +810,7 @@ app.post('/api/runs/:runId/continue', (req, res) => {
     const continuationRounds: RoundRecord[] = [...(sourceTask.rounds ?? [])];
     continuationRounds.push({
       round: continuationRounds.length + 1,
+      agents: sourceTask.agents,
       output: sourceTask.output ?? '',
       toolEvents: sourceTask.toolEvents,
       finishedAt: nowIso,
@@ -1012,6 +1015,7 @@ app.post('/api/runs/:runId/continue', (req, res) => {
               if (!task.rounds) task.rounds = [];
               task.rounds.push({
                 round,
+                agents: task.agents,
                 output: task.output ?? '',
                 toolEvents: task.toolEvents,
                 finishedAt: new Date().toISOString(),

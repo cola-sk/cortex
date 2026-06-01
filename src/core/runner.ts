@@ -452,6 +452,7 @@ export class Runner {
         // Record this round
         const round: TaskRound = {
           round: currentRound,
+          agents: agentKeys,
           input: fullInput,
           output: combinedOutput,
           ...(hasToolEvents ? { toolEvents: allToolEvents } : {}),
