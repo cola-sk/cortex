@@ -533,7 +533,26 @@ function TaskDetailPanel({ task, agents, fullHeight = false, continuationRound }
   // Preserve full execution detail after completion as well.
   const detailEventMode = 'all';
 
-  const agentInfos = task.agents.map((a) => formatAgentInfo(a, agents));
+  // Resolve the actual latest agents that ran the final/current round of the task
+  const latestAgents = (() => {
+    const rounds = task.rounds ?? [];
+    if (rounds.length > 0) {
+      const sorted = [...rounds].sort((a, b) => a.round - b.round);
+      const lastRound = sorted[sorted.length - 1];
+      if (lastRound.agents && lastRound.agents.length > 0) {
+        return lastRound.agents;
+      }
+      if (lastRound.round > 1) {
+        const prevRound = sorted.find((r) => r.round === lastRound.round - 1);
+        if (prevRound?.review?.agentId) {
+          return [prevRound.review.agentId];
+        }
+      }
+    }
+    return task.agents;
+  })();
+
+  const agentInfos = latestAgents.map((a) => formatAgentInfo(a, agents));
   const agentInfo = agentInfos[0] ?? '';
 
   return (
@@ -541,7 +560,7 @@ function TaskDetailPanel({ task, agents, fullHeight = false, continuationRound }
       <TaskRoundHistory task={task} agents={agents} continuationRound={continuationRound} />
       <TaskDetailShared
         workers={(task.toolEvents ?? []).length > 0 ? (task.toolEvents ?? []) : [[]]}
-        agents={task.agents}
+        agents={latestAgents}
         status={status}
         detail={detail}
         output={output}
@@ -693,6 +712,24 @@ function TaskDetailDialog({
 }) {
   const toolCallCount = (task.toolEvents ?? []).flat().filter((e) => e.type === 'tool_use').length;
 
+  const latestAgents = (() => {
+    const rounds = task.rounds ?? [];
+    if (rounds.length > 0) {
+      const sorted = [...rounds].sort((a, b) => a.round - b.round);
+      const lastRound = sorted[sorted.length - 1];
+      if (lastRound.agents && lastRound.agents.length > 0) {
+        return lastRound.agents;
+      }
+      if (lastRound.round > 1) {
+        const prevRound = sorted.find((r) => r.round === lastRound.round - 1);
+        if (prevRound?.review?.agentId) {
+          return [prevRound.review.agentId];
+        }
+      }
+    }
+    return task.agents;
+  })();
+
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', fn);
@@ -748,7 +785,7 @@ function TaskDetailDialog({
             <div className="flex items-center flex-wrap gap-3 mt-1.5 text-xs text-zinc-500">
               {task.durationMs != null && <span className="flex items-center gap-1">⏱ {formatDuration(task.durationMs)}</span>}
               {toolCallCount > 0 && <span className="flex items-center gap-1">🔧 {toolCallCount} tool calls</span>}
-              <span className="flex items-center gap-1">👥 {task.agents.join(', ')}</span>
+              <span className="flex items-center gap-1">👥 {latestAgents.join(', ')}</span>
               {task.gitDiff && (
                 <span className="inline-flex items-center gap-0.5 rounded bg-indigo-50 border border-indigo-100/80 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600 select-none">
                   <span>✦</span>
