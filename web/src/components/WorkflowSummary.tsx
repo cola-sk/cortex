@@ -213,24 +213,44 @@ export function WorkflowSummary({
           {nodes.map((node, index) => {
             const isNodeCurrent = node.id === currentTaskId;
             
+            // Resolve model display for the first agent to show directly on the node
+            const firstAgentId = node.agents[0];
+            const agentDetails = firstAgentId ? getAgentAndModelDetails(firstAgentId, agents) : null;
+            let modelDisplay = agentDetails?.model;
+
+            if (!modelDisplay && firstAgentId) {
+              const label = resolveAgentLabel(firstAgentId);
+              const parsed = parseAgentText(label);
+              modelDisplay = parsed.model;
+            }
+            
             return (
               <div key={node.id} className="flex items-center gap-1.5 shrink-0">
                 {index > 0 && <span className="text-indigo-300/80 text-[10px] font-bold">→</span>}
                 <div
                   onMouseEnter={(e) => handleMouseEnter(e, node, index)}
                   onMouseLeave={handleMouseLeave}
-                  className={`flex items-center gap-1.5 rounded-full pl-1 pr-2.5 py-1 text-[11px] border cursor-pointer select-none transition-all duration-700 ${
+                  className={`flex items-center gap-2 rounded-full pl-1 pr-2.5 py-1 text-[11px] border cursor-pointer select-none transition-all duration-700 ${
                     isNodeCurrent
                       ? 'border-indigo-400 bg-indigo-500 text-white font-medium shadow-sm ring-2 ring-indigo-500/20'
                       : 'border-indigo-200/80 bg-white/90 text-zinc-600 hover:bg-white hover:border-indigo-400 hover:shadow-sm'
                   }`}
                 >
-                  <span className={`flex items-center justify-center rounded-full w-4 h-4 text-[10px] font-semibold ${
+                  <span className={`flex items-center justify-center rounded-full w-4 h-4 text-[10px] font-semibold shrink-0 ${
                     isNodeCurrent ? 'bg-white/20 text-white' : 'bg-zinc-100 text-zinc-500'
                   }`}>
                     {index + 1}
                   </span>
-                  <span>{node.name || node.id}</span>
+                  <span className="font-medium">{node.name || node.id}</span>
+                  {modelDisplay && (
+                    <span className={`text-[9px] font-mono font-semibold rounded px-1.5 py-0.25 shrink-0 transition-all ${
+                      isNodeCurrent 
+                        ? 'bg-white/20 text-white border border-white/10' 
+                        : 'bg-zinc-100 text-zinc-400 border border-zinc-200/40'
+                    }`}>
+                      {modelDisplay}
+                    </span>
+                  )}
                 </div>
               </div>
             );
@@ -238,10 +258,10 @@ export function WorkflowSummary({
         </div>
       </div>
 
-      {/* High fidelity custom tooltip rendered inside the non-overflow relative container */}
+      {/* Elegant light-theme custom tooltip rendered inside the non-overflow relative container */}
       {hoveredNode && (
         <div
-          className="absolute z-50 pointer-events-none rounded-xl border border-zinc-800 bg-zinc-950/95 backdrop-blur-md shadow-2xl p-4 text-xs text-zinc-300 w-80 flex flex-col gap-3 transition-all duration-100 ease-out animate-in fade-in-0 zoom-in-95"
+          className="absolute z-50 pointer-events-none rounded-xl border border-zinc-200 bg-white shadow-xl p-4 text-xs text-zinc-600 w-80 flex flex-col gap-3 transition-all duration-100 ease-out animate-in fade-in-0 zoom-in-95"
           style={{
             top: 'calc(100% + 10px)',
             left: tooltipLeft,
@@ -250,28 +270,28 @@ export function WorkflowSummary({
         >
           {/* Arrow */}
           <div 
-            className="absolute top-[-5px] w-2.5 h-2.5 bg-zinc-950/95 border-t border-l border-zinc-800 rotate-45"
+            className="absolute top-[-5.5px] w-2.5 h-2.5 bg-white border-t border-l border-zinc-200 rotate-45"
             style={{ left: arrowLeft, transform: 'translateX(-50%) rotate(45deg)' }}
           />
 
           {/* Header */}
-          <div className="flex items-start justify-between gap-4 border-b border-zinc-800/80 pb-2.5">
+          <div className="flex items-start justify-between gap-4 border-b border-zinc-100 pb-2.5">
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-1.5">
-                <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 bg-indigo-500/25 text-indigo-300 rounded uppercase tracking-wider">
+                <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded uppercase tracking-wider">
                   Step {hoveredNode.index + 1}
                 </span>
                 {isCurrent && (
-                  <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 bg-emerald-500/25 text-emerald-300 rounded uppercase tracking-wider animate-pulse">
+                  <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded uppercase tracking-wider animate-pulse">
                     Current Task
                   </span>
                 )}
               </div>
-              <span className="font-semibold text-zinc-100 text-[13px] mt-0.5 break-words">
+              <span className="font-semibold text-zinc-800 text-[13px] mt-0.5 break-words">
                 {hoveredNode.node.name || hoveredNode.node.id}
               </span>
             </div>
-            <span className="text-[10px] font-mono text-zinc-500 bg-zinc-900 border border-zinc-800/60 px-1.5 py-0.5 rounded shrink-0">
+            <span className="text-[10px] font-mono text-zinc-400 bg-zinc-50 border border-zinc-150 px-1.5 py-0.5 rounded shrink-0">
               {hoveredNode.node.id}
             </span>
           </div>
@@ -279,13 +299,13 @@ export function WorkflowSummary({
           {/* Agents Info */}
           <div className="flex flex-col gap-2.5">
             {agentsData.map((agent, i) => (
-              <div key={i} className="bg-zinc-900/40 rounded-lg p-2.5 border border-zinc-800/40 flex flex-col gap-2">
+              <div key={i} className="bg-zinc-50/60 rounded-lg p-2.5 border border-zinc-150 flex flex-col gap-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider">
+                  <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">
                     执行智能体 (Agent)
                   </span>
                   {agent.providerType && (
-                    <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 bg-zinc-800/60 text-zinc-400 rounded border border-zinc-700/30">
+                    <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 bg-zinc-100 text-zinc-500 rounded border border-zinc-200/50">
                       {agent.providerType}
                     </span>
                   )}
@@ -293,9 +313,9 @@ export function WorkflowSummary({
                 
                 <div className="flex flex-col gap-0.5">
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-xs text-indigo-300 font-semibold">{agent.name}</span>
+                    <span className="text-xs text-indigo-700 font-semibold">{agent.name}</span>
                     {agent.baseAgentName && (
-                      <span className="text-[9px] text-zinc-500 font-medium bg-zinc-800/30 px-1.5 py-0.5 rounded border border-zinc-800/20">
+                      <span className="text-[9px] text-zinc-400 font-medium bg-zinc-100/50 px-1.5 py-0.5 rounded border border-zinc-100">
                         via {agent.baseAgentName}
                       </span>
                     )}
@@ -303,13 +323,13 @@ export function WorkflowSummary({
                 </div>
 
                 {agent.model && (
-                  <div className="flex flex-col gap-1 border-t border-zinc-800/30 pt-2">
-                    <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider">
+                  <div className="flex flex-col gap-1 border-t border-zinc-100 pt-2">
+                    <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">
                       运行模型 (Model)
                     </span>
-                    <div className="flex items-center gap-1.5 bg-zinc-950/60 rounded px-2 py-1 border border-zinc-800/50">
+                    <div className="flex items-center gap-1.5 bg-zinc-50 rounded px-2 py-1 border border-zinc-150">
                       <span className="text-[10px]">🤖</span>
-                      <span className="font-mono text-[10.5px] text-emerald-400 break-all select-all font-semibold">
+                      <span className="font-mono text-[10.5px] text-emerald-700 break-all select-all font-semibold">
                         {agent.model}
                       </span>
                     </div>
@@ -321,13 +341,13 @@ export function WorkflowSummary({
 
           {/* Dependencies */}
           {deps.length > 0 && (
-            <div className="border-t border-zinc-800/60 pt-2.5 flex flex-col gap-1.5">
-              <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider">
+            <div className="border-t border-zinc-100 pt-2.5 flex flex-col gap-1.5">
+              <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">
                 前置依赖任务 (Depends On)
               </span>
               <div className="flex flex-wrap gap-1">
                 {deps.map((depName) => (
-                  <span key={depName} className="text-[9.5px] font-medium px-2 py-0.5 bg-zinc-900 border border-zinc-800 text-zinc-400 rounded">
+                  <span key={depName} className="text-[9.5px] font-medium px-2 py-0.5 bg-zinc-50 border border-zinc-150 text-zinc-500 rounded">
                     {depName}
                   </span>
                 ))}
