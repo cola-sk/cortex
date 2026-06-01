@@ -913,6 +913,7 @@ app.post('/api/runs/:runId/continue', (req, res) => {
             const input = fullInput || task?.input;
             emitToRunSubscribers(newRunId, 'task:start', { taskId: startedTaskId, taskName, agents, input });
             if (task) {
+              task.agents = agents;
               task.status = 'running';
               task.startedAt = new Date().toISOString();
               task.finishedAt = undefined;

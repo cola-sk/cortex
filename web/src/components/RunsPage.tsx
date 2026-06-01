@@ -3057,6 +3057,10 @@ export function RunsPage() {
       if (type === 'task:start') {
         const task = run.tasks.find((t) => t.taskId === d.taskId);
         if (task) {
+          const agents = d.agents as string[] | undefined;
+          if (agents) {
+            task.agents = agents;
+          }
           task.status = 'running';
           task.startedAt = new Date().toISOString();
           task.finishedAt = undefined;
