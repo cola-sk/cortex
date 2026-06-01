@@ -344,20 +344,26 @@ export class CliProvider implements LLMProvider {
         if (this.model) {
           resolvedArgs.push('--model', this.model);
         }
+        resolvedArgs.push('-p', userContent, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions');
         if (systemContent) {
           resolvedArgs.push('--system-prompt', systemContent);
         }
-        resolvedArgs.push('-p', userContent, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions');
       } else if (cmd === 'gemini') {
         if (this.model) {
           resolvedArgs.push('--model', this.model);
         }
-        resolvedArgs.push('--skip-trust', '-p', effectivePrompt, '--output-format', 'stream-json', '--yolo');
+        resolvedArgs.push('--skip-trust', '-p', userContent, '--output-format', 'stream-json', '--yolo');
+        if (systemContent) {
+          resolvedArgs.push('--system-prompt', systemContent);
+        }
       } else if (cmd === 'copilot') {
         if (this.model) {
           resolvedArgs.push('--model', this.model);
         }
         resolvedArgs.push('-p', userContent, '--yolo');
+        if (systemContent) {
+          resolvedArgs.push('--system-prompt', systemContent);
+        }
       } else if (cmd === 'codex') {
         // Codex CLI: use -C to specify working root, then exec subcommand with positional prompt
         if (options?.cwd) {
