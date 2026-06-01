@@ -20,6 +20,7 @@ export interface CliProvider {
   type: 'cli';
   command: string;
   args: string[];
+  model?: string;
 }
 
 export type Provider = ClaudeProvider | OpenAICompatProvider | CliProvider;
