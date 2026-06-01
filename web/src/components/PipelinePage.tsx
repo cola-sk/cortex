@@ -1267,6 +1267,8 @@ function RunView({
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [terminatedMessage, setTerminatedMessage] = useState<string | null>(null);
   const [modalTaskId, setModalTaskId] = useState<string | null>(null);
+  const modalTaskIdRef = useRef<string | null>(null);
+  modalTaskIdRef.current = modalTaskId;
   const [modalOutput, setModalOutput] = useState<{ title: string; content: string } | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [pausedTaskId, setPausedTaskId] = useState<string | null>(null);
@@ -1616,8 +1618,13 @@ function RunView({
             };
             return next;
           });
-          // Switch from task detail modal to the review panel when human input is required.
-          setModalTaskId(null);
+          // Switch from task detail modal to the review panel when human input is required,
+          // unless the user is already viewing the details of this task.
+          const currentModalTaskId = modalTaskIdRef.current;
+          const isViewingCurrentTask = currentModalTaskId ? currentModalTaskId.startsWith(taskId) : false;
+          if (!isViewingCurrentTask) {
+            setModalTaskId(null);
+          }
           setPausedTaskId(taskId);
           onPauseStateChange(mode);
         } else if (type === 'review:submitted') {
@@ -1937,6 +1944,13 @@ function RunView({
           agents={agents}
           onClose={() => setModalTaskId(null)}
           onInterrupt={modalEntry.taskId ? () => handleInterruptTask(modalEntry.taskId as string) : undefined}
+          runId={activeRunId}
+          pipeline={pipeline}
+          onReviewSubmitted={() => {
+            setPausedTaskId(null);
+            onPauseStateChange(null);
+            setModalTaskId(null);
+          }}
         />
       )}
 
@@ -2654,7 +2668,23 @@ function OutputModal({ title, content, onClose }: { title: string; content: stri
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-export function TaskDetailModal({ entry, agents, onClose, onInterrupt }: { entry: LogEntry; agents: Agent[]; onClose: () => void; onInterrupt?: () => void }) {
+export function TaskDetailModal({
+  entry,
+  agents,
+  onClose,
+  onInterrupt,
+  runId,
+  pipeline,
+  onReviewSubmitted,
+}: {
+  entry: LogEntry;
+  agents: Agent[];
+  onClose: () => void;
+  onInterrupt?: () => void;
+  runId?: string | null;
+  pipeline?: Pipeline;
+  onReviewSubmitted?: () => void;
+}) {
   const workers = getEntryWorkers(entry);
   const toolCallCount = (entry.toolEvents ?? []).filter(e => e.type === 'tool_use').length;
   const durationMs = entry.startedAt ? (entry.finishedAt ?? Date.now()) - entry.startedAt : undefined;
@@ -2769,6 +2799,21 @@ export function TaskDetailModal({ entry, agents, onClose, onInterrupt }: { entry
         <div className="flex-1 overflow-y-auto px-1.5 py-1">
           <TaskDetailContent entry={entry} agents={agents} fullHeight />
         </div>
+
+        {runId && pipeline && onReviewSubmitted && entry.reviewPending && (entry.status === 'awaiting_review' || entry.status === 'interrupted') && (
+          <div className="border-t border-zinc-150 bg-zinc-50 px-4 py-4 shrink-0 shadow-lg">
+            <ReviewPanel
+              runId={runId}
+              taskId={entry.taskId!}
+              taskName={entry.label}
+              output={entry.output ?? entry.streamContent ?? ''}
+              round={entry.currentRound ?? 1}
+              pipeline={pipeline}
+              mode={entry.pauseMode ?? 'review'}
+              onSubmitted={onReviewSubmitted}
+            />
+          </div>
+        )}
       </div>
     </>
   );

@@ -47,7 +47,7 @@ export function detectCopilot(): DetectedTool {
     provider: {
       type: 'cli' as const,
       command: 'copilot',
-      args: ['-p', '{{PROMPT}}', '--yolo'],
+      args: ['--output-format', 'json', '--stream', 'on', '-p', '{{PROMPT}}', '--yolo'],
     },
   };
 }

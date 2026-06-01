@@ -3349,9 +3349,11 @@ export function RunsPage() {
       {activeTaskSelection && (
         (() => {
           const runForDialog = (
-            activeTaskSelection.runSnapshot && activeTaskSelection.runSnapshot.id === activeTaskSelection.runId
-              ? activeTaskSelection.runSnapshot
-              : (selectedRun && selectedRun.id === activeTaskSelection.runId ? selectedRun : null)
+            selectedRun && selectedRun.id === activeTaskSelection.runId
+              ? selectedRun
+              : (activeTaskSelection.runSnapshot && activeTaskSelection.runSnapshot.id === activeTaskSelection.runId
+                  ? activeTaskSelection.runSnapshot
+                  : null)
           );
 
           // Prioritize the live task state from runForDialog (which updates in real-time)

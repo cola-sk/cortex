@@ -167,11 +167,12 @@ export class CliProvider implements LLMProvider {
     ev: Record<string, unknown>,
     nextIndex: () => number,
   ): { events: ToolEvent[]; resultOutput?: string; hasEvents: boolean } {
+    const eventType = typeof ev.type === 'string' ? ev.type : '';
     const out: ToolEvent[] = [];
     let resultOutput = '';
     let hasEvents = false;
 
-    if (ev.type === 'assistant') {
+    if (eventType === 'assistant') {
       hasEvents = true;
       const msg = ev.message as { content?: Array<Record<string, unknown>> };
       for (const block of msg?.content ?? []) {
@@ -187,10 +188,10 @@ export class CliProvider implements LLMProvider {
           });
         }
       }
-    } else if (ev.type === 'message' && ev.role === 'assistant' && typeof ev.content === 'string') {
+    } else if (eventType === 'message' && ev.role === 'assistant' && typeof ev.content === 'string') {
       hasEvents = true;
       out.push({ index: nextIndex(), type: 'text', content: ev.content });
-    } else if (ev.type === 'tool_use') {
+    } else if (eventType === 'tool_use') {
       hasEvents = true;
       out.push({
         index: nextIndex(),
@@ -199,7 +200,7 @@ export class CliProvider implements LLMProvider {
         input: (ev.parameters ?? {}) as Record<string, unknown>,
         toolUseId: ev.tool_id as string,
       });
-    } else if (ev.type === 'tool') {
+    } else if (eventType === 'tool') {
       hasEvents = true;
       const content = ev.content as Array<{ type: string; text?: string }> | undefined;
       const text = content?.map((c) => c.text ?? '').join('') ?? String(ev.content ?? '');
@@ -210,7 +211,7 @@ export class CliProvider implements LLMProvider {
         toolUseId: ev.tool_use_id as string,
         isError: ev.is_error as boolean | undefined,
       });
-    } else if (ev.type === 'tool_result') {
+    } else if (eventType === 'tool_result') {
       hasEvents = true;
       out.push({
         index: nextIndex(),
@@ -219,19 +220,40 @@ export class CliProvider implements LLMProvider {
         toolUseId: ev.tool_id as string,
         isError: ev.status !== 'success',
       });
-    } else if (ev.type === 'result') {
+    } else if (eventType === 'assistant.message_delta') {
+      hasEvents = true;
+      const data = ev.data as { deltaContent?: unknown } | undefined;
+      if (typeof data?.deltaContent === 'string' && data.deltaContent) {
+        out.push({ index: nextIndex(), type: 'text', content: data.deltaContent });
+      }
+    } else if (eventType === 'assistant.message') {
+      hasEvents = true;
+      const data = ev.data as { content?: unknown } | undefined;
+      if (typeof data?.content === 'string' && data.content) {
+        // Copilot JSON protocol emits a full assistant message at the end.
+        // Keep it as the final fallback output to avoid duplicate streaming text.
+        resultOutput = data.content;
+      }
+    } else if (
+      eventType === 'user.message'
+      || eventType.startsWith('assistant.')
+      || eventType.startsWith('session.')
+    ) {
+      // Protocol envelope events: recognized but not user-facing text/tool output.
+      hasEvents = true;
+    } else if (eventType === 'result') {
       hasEvents = true;
       if (typeof ev.result === 'string') resultOutput = ev.result;
-    } else if ((ev.type === 'item.started' || ev.type === 'item.completed') && ev.item && typeof ev.item === 'object') {
+    } else if ((eventType === 'item.started' || eventType === 'item.completed') && ev.item && typeof ev.item === 'object') {
       const item = ev.item as Record<string, unknown>;
       const itemType = String(item.type ?? '');
       const itemId = String(item.id ?? '');
       if (itemType === 'agent_message') {
-        if (ev.type === 'item.completed' && typeof item.text === 'string' && item.text) {
+        if (eventType === 'item.completed' && typeof item.text === 'string' && item.text) {
           hasEvents = true;
           out.push({ index: nextIndex(), type: 'text', content: item.text as string });
         }
-      } else if (ev.type === 'item.started') {
+      } else if (eventType === 'item.started') {
         hasEvents = true;
         const input: Record<string, unknown> = {};
         if (typeof item.command === 'string') input.command = this.normalizeCodexCommandForGuard(item.command);
@@ -243,7 +265,7 @@ export class CliProvider implements LLMProvider {
           input,
           toolUseId: itemId || undefined,
         });
-      } else if (ev.type === 'item.completed') {
+      } else if (eventType === 'item.completed') {
         hasEvents = true;
         const status = String(item.status ?? '');
         const exitCode = item.exit_code as number | null | undefined;
@@ -261,8 +283,8 @@ export class CliProvider implements LLMProvider {
   }
 
   /**
-   * Attempt to parse CLI stdout as Claude stream-json JSONL.
-   * Returns extracted text output + tool events, or null if not stream-json.
+   * Attempt to parse CLI stdout as structured JSONL protocols (Claude/Codex/Copilot, etc.).
+   * Returns extracted text output + tool events, or null if stdout is not JSONL.
    */
   private tryParseStreamJson(raw: string): { output: string; toolEvents: ToolEvent[] } | null {
     const lines = raw.split('\n').filter((l) => l.trim().startsWith('{'));
@@ -272,7 +294,6 @@ export class CliProvider implements LLMProvider {
     const toolEvents: ToolEvent[] = [];
     let idx = 0;
     const textParts: string[] = [];
-    const geminiTextParts: string[] = [];
     let resultOutput = '';
     let hasEvents = false;
 
@@ -287,7 +308,6 @@ export class CliProvider implements LLMProvider {
           toolEvents.push(event);
           if (event.type === 'text' && event.content) {
             textParts.push(event.content);
-            geminiTextParts.push(event.content);
           }
         }
       } catch { /* non-JSON line */ }
@@ -333,12 +353,20 @@ export class CliProvider implements LLMProvider {
        .replace('{{PROMPT}}', effectivePrompt)
        .replace('{{MODEL}}', this.model ?? ''),
     );
+    const cmd = this.command.toLowerCase();
+
+    // Prefer structured JSON streaming for Copilot so we can surface incremental deltas in UI.
+    if (cmd === 'copilot') {
+      const hasOutputFormat = resolvedArgs.includes('--output-format') || resolvedArgs.some((a) => a.startsWith('--output-format='));
+      const hasStreamMode = resolvedArgs.includes('--stream') || resolvedArgs.some((a) => a.startsWith('--stream='));
+      if (!hasOutputFormat) resolvedArgs.push('--output-format', 'json');
+      if (!hasStreamMode) resolvedArgs.push('--stream', 'on');
+    }
 
     // When no {{PROMPT}} placeholder exists, build appropriate flags for the CLI.
     // stdin pipe is unreliable with some CLIs (e.g. claude), so we construct
     // explicit flags based on the command name.
     if (!hasPromptPlaceholder) {
-      const cmd = this.command.toLowerCase();
       if (cmd === 'claude') {
         // Claude CLI: use -p for prompt, --system-prompt for system, --output-format stream-json --verbose for structured streaming
         if (this.model) {
@@ -352,18 +380,14 @@ export class CliProvider implements LLMProvider {
         if (this.model) {
           resolvedArgs.push('--model', this.model);
         }
-        resolvedArgs.push('--skip-trust', '-p', userContent, '--output-format', 'stream-json', '--yolo');
-        if (systemContent) {
-          resolvedArgs.push('--system-prompt', systemContent);
-        }
+        // Gemini CLI has no stable dedicated system-prompt flag; fold system into prompt text.
+        resolvedArgs.push('--skip-trust', '-p', effectivePrompt, '--output-format', 'stream-json', '--yolo');
       } else if (cmd === 'copilot') {
         if (this.model) {
           resolvedArgs.push('--model', this.model);
         }
-        resolvedArgs.push('-p', userContent, '--yolo');
-        if (systemContent) {
-          resolvedArgs.push('--system-prompt', systemContent);
-        }
+        // GitHub Copilot CLI does not support --system-prompt; fold system into prompt text.
+        resolvedArgs.push('-p', effectivePrompt, '--yolo');
       } else if (cmd === 'codex') {
         // Codex CLI: use -C to specify working root, then exec subcommand with positional prompt
         if (options?.cwd) {
@@ -455,6 +479,9 @@ export class CliProvider implements LLMProvider {
               try {
                 const ev = JSON.parse(line) as Record<string, unknown>;
                 const parsed = this.parseJsonLineEvents(ev, () => streamIdx++);
+                if (parsed.hasEvents) {
+                  handledAsJson = true;
+                }
                 for (const streamEvent of parsed.events) {
                   // Active-Kill Sandbox Guardrail for structured tool use
                   if (streamEvent.type === 'tool_use' && options?.cwd && !explicitlyRequestsExternalAccess(userContent, options.cwd)) {
@@ -466,7 +493,6 @@ export class CliProvider implements LLMProvider {
                     }
                   }
                   options.onStreamEvent(streamEvent);
-                  handledAsJson = true;
                 }
               } catch { /* ignore parsing errors and fallback to text */ }
             }
