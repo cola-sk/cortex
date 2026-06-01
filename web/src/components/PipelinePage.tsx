@@ -2660,6 +2660,28 @@ export function TaskDetailModal({ entry, agents, onClose, onInterrupt }: { entry
   const durationMs = entry.startedAt ? (entry.finishedAt ?? Date.now()) - entry.startedAt : undefined;
   const isMultiWorker = workers.length > 1;
 
+  // Resolve the agent name and model details
+  const agentDetailsList = (entry.agents ?? []).map(agentId => {
+    const agent = agents.find((a) => a.id === agentId);
+    
+    const getProviderAndModel = (a: Agent): { type?: string; model?: string } => {
+      if (a.provider) return { type: a.provider.type, model: a.provider.type === 'cli' ? a.provider.command : a.provider.model };
+      if (a.baseAgent) {
+        const base = agents.find((ba) => ba.id === a.baseAgent);
+        if (base) return getProviderAndModel(base);
+      }
+      return {};
+    };
+
+    const { type, model } = agent ? getProviderAndModel(agent) : {};
+    return {
+      id: agentId,
+      name: agent?.name || agentId,
+      model,
+      providerType: type,
+    };
+  });
+
   // Close on Escape
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -2714,7 +2736,23 @@ export function TaskDetailModal({ entry, agents, onClose, onInterrupt }: { entry
             <div className="flex items-center flex-wrap gap-3 mt-1.5 text-xs text-zinc-500">
               {durationMs != null && durationMs > 0 && <span className="flex items-center gap-1">⏱ {formatDurationShort(durationMs)}</span>}
               {toolCallCount > 0 && <span className="flex items-center gap-1">🔧 {toolCallCount} tool calls</span>}
-              <span className="flex items-center gap-1">👥 {entry.agents?.join(', ') || 'worker'}</span>
+              <span className="flex items-center gap-2 flex-wrap">
+                <span className="text-zinc-400">👥</span>
+                {agentDetailsList.map((agentDetails) => (
+                  <span key={agentDetails.id} className="inline-flex items-center gap-1.5 bg-zinc-50 border border-zinc-200/60 rounded px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 select-none animate-in fade-in duration-100">
+                    <span className="text-indigo-600 font-semibold">{agentDetails.name}</span>
+                    {agentDetails.model && (
+                      <>
+                        <span className="text-zinc-300 select-none">|</span>
+                        <span className="font-mono text-[9.5px] text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.25 rounded border border-emerald-100/50">
+                          {agentDetails.model}
+                        </span>
+                      </>
+                    )}
+                  </span>
+                ))}
+                {agentDetailsList.length === 0 && <span className="text-zinc-500">worker</span>}
+              </span>
             </div>
           </div>
           <button 
