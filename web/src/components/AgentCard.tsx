@@ -23,7 +23,7 @@ export function AgentCard({ agent, modelLabel, imported, onEdit, onDelete }: Pro
   const fallbackModel = !agent.provider
     ? agent.baseAgent ?? ''
     : isCli
-    ? (agent.provider as import('../types').CliProvider).command
+    ? ((agent.provider as import('../types').CliProvider).model ?? 'default')
     : agent.provider.type === 'claude'
       ? ((agent.provider as import('../types').ClaudeProvider).model ?? 'default')
       : (agent.provider as import('../types').OpenAICompatProvider).model;

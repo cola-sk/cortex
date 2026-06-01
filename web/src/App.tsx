@@ -233,7 +233,7 @@ function AgentPage({
   const lookupAgents = allAgents ?? agents;
   const modelLabelFor = (agent: import('./types').Agent): string | undefined => {
     if (agent.provider) {
-      if (agent.provider.type === 'cli') return agent.provider.command;
+      if (agent.provider.type === 'cli') return agent.provider.model ?? 'default';
       if (agent.provider.type === 'claude') return agent.provider.model ?? 'default';
       return agent.provider.model;
     }
