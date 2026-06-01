@@ -311,15 +311,13 @@ export function WorkflowSummary({
                   )}
                 </div>
                 
-                <div className="flex flex-col gap-0.5">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-xs text-indigo-700 font-semibold">{agent.name}</span>
-                    {agent.baseAgentName && (
-                      <span className="text-[9px] text-zinc-400 font-medium bg-zinc-100/50 px-1.5 py-0.5 rounded border border-zinc-100">
-                        via {agent.baseAgentName}
-                      </span>
-                    )}
-                  </div>
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs text-indigo-700 font-semibold">{agent.name}</span>
+                  {agent.baseAgentName && (
+                    <span className="text-[9.5px] text-zinc-400 font-medium bg-zinc-100/50 px-2 py-0.5 rounded border border-zinc-100/80 self-start">
+                      via {agent.baseAgentName}
+                    </span>
+                  )}
                 </div>
 
                 {agent.model && (
