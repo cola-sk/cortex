@@ -14,11 +14,11 @@
 
 ## 概述
 
-Cortex 将多个 AI 智能体（Claude、Codex、Gemini、本地模型、自定义 OpenAI 兼容 API）编排为可配置的流水线。每条流水线是一个有向无环图（DAG），任务可串行或并行执行，并支持质量门禁决策点。
+Cortex 将多个 AI 智能体（Claude、Codex、Gemini、Copilot、本地模型、自定义 OpenAI 兼容 API）编排为可配置的流水线。每条流水线是一个有向无环图（DAG），任务可串行或并行执行，并支持质量门禁决策点。
 
 **核心能力：**
 
-- **模型中心** — 自动检测本地 CLI 工具（Claude Code、Codex、Gemini、Hermes），连接任意 OpenAI 兼容 API 或自建模型
+- **模型中心** — 自动检测本地 CLI 工具（Claude Code、Codex、Gemini、Copilot），连接任意 OpenAI 兼容 API 或自建模型
 - **角色智能体** — 定义专业角色（编排者、工作者、审查者、决策者），绑定到模型连接
 - **可视化流水线构建器** — 设计包含并行 Worker 和决策检查点的任务图
 - **实时执行** — SSE 流式传输任务生命周期和工具调用事件
@@ -93,7 +93,7 @@ npm run web:dev   # 启动 Web 界面（另开终端）
                        │
           ┌────────────┼────────────┐
           ▼            ▼            ▼
-     Claude API  OpenAI 兼容   CLI (claude, codex)
+     Claude API  OpenAI 兼容   CLI (claude, codex, gemini, copilot)
 ```
 
 ## 核心概念
@@ -209,7 +209,9 @@ error              → 执行错误
 
 ## 工具调用时间线
 
-CLI 提供商使用 `--output-format stream-json` 可捕获详细的工具调用事件：
+CLI 提供商通过 `@sking7/agent-cli-unified` 将不同 CLI 的 JSON/JSONL 流统一为同一套工具时间线。Claude Code、Codex、Gemini、Copilot 的工具调用都会保存为 `tool_use` / `tool_result` 事件。
+
+自定义 CLI 参数时，请为对应 CLI 选择结构化输出模式，例如 Claude Code 的 `stream-json`：
 
 ```yaml
 provider:

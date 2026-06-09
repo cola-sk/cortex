@@ -14,11 +14,11 @@ A multi-agent CI engine that composes AI models into visual pipelines with paral
 
 ## Overview
 
-Cortex orchestrates multiple AI agents (Claude, Codex, Gemini, local models, custom OpenAI-compatible APIs) into configurable pipelines. Each pipeline is a DAG of tasks that run sequentially or in parallel, with optional quality-check decision points.
+Cortex orchestrates multiple AI agents (Claude, Codex, Gemini, Copilot, local models, custom OpenAI-compatible APIs) into configurable pipelines. Each pipeline is a DAG of tasks that run sequentially or in parallel, with optional quality-check decision points.
 
 **Core capabilities:**
 
-- **Model hub** — auto-detect installed CLI tools (Claude Code, Codex, Gemini, Hermes), connect any OpenAI-compatible API or self-hosted model
+- **Model hub** — auto-detect installed CLI tools (Claude Code, Codex, Gemini, Copilot), connect any OpenAI-compatible API or self-hosted model
 - **Role agents** — define specializations (Orchestrator, Worker, Reviewer, Decider) bound to model connections
 - **Visual pipeline builder** — design task graphs with parallel workers and decision checkpoints
 - **Real-time execution** — SSE streaming of task lifecycle and tool-call events
@@ -93,7 +93,7 @@ Open http://localhost:47823 for the web interface.
                        │
          ┌─────────────┼─────────────┐
          ▼             ▼             ▼
-    Claude API    OpenAI Compat   CLI (claude, codex)
+    Claude API    OpenAI Compat   CLI (claude, codex, gemini, copilot)
 ```
 
 ## Concepts
@@ -209,7 +209,9 @@ error              → execution error
 
 ## Tool Call Timeline
 
-For CLI providers, use `--output-format stream-json` to capture detailed tool call events:
+CLI providers use `@sking7/agent-cli-unified` to normalize provider-specific JSON/JSONL streams into one tool timeline. Claude Code, Codex, Gemini, and Copilot tool calls are stored as `tool_use` / `tool_result` events.
+
+For custom CLI args, choose the structured output mode for that CLI, for example Claude Code's `stream-json` format:
 
 ```yaml
 provider:
