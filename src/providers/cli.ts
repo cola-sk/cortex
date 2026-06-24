@@ -121,7 +121,14 @@ export class CliProvider implements LLMProvider {
 
     const textEvents = result.events.filter(e => e.type === 'text');
     if (textEvents.length > 0) {
-      return textEvents.map(e => e.text).join('');
+      // Smart join: agy/--print outputs one plain-text line per event (no trailing \n),
+      // while claude stream-json outputs multi-line blocks per event (already has \n).
+      // Insert \n between events only when the previous event text doesn't already end with one.
+      return textEvents.reduce((acc: string, e: { text?: string }, i: number) => {
+        const chunk = e.text ?? '';
+        if (i === 0) return chunk;
+        return acc.endsWith('\n') ? acc + chunk : acc + '\n' + chunk;
+      }, '');
     }
 
     return result.stdout || result.stderr;
