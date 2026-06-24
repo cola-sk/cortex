@@ -1,37 +1,25 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { execSync } from 'child_process';
 import { parse as parseToml } from 'smol-toml';
+import type { DetectedAgent } from '@sking7/agent-cli-unified';
 import type { DetectedTool } from './types.js';
-
-function which(cmd: string): string | null {
-  try { return execSync(`which ${cmd}`, { stdio: 'pipe' }).toString().trim(); } catch { return null; }
-}
 
 /**
  * Codex CLI: invokes `codex` as a subprocess.
+ * Binary detection is delegated to detectCliAgents() in index.ts.
  * System prompt is folded into the prompt (no dedicated system flag).
  */
-export function detectCodex(): DetectedTool {
-  const configPath = path.join(os.homedir(), '.codex', 'config.toml');
-  const cliPath = which('codex');
+export function detectCodex(agents: DetectedAgent[] = []): DetectedTool {
+  const agent = agents.find((a) => a.id === 'codex');
 
-  if (!fs.existsSync(configPath) && !cliPath) {
+  if (!agent || !agent.available) {
     return { id: 'codex', name: 'Codex (OpenAI)', detected: false };
-  }
-
-  if (!cliPath) {
-    return {
-      id: 'codex',
-      name: 'Codex (OpenAI)',
-      detected: true,
-      note: '`codex` binary not found in PATH. Install OpenAI Codex CLI first.',
-    };
   }
 
   let model = 'o4-mini';
   try {
+    const configPath = path.join(os.homedir(), '.codex', 'config.toml');
     if (fs.existsSync(configPath)) {
       const cfg = parseToml(fs.readFileSync(configPath, 'utf-8')) as { model?: string };
       model = cfg.model ?? model;
@@ -43,7 +31,7 @@ export function detectCodex(): DetectedTool {
     name: 'Codex (OpenAI)',
     detected: true,
     model,
-    note: `CLI: ${cliPath}`,
+    note: `CLI: ${agent.executablePath}${agent.version ? ` (v${agent.version})` : ''}`,
     provider: {
       type: 'cli' as const,
       command: 'codex',

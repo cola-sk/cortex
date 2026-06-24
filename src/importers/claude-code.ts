@@ -1,36 +1,23 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { execSync } from 'child_process';
+import type { DetectedAgent } from '@sking7/agent-cli-unified';
 import type { DetectedTool } from './types.js';
 
-function which(cmd: string): string | null {
-  try { return execSync(`which ${cmd}`, { stdio: 'pipe' }).toString().trim(); } catch { return null; }
-}
-
 /**
- * Claude Code: invokes the `claude` CLI binary as a subprocess.
- * Passes system prompt via --system-prompt flag, user prompt via -p.
+ * Claude Code CLI: invokes `claude` as a subprocess.
+ * Binary detection is delegated to detectCliAgents() in index.ts.
  */
-export function detectClaudeCode(): DetectedTool {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-  const cliPath = which('claude');
+export function detectClaudeCode(agents: DetectedAgent[] = []): DetectedTool {
+  const agent = agents.find((a) => a.id === 'claude');
 
-  if (!fs.existsSync(settingsPath) && !cliPath) {
+  if (!agent || !agent.available) {
     return { id: 'claude-code', name: 'Claude Code', detected: false };
-  }
-
-  if (!cliPath) {
-    return {
-      id: 'claude-code',
-      name: 'Claude Code',
-      detected: true,
-      note: '`claude` binary not found in PATH. Install Claude Code CLI first.',
-    };
   }
 
   let model = 'claude-sonnet-4-5';
   try {
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     if (fs.existsSync(settingsPath)) {
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as {
         env?: Record<string, string>; model?: string;
@@ -48,7 +35,7 @@ export function detectClaudeCode(): DetectedTool {
     name: 'Claude Code',
     detected: true,
     model,
-    note: `CLI: ${cliPath}`,
+    note: `CLI: ${agent.executablePath}${agent.version ? ` (v${agent.version})` : ''}`,
     provider: {
       type: 'cli' as const,
       command: 'claude',

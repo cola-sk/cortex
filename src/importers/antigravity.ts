@@ -1,16 +1,15 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { detectCliAgents } from '@sking7/agent-cli-unified';
+import type { DetectedAgent } from '@sking7/agent-cli-unified';
 import type { DetectedTool } from './types.js';
 
 /**
  * Antigravity CLI: invokes `agy` or `antigravity` as a subprocess.
- * Binary detection is delegated to @sking7/agent-cli-unified's detectCliAgents(),
- * which checks all known binaries ['agy', 'antigravity'] in PATH.
+ * Binary detection is delegated to detectCliAgents() in index.ts, which
+ * checks all known binaries ['agy', 'antigravity'] in PATH.
  */
-export function detectAntigravity(): DetectedTool {
-  const agents = detectCliAgents();
+export function detectAntigravity(agents: DetectedAgent[] = []): DetectedTool {
   const agent = agents.find((a) => a.id === 'antigravity');
 
   if (!agent || !agent.available) {
