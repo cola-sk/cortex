@@ -1,6 +1,6 @@
 import { detectClaudeCode } from './claude-code.js';
 import { detectCodex } from './codex.js';
-import { detectGemini } from './gemini.js';
+import { detectAntigravity } from './antigravity.js';
 import { detectHermes } from './hermes.js';
 import { detectCopilot } from './copilot.js';
 import type { DetectedTool } from './types.js';
@@ -11,7 +11,7 @@ export function detectAllTools(): DetectedTool[] {
   return [
     detectClaudeCode(),
     detectCodex(),
-    detectGemini(),
+    detectAntigravity(),
     detectHermes(),
     detectCopilot(),
   ];

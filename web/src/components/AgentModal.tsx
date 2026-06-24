@@ -256,7 +256,7 @@ export function AgentModal({ agent, agents, defaultKind = 'model', onSave, onClo
 
                 {modelForm.providerType === 'cli' ? (
                   <Field label="CLI Command / 运行指令" required>
-                    <Input placeholder="e.g. claude, gemini, copilot" value={modelForm.command} onChange={setM('command')} disabled={isEdit} required />
+                    <Input placeholder="e.g. claude, agy, copilot" value={modelForm.command} onChange={setM('command')} disabled={isEdit} required />
                   </Field>
                 ) : (
                   <>

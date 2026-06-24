@@ -206,7 +206,7 @@ export default function App() {
 }
 
 // ── Detect if an agent was imported (description set by importer) ─────────
-const IMPORTED_TOOLS = new Set(['claude-code', 'codex', 'gemini', 'hermes']);
+const IMPORTED_TOOLS = new Set(['claude-code', 'codex', 'antigravity', 'hermes']);
 function isImported(agent: { id: string; description?: string }) {
   return IMPORTED_TOOLS.has(agent.id) || agent.description?.startsWith('Imported from');
 }

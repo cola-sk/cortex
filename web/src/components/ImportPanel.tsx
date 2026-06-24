@@ -10,7 +10,7 @@ interface Props {
 const TOOL_ICONS: Record<string, string> = {
   'claude-code': '◆',
   codex: '○',
-  gemini: '✦',
+  antigravity: '✦',
   hermes: '⌘',
 };
 

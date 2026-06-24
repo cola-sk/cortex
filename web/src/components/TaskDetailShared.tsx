@@ -62,7 +62,7 @@ export function formatAgentInfo(agentId: string, agentsList: Agent[]): string {
   const normId = agent.id.toLowerCase().replace(/[^a-z0-9]/g, '');
   const isSimilar = normName.includes(normId) || normId.includes(normName) ||
     (normName.startsWith('claude') && normId.startsWith('claude')) ||
-    (normName.startsWith('gemini') && normId.startsWith('gemini')) ||
+    (normName.startsWith('antigravity') && normId.startsWith('antigravity')) ||
     (normName.startsWith('codex') && normId.startsWith('codex'));
 
   const nameStr = agent.name && !isSimilar ? `${agent.name} (${agent.id})` : (agent.name || agent.id);

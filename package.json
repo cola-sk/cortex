@@ -40,7 +40,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.2",
-    "@sking7/agent-cli-unified": "^1.0.3",
+    "@sking7/agent-cli-unified": "^1.0.5",
     "@tailwindcss/typography": "^0.5.19",
     "@types/js-yaml": "^4.0.9",
     "@xyflow/react": "^12.10.2",
